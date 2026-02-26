@@ -654,7 +654,7 @@ class App3Window(ctk.CTk):
 
     # ── PANEL CENTRAL — VISOR PDF ─────────────────────────────────────────────
     def _build_pdf_panel(self, parent):
-        frame = ctk.CTkFrame(parent, fg_color=BG, corner_radius=10, border_width=1, border_color=BORDER)
+        frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=10, border_width=1, border_color=BORDER)
         frame.grid(row=0, column=1, sticky="nsew", padx=6)
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)

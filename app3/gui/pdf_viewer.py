@@ -70,7 +70,7 @@ class PDFViewer(ctk.CTkFrame):
 
     # ── TOOLBAR ───────────────────────────────────────────────────────────────
     def _build_toolbar(self):
-        bar = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=42)
+        bar = ctk.CTkFrame(self, fg_color=CARD, corner_radius=10, height=44)
         bar.grid(row=0, column=0, sticky="ew")
         bar.grid_propagate(False)
 
@@ -88,7 +88,7 @@ class PDFViewer(ctk.CTkFrame):
         # ── Navegación
         self._btn_prev = ctk.CTkButton(bar, text="◀", state="disabled",
                                         command=self._prev_page, **btn)
-        self._btn_prev.pack(side="left", padx=(10, 2), pady=8)
+        self._btn_prev.pack(side="left", padx=(10, 2), pady=9)
 
         self._lbl_page = ctk.CTkLabel(bar, text="—", width=78, anchor="center", **lbl)
         self._lbl_page.pack(side="left", padx=2)
@@ -98,25 +98,25 @@ class PDFViewer(ctk.CTkFrame):
         self._btn_next.pack(side="left", padx=(2, 10))
 
         # Separador
-        ctk.CTkFrame(bar, fg_color=BORDER, width=1).pack(side="left", fill="y", pady=8)
+        ctk.CTkFrame(bar, fg_color=BORDER, width=1).pack(side="left", fill="y", pady=9)
 
         # ── Zoom
         ctk.CTkButton(bar, text="−", command=self._zoom_out, **btn).pack(
-            side="left", padx=(10, 2), pady=8)
+            side="left", padx=(10, 2), pady=9)
 
         self._lbl_zoom = ctk.CTkLabel(bar, text="—", width=52, anchor="center", **lbl)
         self._lbl_zoom.pack(side="left", padx=2)
 
         ctk.CTkButton(bar, text="+", command=self._zoom_in, **btn).pack(
-            side="left", padx=(2, 4), pady=8)
+            side="left", padx=(2, 4), pady=9)
 
         # Fit-to-width (↺ = reset al ajuste automático)
         self._btn_fit = ctk.CTkButton(bar, text="↺", command=self._zoom_fit_width,
                                        **btn)
-        self._btn_fit.pack(side="left", padx=(0, 10), pady=8)
+        self._btn_fit.pack(side="left", padx=(0, 10), pady=9)
 
         # Separador
-        ctk.CTkFrame(bar, fg_color=BORDER, width=1).pack(side="left", fill="y", pady=8)
+        ctk.CTkFrame(bar, fg_color=BORDER, width=1).pack(side="left", fill="y", pady=9)
 
         # Hint Ctrl+scroll
         ctk.CTkLabel(bar, text="Ctrl+scroll = zoom",
