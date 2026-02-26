@@ -1,0 +1,16 @@
+# Core UI
+customtkinter>=5.2
+
+# XML/report processing — reutilizado de App 2
+pandas>=2.0
+openpyxl>=3.1
+
+# Visor PDF — reemplaza pdfplumber (App 3 usa renderizado visual, no extracción de texto)
+pymupdf>=1.24        # import fitz — renderizado, zoom, copia de texto con clic derecho
+
+# Hacienda API + descarga — reutilizado de App 1
+requests>=2.31
+
+# Seguridad — reutilizado de App 1
+cryptography>=42.0
+keyring>=24.0
