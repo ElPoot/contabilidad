@@ -472,9 +472,8 @@ class SessionView(ctk.CTkToplevel):
         year: int = client["year"]
         nombre: str = client["nombre"]
 
-        # Llenar input visualmente
+        # Mantener el input de cédula limpio: acceso rápido no debe escribir nombres.
         self._cedula_entry.delete(0, "end")
-        self._cedula_entry.insert(0, nombre)
 
         self._set_preview_searching()
         self._btn_continuar.configure(state="disabled")
@@ -483,7 +482,7 @@ class SessionView(ctk.CTkToplevel):
             try:
                 # Construir sesión directamente desde la carpeta conocida
                 session = ClientSession(
-                    cedula="",
+                    cedula="ACCESO_RAPIDO",
                     nombre=nombre,
                     folder=folder,
                     year=year,

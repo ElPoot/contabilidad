@@ -65,6 +65,23 @@ class ClassificationDB:
             ]
             return dict(zip(cols, row))
 
+    def get_records_map(self) -> dict[str, dict]:
+        """Retorna todas las clasificaciones en memoria para evitar consultas por fila."""
+        with self._lock, sqlite3.connect(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT clave_numerica, estado, categoria, subcategoria, proveedor,
+                       ruta_origen, ruta_destino, sha256, fecha_clasificacion, clasificado_por
+                FROM clasificaciones
+                """
+            ).fetchall()
+
+        cols = [
+            "clave_numerica", "estado", "categoria", "subcategoria", "proveedor",
+            "ruta_origen", "ruta_destino", "sha256", "fecha_clasificacion", "clasificado_por",
+        ]
+        return {str(row[0]): dict(zip(cols, row)) for row in rows}
+
     def upsert(self, **kwargs: str) -> None:
         keys = [
             "clave_numerica", "estado", "categoria", "subcategoria", "proveedor",

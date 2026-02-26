@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime
 from queue import Queue
 
 import customtkinter as ctk
@@ -129,6 +130,8 @@ class App3Window(ctk.CTk):
         self.db: ClassificationDB | None = None
         self.catalog: dict = {}
         self.records: list[FacturaRecord] = []
+        self.all_records: list[FacturaRecord] = []
+        self._db_records: dict[str, dict] = {}
         self.selected: FacturaRecord | None = None
         self._load_queue: Queue = Queue()
 
@@ -160,8 +163,8 @@ class App3Window(ctk.CTk):
                 indexer = FacturaIndexer()
                 records = indexer.load_period(
                     session.folder,
-                    from_date=self.from_var.get(),
-                    to_date=self.to_var.get(),
+                    from_date="",
+                    to_date="",
                 )
                 self._load_queue.put(("ok", (session, catalog, db, records, indexer.parse_errors)))
             except Exception as exc:
@@ -186,7 +189,10 @@ class App3Window(ctk.CTk):
         self.session = session
         self.catalog = catalog
         self.db = db
-        self.records = records
+        self.all_records = records
+        self._db_records = db.get_records_map()
+        self.records = self._apply_date_filter(records)
+        self.selected = None
 
         # Actualizar header
         self._lbl_cliente.configure(text=session.folder.name)
@@ -476,7 +482,7 @@ class App3Window(ctk.CTk):
     def _refresh_tree(self):
         self.tree.delete(*self.tree.get_children())
         for idx, r in enumerate(self.records):
-            estado = (self.db.get_estado(r.clave) if self.db else None) or r.estado
+            estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
             icon  = ESTADO_ICON.get(estado, "·")
             label = ESTADO_LABEL.get(estado, estado)
             tag   = estado if estado in ("clasificado", "pendiente_pdf", "sin_xml") else ""
@@ -502,12 +508,16 @@ class App3Window(ctk.CTk):
                               tags=(tag,))
 
     def _update_progress(self):
-        if not self.records or not self.db:
+        if not self.records:
             self._progress_var.set("")
             return
         total = len(self.records)
-        clf = sum(1 for r in self.records
-                  if (self.db.get_estado(r.clave) or r.estado) == "clasificado")
+        clf = sum(
+            1
+            for r in self.records
+            if ((self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado)
+            == "clasificado"
+        )
         pct = int(clf / total * 100) if total else 0
         self._progress_var.set(f"{clf}/{total}  ({pct}%)")
 
@@ -548,7 +558,7 @@ class App3Window(ctk.CTk):
 
         # Clasificación previa
         if self.db:
-            prev = self.db.get_record(r.clave)
+            prev = self._db_records.get(r.clave)
             if prev and prev.get("estado") == "clasificado":
                 self._prev_var.set(
                     f"{prev['categoria']} › {prev['subcategoria']}\n"
@@ -567,8 +577,14 @@ class App3Window(ctk.CTk):
         self._subcat_var.set(subcats[0] if subcats else "")
 
     def _on_filter(self):
-        if self.session:
-            self._load_session(self.session)
+        if not self.all_records:
+            return
+        self.records = self._apply_date_filter(self.all_records)
+        self.selected = None
+        self.pdf_viewer.clear()
+        self._refresh_tree()
+        self._update_progress()
+        self._set_status("Filtro aplicado")
 
     # ── CLASIFICACIÓN ─────────────────────────────────────────────────────────
     def _classify_selected(self):
@@ -583,7 +599,7 @@ class App3Window(ctk.CTk):
             self._show_warning("Atención", "Completa categoría y proveedor.")
             return
 
-        if self.db.get_estado(self.selected.clave) == "clasificado":
+        if self._db_records.get(self.selected.clave, {}).get("estado") == "clasificado":
             if not self._ask("Reclasificar",
                               "Esta factura ya fue clasificada.\n¿Deseas reclasificarla?"):
                 return
@@ -604,10 +620,49 @@ class App3Window(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_classify_ok(self):
+        if self.db and self.selected:
+            updated = self.db.get_record(self.selected.clave)
+            if updated:
+                self._db_records[self.selected.clave] = updated
         self._btn_classify.configure(state="normal", text="✔  Clasificar")
         self._refresh_tree()
         self._update_progress()
         self._on_select()
+
+    @staticmethod
+    def _parse_ui_date(value: str):
+        text = (value or "").strip()
+        if not text:
+            return None
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    def _apply_date_filter(self, records: list[FacturaRecord]) -> list[FacturaRecord]:
+        from_dt = self._parse_ui_date(self.from_var.get())
+        to_dt = self._parse_ui_date(self.to_var.get())
+        if not from_dt and not to_dt:
+            return list(records)
+
+        filtered: list[FacturaRecord] = []
+        for record in records:
+            fecha_txt = (record.fecha_emision or "").strip()
+            try:
+                fecha = datetime.strptime(fecha_txt, "%d/%m/%Y").date()
+            except ValueError:
+                # Mantener visibles los PDF sin XML para revisión manual.
+                if record.estado == "sin_xml":
+                    filtered.append(record)
+                continue
+            if from_dt and fecha < from_dt:
+                continue
+            if to_dt and fecha > to_dt:
+                continue
+            filtered.append(record)
+        return filtered
 
     def _on_classify_error(self, msg: str):
         self._btn_classify.configure(state="normal", text="✔  Clasificar")
