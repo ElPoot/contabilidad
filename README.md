@@ -332,3 +332,17 @@ Se agregó una primera versión ejecutable en `app3/` que reutiliza lógica de A
 ```bash
 python -m app3.main
 ```
+
+### Dependencias (App 3 v1)
+
+Instalar dependencias base:
+
+```bash
+pip install -r requirements.txt
+```
+
+Para desarrollo y pruebas:
+
+```bash
+pip install -r requirements-dev.txt
+```

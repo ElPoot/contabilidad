@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from app3.bootstrap import bootstrap_legacy_paths
@@ -16,6 +17,8 @@ class FacturaIndexer:
         self.xml_manager = CRXMLManager()
 
     def load_period(self, client_folder: Path, from_date: str = "", to_date: str = "") -> list[FacturaRecord]:
+        from_dt = self._parse_ui_date(from_date)
+        to_dt = self._parse_ui_date(to_date)
         records: dict[str, FacturaRecord] = {}
         xml_root = client_folder / "XML"
         pdf_root = client_folder / "PDF"
@@ -26,9 +29,12 @@ class FacturaIndexer:
                 clave = str(parsed.get("clave_numerica") or "").strip()
                 if len(clave) != 50:
                     continue
+                fecha = str(parsed.get("fecha_emision") or "")
+                if not self._in_range(fecha, from_dt, to_dt):
+                    continue
                 records[clave] = FacturaRecord(
                     clave=clave,
-                    fecha_emision=str(parsed.get("fecha_emision") or ""),
+                    fecha_emision=fecha,
                     emisor_nombre=str(parsed.get("emisor_nombre") or ""),
                     emisor_cedula=str(parsed.get("emisor_cedula") or ""),
                     tipo_documento=str(parsed.get("tipo_documento") or ""),
@@ -56,3 +62,30 @@ class FacturaIndexer:
                 record.estado = "sin_xml"
 
         return sorted(records.values(), key=lambda r: (r.fecha_emision, r.clave))
+
+
+    @staticmethod
+    def _parse_ui_date(value: str):
+        text = (value or "").strip()
+        if not text:
+            return None
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _in_range(fecha_emision: str, from_dt, to_dt) -> bool:
+        if not from_dt and not to_dt:
+            return True
+        try:
+            fecha = datetime.strptime((fecha_emision or "").strip(), "%d/%m/%Y").date()
+        except ValueError:
+            return False
+        if from_dt and fecha < from_dt:
+            return False
+        if to_dt and fecha > to_dt:
+            return False
+        return True

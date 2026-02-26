@@ -31,6 +31,12 @@ class App3Window(tk.Tk):
         self.cedula_var = tk.StringVar()
         ttk.Entry(top, textvariable=self.cedula_var, width=20).pack(side="left", padx=6)
         ttk.Button(top, text="Cargar cliente", command=self.load_client).pack(side="left", padx=6)
+        ttk.Label(top, text="Desde (DD/MM/AAAA):").pack(side="left", padx=(14, 4))
+        self.from_var = tk.StringVar()
+        ttk.Entry(top, textvariable=self.from_var, width=12).pack(side="left")
+        ttk.Label(top, text="Hasta:").pack(side="left", padx=(10, 4))
+        self.to_var = tk.StringVar()
+        ttk.Entry(top, textvariable=self.to_var, width=12).pack(side="left")
 
         body = ttk.PanedWindow(self, orient="horizontal")
         body.pack(fill="both", expand=True, padx=8, pady=8)
@@ -73,7 +79,11 @@ class App3Window(tk.Tk):
             self.categoria_cb.configure(values=sorted(catalog.keys()))
 
             self.db = ClassificationDB(mdir)
-            self.records = FacturaIndexer().load_period(self.session.folder)
+            self.records = FacturaIndexer().load_period(
+                self.session.folder,
+                from_date=self.from_var.get(),
+                to_date=self.to_var.get(),
+            )
             self.refresh_tree()
             messagebox.showinfo("Sesión", f"Cliente cargado: {self.session.folder.name}\nFacturas: {len(self.records)}")
         except Exception as exc:
