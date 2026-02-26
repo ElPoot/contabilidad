@@ -936,6 +936,7 @@ class App3Window(ctk.CTk):
                     "receptor_nombre": r.receptor_nombre,
                     "receptor_cedula": r.receptor_cedula,
                     "moneda": r.moneda,
+                    "tipo_cambio": r.tipo_cambio,
                     "subtotal": r.subtotal,
                     "impuesto_total": r.impuesto_total,
                     "total_comprobante": r.total_comprobante,
@@ -949,17 +950,34 @@ class App3Window(ctk.CTk):
                 }
             )
 
+
+        # Mantener el reporte alineado a las columnas básicas por defecto de App 2.
+        app2_default_export_columns = [
+            "tipo_documento",
+            "fecha_emision",
+            "consecutivo",
+            "emisor_nombre",
+            "emisor_cedula",
+            "moneda",
+            "tipo_cambio",
+            "subtotal",
+            "impuesto_total",
+            "total_comprobante",
+            "estado_hacienda",
+        ]
+
         try:
             if target.lower().endswith(".csv"):
                 with open(target, "w", newline="", encoding="utf-8-sig") as fh:
-                    writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+                    writer = csv.DictWriter(fh, fieldnames=app2_default_export_columns)
                     writer.writeheader()
-                    writer.writerows(rows)
+                    writer.writerows([{col: row.get(col, "") for col in app2_default_export_columns} for row in rows])
             else:
                 import pandas as pd
                 from openpyxl.styles import Alignment, Font, PatternFill
 
                 df = pd.DataFrame(rows)
+                df = df[[col for col in app2_default_export_columns if col in df.columns]].copy()
                 pretty_headers = {
                     "clave_numerica": "Clave",
                     "tipo_documento": "Tipo documento",
@@ -970,6 +988,7 @@ class App3Window(ctk.CTk):
                     "receptor_nombre": "Receptor",
                     "receptor_cedula": "Cédula receptor",
                     "moneda": "Moneda",
+                    "tipo_cambio": "Tipo cambio",
                     "subtotal": "Subtotal",
                     "impuesto_total": "Impuesto total",
                     "total_comprobante": "Total comprobante",
@@ -982,7 +1001,7 @@ class App3Window(ctk.CTk):
                     "pdf_path": "Ruta PDF",
                 }
 
-                numeric_columns = {"subtotal", "impuesto_total", "total_comprobante"}
+                numeric_columns = {"tipo_cambio", "subtotal", "impuesto_total", "total_comprobante"}
                 text_columns = {
                     "clave_numerica", "consecutivo", "emisor_cedula", "receptor_cedula", "xml_path", "pdf_path"
                 }
@@ -1016,7 +1035,7 @@ class App3Window(ctk.CTk):
                 summary_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
                 header_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
 
-                # Separar por categoria para acercar la experiencia de App 2 (hojas por grupo).
+                # Usar una hoja principal; las columnas exportadas siguen el set básico por defecto de App 2.
                 sheet_map: dict[str, pd.DataFrame] = {}
                 used_sheet_names: set[str] = set()
                 if "categoria" in df.columns:
