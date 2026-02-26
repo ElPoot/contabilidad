@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from pathlib import Path
 
 from app3.bootstrap import bootstrap_legacy_paths
@@ -21,6 +22,13 @@ except ModuleNotFoundError:
     def extract_clave_and_cedula(data: bytes, original_filename: str = "") -> tuple:  # type: ignore[misc]
         return None, None
 
+
+
+
+def _extract_clave_from_filename(filename: str) -> str | None:
+    """Extrae clave de 50 dígitos desde el nombre del PDF sin abrir el archivo."""
+    match = re.search(r"(\d{50})", str(filename or ""))
+    return match.group(1) if match else None
 
 class FacturaIndexer:
     """
@@ -118,13 +126,17 @@ class FacturaIndexer:
         # solo lee el contenido si no hay clave en el nombre
         if pdf_root.exists():
             for pdf_file in pdf_root.rglob("*.pdf"):
-                try:
-                    clave, _ced = extract_clave_and_cedula(
-                        pdf_file.read_bytes(),
-                        original_filename=pdf_file.name,
-                    )
-                except Exception:
-                    clave = None
+                clave = _extract_clave_from_filename(pdf_file.name)
+
+                # Fallback costoso solo si el nombre no trae clave.
+                if not clave:
+                    try:
+                        clave, _ced = extract_clave_and_cedula(
+                            pdf_file.read_bytes(),
+                            original_filename=pdf_file.name,
+                        )
+                    except Exception:
+                        clave = None
 
                 if not clave:
                     continue
