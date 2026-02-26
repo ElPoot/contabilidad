@@ -79,13 +79,22 @@ class App3Window(tk.Tk):
             self.categoria_cb.configure(values=sorted(catalog.keys()))
 
             self.db = ClassificationDB(mdir)
-            self.records = FacturaIndexer().load_period(
+            indexer = FacturaIndexer()
+            self.records = indexer.load_period(
                 self.session.folder,
                 from_date=self.from_var.get(),
                 to_date=self.to_var.get(),
             )
             self.refresh_tree()
-            messagebox.showinfo("Sesión", f"Cliente cargado: {self.session.folder.name}\nFacturas: {len(self.records)}")
+            if indexer.parse_errors:
+                sample = "\n".join(indexer.parse_errors[:5])
+                messagebox.showwarning(
+                    "Cliente cargado con advertencias",
+                    f"Cliente: {self.session.folder.name}\nFacturas cargadas: {len(self.records)}\n"
+                    f"XML con error (se omitieron): {len(indexer.parse_errors)}\n\n{sample}",
+                )
+            else:
+                messagebox.showinfo("Sesión", f"Cliente cargado: {self.session.folder.name}\nFacturas: {len(self.records)}")
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
 

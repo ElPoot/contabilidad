@@ -27,3 +27,13 @@ def test_classify_record_moves_pdf_and_registers(tmp_path: Path):
     assert target.exists()
     assert not pdf.exists()
     assert db.get_estado(record.clave) == "clasificado"
+
+
+def test_catalog_recovers_from_invalid_json(tmp_path: Path):
+    manager = CatalogManager(tmp_path)
+    broken = tmp_path / "catalogo_cuentas.json"
+    broken.write_text("", encoding="utf-8")
+    loaded = manager.load()
+    assert isinstance(loaded, dict)
+    assert "COMPRAS" in loaded
+    assert (tmp_path / "catalogo_cuentas.invalid.json").exists()

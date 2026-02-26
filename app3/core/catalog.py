@@ -20,7 +20,24 @@ class CatalogManager:
 
     def load(self) -> dict:
         if self.path.exists():
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            try:
+                raw_text = self.path.read_text(encoding="utf-8").strip()
+                if not raw_text:
+                    raise ValueError("archivo vacío")
+                data = json.loads(raw_text)
+                if isinstance(data, dict):
+                    return data
+                raise ValueError("catálogo inválido")
+            except Exception:
+                # Respaldo y recuperación automática a default.
+                backup = self.path.with_suffix(".invalid.json")
+                try:
+                    if self.path.exists():
+                        self.path.replace(backup)
+                except Exception:
+                    pass
+                self.save(DEFAULT_CATALOG)
+                return DEFAULT_CATALOG
         self.save(DEFAULT_CATALOG)
         return DEFAULT_CATALOG
 

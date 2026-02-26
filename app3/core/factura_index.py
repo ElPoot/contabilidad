@@ -15,8 +15,10 @@ from facturacion_system.core.pdf_classifier import extract_clave_and_cedula  # n
 class FacturaIndexer:
     def __init__(self) -> None:
         self.xml_manager = CRXMLManager()
+        self.parse_errors: list[str] = []
 
     def load_period(self, client_folder: Path, from_date: str = "", to_date: str = "") -> list[FacturaRecord]:
+        self.parse_errors = []
         from_dt = self._parse_ui_date(from_date)
         to_dt = self._parse_ui_date(to_date)
         records: dict[str, FacturaRecord] = {}
@@ -25,7 +27,11 @@ class FacturaIndexer:
 
         if xml_root.exists():
             for xml_file in xml_root.rglob("*.xml"):
-                parsed = self.xml_manager.parse_xml_file(xml_file)
+                try:
+                    parsed = self.xml_manager.parse_xml_file(xml_file)
+                except Exception as exc:  # noqa: BLE001 - tolerar XML corrupto y continuar
+                    self.parse_errors.append(f"{xml_file.name}: {exc}")
+                    continue
                 clave = str(parsed.get("clave_numerica") or "").strip()
                 if len(clave) != 50:
                     continue
