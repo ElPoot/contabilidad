@@ -4,6 +4,7 @@ import calendar
 import csv
 import threading
 from datetime import datetime
+from decimal import Decimal
 from queue import Queue
 
 import customtkinter as ctk
@@ -214,22 +215,53 @@ class DatePickerPopup(ctk.CTkToplevel):
         self.destroy()
 
 
-class DatePickerDropdown(ctk.CTkFrame):
-    """Calendario desplegable (inline), sin ventana flotante independiente."""
+def _parse_date_any(text: str):
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
 
-    def __init__(self, parent, on_pick, initial_value: str = ""):
-        super().__init__(parent, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER)
+
+class DatePickerDropdown(ctk.CTkToplevel):
+    """Calendario anclado tipo dropdown (sin barra de título)."""
+
+    def __init__(self, parent, on_pick, initial_value: str = "", x: int = 120, y: int = 120):
+        super().__init__(parent)
+        self.overrideredirect(True)
+        self.configure(fg_color="transparent")
+        self.attributes("-topmost", True)
         self._on_pick = on_pick
-        dt = DatePickerPopup._parse_date(initial_value) or datetime.today()
+        dt = _parse_date_any(initial_value) or datetime.today()
         self._year = dt.year
         self._month = dt.month
+        self.geometry(f"290x270+{x}+{y}")
+
+        self._card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER)
+        self._card.pack(fill="both", expand=True)
+        self._card.bind("<FocusOut>", lambda _e: self._safe_close())
+
+        self.bind("<Escape>", lambda _e: self._safe_close())
+        self.bind("<FocusOut>", lambda _e: self._safe_close())
+
         self._draw()
+        self.after(10, self.focus_force)
+
+    def _safe_close(self):
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
     def _draw(self):
-        for w in self.winfo_children():
+        for w in self._card.winfo_children():
             w.destroy()
 
-        top = ctk.CTkFrame(self, fg_color="transparent")
+        top = ctk.CTkFrame(self._card, fg_color="transparent")
         top.pack(fill="x", padx=8, pady=(8, 6))
         ctk.CTkButton(top, text="◀", width=30, height=28, fg_color=SURFACE,
                       hover_color=BORDER, command=self._prev_month).pack(side="left")
@@ -238,7 +270,7 @@ class DatePickerDropdown(ctk.CTkFrame):
         ctk.CTkButton(top, text="▶", width=30, height=28, fg_color=SURFACE,
                       hover_color=BORDER, command=self._next_month).pack(side="right")
 
-        grid = ctk.CTkFrame(self, fg_color="transparent")
+        grid = ctk.CTkFrame(self._card, fg_color="transparent")
         grid.pack(padx=8, pady=(0, 8))
         for i, name in enumerate(["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]):
             ctk.CTkLabel(grid, text=name, text_color=MUTED, font=F_SMALL()).grid(row=0, column=i, padx=3, pady=2)
@@ -259,7 +291,7 @@ class DatePickerDropdown(ctk.CTkFrame):
                     command=lambda dd=day: self._pick_day(dd),
                 ).grid(row=r, column=c, padx=2, pady=2)
 
-        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom = ctk.CTkFrame(self._card, fg_color="transparent")
         bottom.pack(fill="x", padx=8, pady=(0, 8))
         ctk.CTkButton(bottom, text="Hoy", width=70, fg_color=SURFACE, hover_color=BORDER,
                       command=self._pick_today).pack(side="left")
@@ -289,6 +321,15 @@ class DatePickerDropdown(ctk.CTkFrame):
 
     def _emit(self, value: str):
         self._on_pick(value)
+        self._safe_close()
+
+
+def _format_amount_es(number: Decimal) -> str:
+    sign = "-" if number < 0 else ""
+    n = abs(number)
+    text = f"{n:,.2f}"
+    text = text.replace(",", "_").replace(".", ",").replace("_", " ")
+    return f"{sign}{text}"
 
 
 class App3Window(ctk.CTk):
@@ -804,17 +845,20 @@ class App3Window(ctk.CTk):
                 self.to_var.set(value)
             self._close_date_picker()
 
-        self._active_calendar = DatePickerDropdown(self, on_pick=on_pick, initial_value=initial)
-
         self.update_idletasks()
-        x = entry.winfo_rootx() - self.winfo_rootx()
-        y = entry.winfo_rooty() - self.winfo_rooty() + entry.winfo_height() + 6
-        self._active_calendar.place(x=x, y=y)
-        self._active_calendar.lift()
+        x = entry.winfo_rootx()
+        y = entry.winfo_rooty() + entry.winfo_height() + 6
+        self._active_calendar = DatePickerDropdown(
+            self,
+            on_pick=on_pick,
+            initial_value=initial,
+            x=x,
+            y=y,
+        )
 
     def _close_date_picker(self):
         if self._active_calendar is not None:
-            self._active_calendar.destroy()
+            self._active_calendar._safe_close()
             self._active_calendar = None
 
     def _export_report(self):
@@ -838,19 +882,20 @@ class App3Window(ctk.CTk):
             estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
             rows.append(
                 {
-                    "clave": r.clave,
+                    "clave_numerica": r.clave,
                     "estado": estado,
                     "fecha_emision": r.fecha_emision,
                     "tipo_documento": r.tipo_documento,
-                    "emisor": r.emisor_nombre,
-                    "cedula_emisor": r.emisor_cedula,
-                    "receptor": r.receptor_nombre,
-                    "cedula_receptor": r.receptor_cedula,
+                    "emisor_nombre": r.emisor_nombre,
+                    "emisor_cedula": r.emisor_cedula,
+                    "receptor_nombre": r.receptor_nombre,
+                    "receptor_cedula": r.receptor_cedula,
                     "moneda": r.moneda,
                     "subtotal": r.subtotal,
                     "impuesto_total": r.impuesto_total,
                     "total_comprobante": r.total_comprobante,
                     "estado_hacienda": r.estado_hacienda,
+                    "consecutivo": r.consecutivo,
                     "xml_path": str(r.xml_path or ""),
                     "pdf_path": str(r.pdf_path or ""),
                 }
@@ -864,38 +909,147 @@ class App3Window(ctk.CTk):
                     writer.writerows(rows)
             else:
                 import pandas as pd
+                from openpyxl.styles import Alignment, Font, PatternFill
 
                 df = pd.DataFrame(rows)
+                pretty_headers = {
+                    "clave_numerica": "Clave",
+                    "tipo_documento": "Tipo documento",
+                    "fecha_emision": "Fecha emisión",
+                    "consecutivo": "Consecutivo",
+                    "emisor_nombre": "Emisor",
+                    "emisor_cedula": "Cédula emisor",
+                    "receptor_nombre": "Receptor",
+                    "receptor_cedula": "Cédula receptor",
+                    "moneda": "Moneda",
+                    "subtotal": "Subtotal",
+                    "impuesto_total": "Impuesto total",
+                    "total_comprobante": "Total comprobante",
+                    "estado_hacienda": "Estado Hacienda",
+                    "estado": "Estado App 3",
+                    "xml_path": "Ruta XML",
+                    "pdf_path": "Ruta PDF",
+                }
+
+                numeric_columns = {"subtotal", "impuesto_total", "total_comprobante"}
+                text_columns = {
+                    "clave_numerica", "consecutivo", "emisor_cedula", "receptor_cedula", "xml_path", "pdf_path"
+                }
+                date_column = "fecha_emision"
+
+                for col in text_columns:
+                    if col in df.columns:
+                        df[col] = df[col].fillna("").astype(str).str.strip()
+
+                for col in numeric_columns:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(
+                            df[col].astype(str).str.replace(" ", "", regex=False).str.replace(",", ".", regex=False),
+                            errors="coerce",
+                        )
+
+                if date_column in df.columns:
+                    df[date_column] = pd.to_datetime(df[date_column], format="%d/%m/%Y", errors="coerce")
+
+                owner_name = self._lbl_cliente.cget("text") or "REPORTE DE COMPROBANTES"
+                date_from_label = self.from_var.get().strip() or "01/01/1900"
+                date_to_label = self.to_var.get().strip() or datetime.now().strftime("%d/%m/%Y")
+
+                title_fill = PatternFill(fill_type="solid", fgColor="0B2B66")
+                subtitle_fill = PatternFill(fill_type="solid", fgColor="7F7F7F")
+                summary_fill = PatternFill(fill_type="solid", fgColor="EDEDED")
+                header_fill = PatternFill(fill_type="solid", fgColor="D9E1F2")
+                credit_fill = PatternFill(fill_type="solid", fgColor="FDE2E2")
+                title_font = Font(name="Calibri", size=16, bold=True, color="FFFFFF")
+                subtitle_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+                summary_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
+                header_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
+
                 with pd.ExcelWriter(target, engine="openpyxl") as writer:
-                    df.to_excel(writer, index=False, sheet_name="Reporte", startrow=4)
-                    wb = writer.book
+                    display_df = df.rename(columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in df.columns})
+                    display_df.to_excel(writer, index=False, sheet_name="Reporte", startrow=4)
                     ws = writer.sheets["Reporte"]
 
-                    title = f"APP 3 · REPORTE CLASIFICACIÓN · {self._lbl_cliente.cget('text')}"
-                    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(1, len(df.columns)))
-                    ws.cell(row=1, column=1, value=title)
-                    ws.cell(row=2, column=1, value=f"Rango: {self.from_var.get() or '—'} a {self.to_var.get() or '—'}")
-                    ws.cell(row=3, column=1, value=f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                    max_col = ws.max_column if ws.max_column > 0 else 1
+                    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+                    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+                    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
+                    title_cell = ws.cell(row=1, column=1)
+                    title_cell.value = str(owner_name).upper()
+                    title_cell.font = title_font
+                    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+                    title_cell.fill = title_fill
 
-                    number_cols = {
-                        "subtotal", "impuesto_total", "total_comprobante",
-                    }
+                    subtitle_cell = ws.cell(row=2, column=1)
+                    subtitle_cell.value = f"REPORTE DE CLASIFICACIÓN - Período: {date_from_label} al {date_to_label}"
+                    subtitle_cell.font = subtitle_font
+                    subtitle_cell.alignment = Alignment(horizontal="center", vertical="center")
+                    subtitle_cell.fill = subtitle_fill
+
+                    monto_total = Decimal("0")
+                    valid_amounts: list[Decimal] = []
+                    if "total_comprobante" in df.columns:
+                        for value in df["total_comprobante"].dropna().tolist():
+                            try:
+                                valid_amounts.append(Decimal(str(value)))
+                            except Exception:
+                                continue
+                    if valid_amounts:
+                        monto_total = sum(valid_amounts, Decimal("0"))
+                    monedas = sorted({str(m).strip() for m in df["moneda"].dropna().tolist() if str(m).strip()}) if "moneda" in df.columns else []
+                    if not monedas:
+                        moneda_value = "N/A"
+                    elif len(monedas) == 1:
+                        moneda_value = monedas[0]
+                    else:
+                        moneda_value = "MIXTA: " + ", ".join(monedas)
+                    generated = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+                    summary_cell = ws.cell(row=3, column=1)
+                    summary_cell.value = (
+                        f"Total filas: {len(df)}   |   Monto Total: {_format_amount_es(monto_total)}   |   "
+                        f"Moneda: {moneda_value}   |   Generado: {generated}"
+                    )
+                    summary_cell.font = summary_font
+                    summary_cell.alignment = Alignment(horizontal="center", vertical="center")
+                    summary_cell.fill = summary_fill
+
+                    header_row = 5
+                    for col_idx in range(1, ws.max_column + 1):
+                        cell = ws.cell(row=header_row, column=col_idx)
+                        cell.font = header_font
+                        cell.fill = header_fill
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+                    tipo_idx = list(df.columns).index("tipo_documento") + 1 if "tipo_documento" in df.columns else None
+
                     for col_idx, col_name in enumerate(df.columns, start=1):
-                        max_len = len(str(col_name))
-                        for row_idx in range(6, len(df) + 6):
-                            val = ws.cell(row=row_idx, column=col_idx).value
-                            max_len = max(max_len, len(str(val or "")))
-                            if col_name in number_cols and val not in (None, ""):
-                                try:
-                                    ws.cell(row=row_idx, column=col_idx).value = float(
-                                        str(val).replace(" ", "").replace(",", ".")
-                                    )
-                                    ws.cell(row=row_idx, column=col_idx).number_format = "#,##0.00"
-                                except Exception:
-                                    pass
-                        ws.column_dimensions[ws.cell(row=5, column=col_idx).column_letter].width = min(max_len + 2, 48)
+                        for row_idx in range(header_row + 1, len(df) + header_row + 1):
+                            cell = ws.cell(row=row_idx, column=col_idx)
+                            if col_name in text_columns:
+                                cell.number_format = "@"
+                                cell.value = "" if cell.value is None else str(cell.value)
+                            elif col_name == date_column and cell.value is not None:
+                                cell.number_format = "dd/mm/yyyy"
+                            elif col_name in numeric_columns and cell.value is not None:
+                                cell.number_format = "#,##0.00"
 
-                    ws.freeze_panes = "A6"
+                    if tipo_idx is not None:
+                        for row_idx in range(header_row + 1, len(df) + header_row + 1):
+                            if ws.cell(row=row_idx, column=tipo_idx).value == "Nota de Crédito":
+                                for col in range(1, ws.max_column + 1):
+                                    ws.cell(row=row_idx, column=col).fill = credit_fill
+
+                    for col_idx in range(1, ws.max_column + 1):
+                        max_len = 0
+                        for row_idx in range(header_row, ws.max_row + 1):
+                            value = ws.cell(row=row_idx, column=col_idx).value
+                            if value is None:
+                                continue
+                            max_len = max(max_len, len(str(value)))
+                        ws.column_dimensions[ws.cell(row=header_row, column=col_idx).column_letter].width = min(max(max_len + 3, 12), 65)
+
+                    ws.freeze_panes = ws["A6"]
             messagebox.showinfo("Exportar", f"Reporte guardado en:\n{target}")
             self._set_status("Reporte exportado")
         except Exception as exc:
