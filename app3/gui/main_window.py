@@ -214,6 +214,83 @@ class DatePickerPopup(ctk.CTkToplevel):
         self.destroy()
 
 
+class DatePickerDropdown(ctk.CTkFrame):
+    """Calendario desplegable (inline), sin ventana flotante independiente."""
+
+    def __init__(self, parent, on_pick, initial_value: str = ""):
+        super().__init__(parent, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER)
+        self._on_pick = on_pick
+        dt = DatePickerPopup._parse_date(initial_value) or datetime.today()
+        self._year = dt.year
+        self._month = dt.month
+        self._draw()
+
+    def _draw(self):
+        for w in self.winfo_children():
+            w.destroy()
+
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=8, pady=(8, 6))
+        ctk.CTkButton(top, text="◀", width=30, height=28, fg_color=SURFACE,
+                      hover_color=BORDER, command=self._prev_month).pack(side="left")
+        ctk.CTkLabel(top, text=f"{calendar.month_name[self._month]} {self._year}",
+                     text_color=TEXT, font=F_LABEL()).pack(side="left", expand=True)
+        ctk.CTkButton(top, text="▶", width=30, height=28, fg_color=SURFACE,
+                      hover_color=BORDER, command=self._next_month).pack(side="right")
+
+        grid = ctk.CTkFrame(self, fg_color="transparent")
+        grid.pack(padx=8, pady=(0, 8))
+        for i, name in enumerate(["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]):
+            ctk.CTkLabel(grid, text=name, text_color=MUTED, font=F_SMALL()).grid(row=0, column=i, padx=3, pady=2)
+
+        for r, week in enumerate(calendar.monthcalendar(self._year, self._month), start=1):
+            for c, day in enumerate(week):
+                if day == 0:
+                    ctk.CTkLabel(grid, text=" ", width=30).grid(row=r, column=c, padx=2, pady=2)
+                    continue
+                ctk.CTkButton(
+                    grid,
+                    text=str(day),
+                    width=30,
+                    height=28,
+                    fg_color=SURFACE,
+                    hover_color=TEAL_DIM,
+                    text_color=TEXT,
+                    command=lambda dd=day: self._pick_day(dd),
+                ).grid(row=r, column=c, padx=2, pady=2)
+
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill="x", padx=8, pady=(0, 8))
+        ctk.CTkButton(bottom, text="Hoy", width=70, fg_color=SURFACE, hover_color=BORDER,
+                      command=self._pick_today).pack(side="left")
+        ctk.CTkButton(bottom, text="Limpiar", width=80, fg_color=SURFACE, hover_color=BORDER,
+                      command=lambda: self._emit("")).pack(side="right")
+
+    def _prev_month(self):
+        self._month -= 1
+        if self._month == 0:
+            self._month = 12
+            self._year -= 1
+        self._draw()
+
+    def _next_month(self):
+        self._month += 1
+        if self._month == 13:
+            self._month = 1
+            self._year += 1
+        self._draw()
+
+    def _pick_day(self, day: int):
+        self._emit(f"{day:02d}/{self._month:02d}/{self._year:04d}")
+
+    def _pick_today(self):
+        now = datetime.today()
+        self._emit(f"{now.day:02d}/{now.month:02d}/{now.year:04d}")
+
+    def _emit(self, value: str):
+        self._on_pick(value)
+
+
 class App3Window(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -236,6 +313,7 @@ class App3Window(ctk.CTk):
         self._db_records: dict[str, dict] = {}
         self.selected: FacturaRecord | None = None
         self._load_queue: Queue = Queue()
+        self._active_calendar: DatePickerDropdown | None = None
 
         _apply_tree_style()
         self._build()
@@ -402,11 +480,6 @@ class App3Window(ctk.CTk):
                        font=F_SMALL(), corner_radius=8,
                        command=self._on_filter).pack(side="left", padx=(8,0))
 
-        ctk.CTkButton(date_frame, text="Exportar", width=84, height=32,
-                       fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
-                       font=F_SMALL(), corner_radius=8,
-                       command=self._export_report).pack(side="left", padx=(8, 0))
-
         # Botón cambiar cliente
         ctk.CTkButton(hdr, text="⇄  Cambiar cliente", width=150, height=32,
                        fg_color=CARD, hover_color=SURFACE, text_color=MUTED,
@@ -453,6 +526,11 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(top, text="Facturas del período",
                       font=F_TITLE(), text_color=TEXT).grid(
             row=0, column=0, sticky="w", padx=14, pady=12)
+
+        ctk.CTkButton(top, text="Exportar reporte", width=120, height=30,
+                      fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
+                      font=F_SMALL(), corner_radius=8,
+                      command=self._export_report).grid(row=0, column=2, sticky="e", padx=(0, 10))
 
         self._progress_var = ctk.StringVar(value="")
         ctk.CTkLabel(top, textvariable=self._progress_var,
@@ -715,15 +793,29 @@ class App3Window(ctk.CTk):
         self._set_status("Filtro aplicado")
 
     def _open_date_picker(self, target: str):
+        self._close_date_picker()
         initial = self.from_var.get() if target == "from" else self.to_var.get()
+        entry = self._from_entry if target == "from" else self._to_entry
 
         def on_pick(value: str):
             if target == "from":
                 self.from_var.set(value)
             else:
                 self.to_var.set(value)
+            self._close_date_picker()
 
-        DatePickerPopup(self, on_pick=on_pick, initial_value=initial)
+        self._active_calendar = DatePickerDropdown(self, on_pick=on_pick, initial_value=initial)
+
+        self.update_idletasks()
+        x = entry.winfo_rootx() - self.winfo_rootx()
+        y = entry.winfo_rooty() - self.winfo_rooty() + entry.winfo_height() + 6
+        self._active_calendar.place(x=x, y=y)
+        self._active_calendar.lift()
+
+    def _close_date_picker(self):
+        if self._active_calendar is not None:
+            self._active_calendar.destroy()
+            self._active_calendar = None
 
     def _export_report(self):
         if not self.records:
@@ -773,7 +865,37 @@ class App3Window(ctk.CTk):
             else:
                 import pandas as pd
 
-                pd.DataFrame(rows).to_excel(target, index=False)
+                df = pd.DataFrame(rows)
+                with pd.ExcelWriter(target, engine="openpyxl") as writer:
+                    df.to_excel(writer, index=False, sheet_name="Reporte", startrow=4)
+                    wb = writer.book
+                    ws = writer.sheets["Reporte"]
+
+                    title = f"APP 3 · REPORTE CLASIFICACIÓN · {self._lbl_cliente.cget('text')}"
+                    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(1, len(df.columns)))
+                    ws.cell(row=1, column=1, value=title)
+                    ws.cell(row=2, column=1, value=f"Rango: {self.from_var.get() or '—'} a {self.to_var.get() or '—'}")
+                    ws.cell(row=3, column=1, value=f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+                    number_cols = {
+                        "subtotal", "impuesto_total", "total_comprobante",
+                    }
+                    for col_idx, col_name in enumerate(df.columns, start=1):
+                        max_len = len(str(col_name))
+                        for row_idx in range(6, len(df) + 6):
+                            val = ws.cell(row=row_idx, column=col_idx).value
+                            max_len = max(max_len, len(str(val or "")))
+                            if col_name in number_cols and val not in (None, ""):
+                                try:
+                                    ws.cell(row=row_idx, column=col_idx).value = float(
+                                        str(val).replace(" ", "").replace(",", ".")
+                                    )
+                                    ws.cell(row=row_idx, column=col_idx).number_format = "#,##0.00"
+                                except Exception:
+                                    pass
+                        ws.column_dimensions[ws.cell(row=5, column=col_idx).column_letter].width = min(max_len + 2, 48)
+
+                    ws.freeze_panes = "A6"
             messagebox.showinfo("Exportar", f"Reporte guardado en:\n{target}")
             self._set_status("Reporte exportado")
         except Exception as exc:
