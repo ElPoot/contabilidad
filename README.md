@@ -314,3 +314,35 @@ App 3 reemplaza a App 2 cuando cumpla todo esto:
 - No hardcodear rutas — usar siempre `get_setting('network_drive')` de `settings.py`
 - Para SQLite con múltiples hilos: usar `threading.Lock()` como en `StateDB` de `gmail_utils.py`
 - Para PDFs firmados digitalmente: usar `pymupdf`, no `PyPDF2`
+
+---
+
+## Estado implementación App 3 (v1 inicial)
+
+Se agregó una primera versión ejecutable en `app3/` que reutiliza lógica de App 1 y App 2:
+
+- Reusa `CRXMLManager` (App 2) para parsing XML y datos de factura.
+- Reusa `extract_clave_and_cedula` (App 1) para asociar PDFs con clave numérica.
+- Reusa `settings.py` y `client_profiles.py` (App 1) para resolver rutas y sesión cliente.
+- Implementa `clasificacion.sqlite` y movimiento seguro con SHA256 antes de borrar origen.
+- Implementa `catalogo_cuentas.json` con guardado atómico.
+
+### Ejecutar App 3 v1
+
+```bash
+python -m app3.main
+```
+
+### Dependencias (App 3 v1)
+
+Instalar dependencias base:
+
+```bash
+pip install -r requirements.txt
+```
+
+Para desarrollo y pruebas:
+
+```bash
+pip install -r requirements-dev.txt
+```

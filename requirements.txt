@@ -1,0 +1,14 @@
+# Core UI
+customtkinter>=5.2
+
+# XML/report processing reused from APP 2
+pandas>=2.0
+openpyxl>=3.1
+
+# PDF and Hacienda integrations reused from APP 1
+pdfplumber>=0.11
+requests>=2.31
+
+# Security layer reused from APP 1
+cryptography>=42.0
+keyring>=24.0
