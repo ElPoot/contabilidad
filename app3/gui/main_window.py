@@ -233,7 +233,8 @@ class DatePickerDropdown(ctk.CTkToplevel):
     def __init__(self, parent, on_pick, initial_value: str = "", x: int = 120, y: int = 120):
         super().__init__(parent)
         self.overrideredirect(True)
-        self.configure(fg_color="transparent")
+        # CTkToplevel no permite transparencia en fg_color.
+        self.configure(fg_color=CARD)
         self.attributes("-topmost", True)
         self._on_pick = on_pick
         dt = _parse_date_any(initial_value) or datetime.today()
@@ -243,7 +244,6 @@ class DatePickerDropdown(ctk.CTkToplevel):
 
         self._card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER)
         self._card.pack(fill="both", expand=True)
-        self._card.bind("<FocusOut>", lambda _e: self._safe_close())
 
         self.bind("<Escape>", lambda _e: self._safe_close())
         self.bind("<FocusOut>", lambda _e: self._safe_close())
