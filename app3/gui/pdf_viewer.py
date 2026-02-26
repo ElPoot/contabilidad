@@ -203,6 +203,12 @@ class PDFViewer(ctk.CTkFrame):
         self._close_doc()
         self._show_placeholder("Sin documento cargado")
 
+    def release_file_handles(self, message: str = "") -> None:
+        """Cierra el documento actual para liberar locks en Windows."""
+        self._close_doc()
+        if message:
+            self._show_placeholder(message)
+
     # ── NAVEGACIÓN ────────────────────────────────────────────────────────────
     def _prev_page(self):
         if self._doc and self._page_index > 0:

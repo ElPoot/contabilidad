@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import calendar
+import csv
 import threading
 from datetime import datetime
 from queue import Queue
 
 import customtkinter as ctk
-from tkinter import ttk  # solo para Treeview — CTk no tiene tabla nativa
+from tkinter import filedialog, messagebox, ttk  # Treeview + diálogos
 
 from app3.config import metadata_dir
 from app3.core.catalog import CatalogManager
@@ -113,6 +115,103 @@ def _apply_tree_style():
         borderwidth=0, arrowsize=12,
     )
     _TREE_STYLE_DONE = True
+
+
+class DatePickerPopup(ctk.CTkToplevel):
+    def __init__(self, parent, on_pick, initial_value: str = ""):
+        super().__init__(parent)
+        self.title("Seleccionar fecha")
+        self.configure(fg_color=CARD)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self._on_pick = on_pick
+
+        dt = self._parse_date(initial_value) or datetime.today()
+        self._year = dt.year
+        self._month = dt.month
+
+        self._body = ctk.CTkFrame(self, fg_color=CARD)
+        self._body.pack(padx=8, pady=8, fill="both", expand=True)
+        self._draw()
+
+    @staticmethod
+    def _parse_date(text: str):
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(raw, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _draw(self):
+        for w in self._body.winfo_children():
+            w.destroy()
+
+        top = ctk.CTkFrame(self._body, fg_color="transparent")
+        top.pack(fill="x", padx=4, pady=(2, 8))
+        ctk.CTkButton(top, text="◀", width=32, height=28, fg_color=SURFACE,
+                      hover_color=BORDER, command=self._prev_month).pack(side="left")
+        ctk.CTkLabel(top, text=f"{calendar.month_name[self._month]} {self._year}",
+                      text_color=TEXT, font=F_LABEL()).pack(side="left", expand=True)
+        ctk.CTkButton(top, text="▶", width=32, height=28, fg_color=SURFACE,
+                      hover_color=BORDER, command=self._next_month).pack(side="right")
+
+        grid = ctk.CTkFrame(self._body, fg_color="transparent")
+        grid.pack(padx=4, pady=(0, 8))
+        for i, name in enumerate(["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]):
+            ctk.CTkLabel(grid, text=name, text_color=MUTED, font=F_SMALL()).grid(row=0, column=i, padx=3, pady=2)
+
+        for r, week in enumerate(calendar.monthcalendar(self._year, self._month), start=1):
+            for c, day in enumerate(week):
+                if day == 0:
+                    ctk.CTkLabel(grid, text=" ", width=30).grid(row=r, column=c, padx=2, pady=2)
+                    continue
+                ctk.CTkButton(
+                    grid,
+                    text=str(day),
+                    width=30,
+                    height=28,
+                    fg_color=SURFACE,
+                    hover_color=TEAL_DIM,
+                    text_color=TEXT,
+                    command=lambda dd=day: self._pick_day(dd),
+                ).grid(row=r, column=c, padx=2, pady=2)
+
+        bottom = ctk.CTkFrame(self._body, fg_color="transparent")
+        bottom.pack(fill="x", padx=4)
+        ctk.CTkButton(bottom, text="Hoy", width=70, fg_color=SURFACE, hover_color=BORDER,
+                      command=self._pick_today).pack(side="left")
+        ctk.CTkButton(bottom, text="Limpiar", width=80, fg_color=SURFACE, hover_color=BORDER,
+                      command=lambda: self._emit("")).pack(side="right")
+
+    def _prev_month(self):
+        self._month -= 1
+        if self._month == 0:
+            self._month = 12
+            self._year -= 1
+        self._draw()
+
+    def _next_month(self):
+        self._month += 1
+        if self._month == 13:
+            self._month = 1
+            self._year += 1
+        self._draw()
+
+    def _pick_day(self, day: int):
+        self._emit(f"{day:02d}/{self._month:02d}/{self._year:04d}")
+
+    def _pick_today(self):
+        now = datetime.today()
+        self._emit(f"{now.day:02d}/{now.month:02d}/{now.year:04d}")
+
+    def _emit(self, value: str):
+        self._on_pick(value)
+        self.destroy()
 
 
 class App3Window(ctk.CTk):
@@ -263,23 +362,50 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(date_frame, text="Desde:", font=F_SMALL(),
                       text_color=MUTED).pack(side="left", padx=(0,4))
         self.from_var = ctk.StringVar()
-        ctk.CTkEntry(date_frame, textvariable=self.from_var, width=104,
-                      placeholder_text="DD/MM/AAAA",
-                      fg_color=CARD, border_color=BORDER, text_color=TEXT,
-                      font=F_SMALL(), height=32, corner_radius=8).pack(side="left")
+        self._from_entry = ctk.CTkEntry(
+            date_frame,
+            textvariable=self.from_var,
+            width=100,
+            placeholder_text="DD/MM/AAAA",
+            fg_color=CARD,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=F_SMALL(),
+            height=32,
+            corner_radius=8,
+        )
+        self._from_entry.pack(side="left")
+        ctk.CTkButton(date_frame, text="📅", width=30, height=32,
+                      fg_color=SURFACE, hover_color=BORDER, command=lambda: self._open_date_picker("from")).pack(side="left", padx=(4, 8))
 
         ctk.CTkLabel(date_frame, text="Hasta:", font=F_SMALL(),
                       text_color=MUTED).pack(side="left", padx=(10,4))
         self.to_var = ctk.StringVar()
-        ctk.CTkEntry(date_frame, textvariable=self.to_var, width=104,
-                      placeholder_text="DD/MM/AAAA",
-                      fg_color=CARD, border_color=BORDER, text_color=TEXT,
-                      font=F_SMALL(), height=32, corner_radius=8).pack(side="left")
+        self._to_entry = ctk.CTkEntry(
+            date_frame,
+            textvariable=self.to_var,
+            width=100,
+            placeholder_text="DD/MM/AAAA",
+            fg_color=CARD,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=F_SMALL(),
+            height=32,
+            corner_radius=8,
+        )
+        self._to_entry.pack(side="left")
+        ctk.CTkButton(date_frame, text="📅", width=30, height=32,
+                      fg_color=SURFACE, hover_color=BORDER, command=lambda: self._open_date_picker("to")).pack(side="left", padx=(4, 8))
 
         ctk.CTkButton(date_frame, text="Filtrar", width=70, height=32,
                        fg_color=TEAL, hover_color=TEAL_DIM, text_color="#0d1a18",
                        font=F_SMALL(), corner_radius=8,
                        command=self._on_filter).pack(side="left", padx=(8,0))
+
+        ctk.CTkButton(date_frame, text="Exportar", width=84, height=32,
+                       fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
+                       font=F_SMALL(), corner_radius=8,
+                       command=self._export_report).pack(side="left", padx=(8, 0))
 
         # Botón cambiar cliente
         ctk.CTkButton(hdr, text="⇄  Cambiar cliente", width=150, height=32,
@@ -588,6 +714,71 @@ class App3Window(ctk.CTk):
         self._update_progress()
         self._set_status("Filtro aplicado")
 
+    def _open_date_picker(self, target: str):
+        initial = self.from_var.get() if target == "from" else self.to_var.get()
+
+        def on_pick(value: str):
+            if target == "from":
+                self.from_var.set(value)
+            else:
+                self.to_var.set(value)
+
+        DatePickerPopup(self, on_pick=on_pick, initial_value=initial)
+
+    def _export_report(self):
+        if not self.records:
+            messagebox.showinfo("Exportar", "No hay registros para exportar.")
+            return
+
+        default_name = f"App3_reporte_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        target = filedialog.asksaveasfilename(
+            title="Exportar reporte",
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("Excel", "*.xlsx"), ("CSV", "*.csv")],
+            confirmoverwrite=True,
+        )
+        if not target:
+            return
+
+        rows: list[dict[str, str]] = []
+        for r in self.records:
+            estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
+            rows.append(
+                {
+                    "clave": r.clave,
+                    "estado": estado,
+                    "fecha_emision": r.fecha_emision,
+                    "tipo_documento": r.tipo_documento,
+                    "emisor": r.emisor_nombre,
+                    "cedula_emisor": r.emisor_cedula,
+                    "receptor": r.receptor_nombre,
+                    "cedula_receptor": r.receptor_cedula,
+                    "moneda": r.moneda,
+                    "subtotal": r.subtotal,
+                    "impuesto_total": r.impuesto_total,
+                    "total_comprobante": r.total_comprobante,
+                    "estado_hacienda": r.estado_hacienda,
+                    "xml_path": str(r.xml_path or ""),
+                    "pdf_path": str(r.pdf_path or ""),
+                }
+            )
+
+        try:
+            if target.lower().endswith(".csv"):
+                with open(target, "w", newline="", encoding="utf-8-sig") as fh:
+                    writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(rows)
+            else:
+                import pandas as pd
+
+                pd.DataFrame(rows).to_excel(target, index=False)
+            messagebox.showinfo("Exportar", f"Reporte guardado en:\n{target}")
+            self._set_status("Reporte exportado")
+        except Exception as exc:
+            self._show_error("Error al exportar", str(exc))
+
     # ── CLASIFICACIÓN ─────────────────────────────────────────────────────────
     def _classify_selected(self):
         if not self.session or not self.selected or not self.db:
@@ -607,6 +798,9 @@ class App3Window(ctk.CTk):
                 return
 
         self._btn_classify.configure(state="disabled", text="Clasificando...")
+
+        # Liberar lock del PDF mostrado antes de mover/eliminar en Windows.
+        self.pdf_viewer.release_file_handles("Procesando clasificación...")
 
         record  = self.selected
         session = self.session
