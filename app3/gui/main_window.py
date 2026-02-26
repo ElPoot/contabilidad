@@ -332,6 +332,46 @@ def _format_amount_es(number: Decimal) -> str:
     return f"{sign}{text}"
 
 
+def _month_name_es(dt: datetime) -> str:
+    months = {
+        1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL", 5: "MAYO", 6: "JUNIO",
+        7: "JULIO", 8: "AGOSTO", 9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
+    }
+    return months.get(dt.month, "MES")
+
+
+def _default_export_filename(client_name: str, from_date: str, to_date: str) -> str:
+    base_dt = _parse_date_any(from_date) or _parse_date_any(to_date) or datetime.now()
+    year = base_dt.strftime("%Y")
+    month_txt = _month_name_es(base_dt)
+    client_clean = (str(client_name or "REPORTE")
+                    .replace("/", " ")
+                    .replace("\\", " ")
+                    .strip())
+    if len(client_clean) > 42:
+        client_clean = client_clean[:42].strip()
+    return f"PF-{year} - {client_clean} - REPORTE - {month_txt}.xlsx"
+
+
+def _safe_excel_sheet_name(raw_name: str, used_names: set[str]) -> str:
+    """Sanitiza y hace único un nombre de hoja de Excel (máx. 31 chars)."""
+    invalid_chars = {"\\", "/", "*", "?", ":", "[", "]"}
+    cleaned = "".join("_" if ch in invalid_chars else ch for ch in str(raw_name or "").strip())
+    cleaned = cleaned.strip("'")
+    base = (cleaned or "SIN CLASIFICAR")[:31]
+
+    candidate = base
+    suffix = 1
+    while candidate in used_names:
+        suffix_txt = f" ({suffix})"
+        allowed = 31 - len(suffix_txt)
+        candidate = f"{base[:allowed]}{suffix_txt}"
+        suffix += 1
+
+    used_names.add(candidate)
+    return candidate
+
+
 class App3Window(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -866,7 +906,11 @@ class App3Window(ctk.CTk):
             messagebox.showinfo("Exportar", "No hay registros para exportar.")
             return
 
-        default_name = f"App3_reporte_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        default_name = _default_export_filename(
+            self._lbl_cliente.cget("text"),
+            self.from_var.get(),
+            self.to_var.get(),
+        )
         target = filedialog.asksaveasfilename(
             title="Exportar reporte",
             defaultextension=".xlsx",
@@ -879,7 +923,8 @@ class App3Window(ctk.CTk):
 
         rows: list[dict[str, str]] = []
         for r in self.records:
-            estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
+            meta = self._db_records.get(r.clave, {}) if self.db else {}
+            estado = meta.get("estado") or r.estado
             rows.append(
                 {
                     "clave_numerica": r.clave,
@@ -895,6 +940,9 @@ class App3Window(ctk.CTk):
                     "impuesto_total": r.impuesto_total,
                     "total_comprobante": r.total_comprobante,
                     "estado_hacienda": r.estado_hacienda,
+                    "categoria": str(meta.get("categoria") or ""),
+                    "subcategoria": str(meta.get("subcategoria") or ""),
+                    "proveedor": str(meta.get("proveedor") or r.emisor_nombre or ""),
                     "consecutivo": r.consecutivo,
                     "xml_path": str(r.xml_path or ""),
                     "pdf_path": str(r.pdf_path or ""),
@@ -927,6 +975,9 @@ class App3Window(ctk.CTk):
                     "total_comprobante": "Total comprobante",
                     "estado_hacienda": "Estado Hacienda",
                     "estado": "Estado App 3",
+                    "categoria": "Categoría",
+                    "subcategoria": "Subcategoría",
+                    "proveedor": "Proveedor",
                     "xml_path": "Ruta XML",
                     "pdf_path": "Ruta PDF",
                 }
@@ -965,91 +1016,111 @@ class App3Window(ctk.CTk):
                 summary_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
                 header_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
 
+                # Separar por categoria para acercar la experiencia de App 2 (hojas por grupo).
+                sheet_map: dict[str, pd.DataFrame] = {}
+                used_sheet_names: set[str] = set()
+                if "categoria" in df.columns:
+                    for category, chunk in df.groupby(df["categoria"].fillna("")):
+                        name = str(category).strip().upper() or "SIN CLASIFICAR"
+                        safe_name = _safe_excel_sheet_name(name, used_sheet_names)
+                        sheet_map[safe_name] = chunk.copy()
+                if not sheet_map:
+                    fallback_name = _safe_excel_sheet_name("REPORTE", used_sheet_names)
+                    sheet_map = {fallback_name: df.copy()}
+
                 with pd.ExcelWriter(target, engine="openpyxl") as writer:
-                    display_df = df.rename(columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in df.columns})
-                    display_df.to_excel(writer, index=False, sheet_name="Reporte", startrow=4)
-                    ws = writer.sheets["Reporte"]
+                    for sheet_name, sheet_df in sheet_map.items():
+                        display_df = sheet_df.rename(
+                            columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in sheet_df.columns}
+                        )
+                        display_df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=4)
+                        ws = writer.sheets[sheet_name]
 
-                    max_col = ws.max_column if ws.max_column > 0 else 1
-                    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
-                    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
-                    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
-                    title_cell = ws.cell(row=1, column=1)
-                    title_cell.value = str(owner_name).upper()
-                    title_cell.font = title_font
-                    title_cell.alignment = Alignment(horizontal="center", vertical="center")
-                    title_cell.fill = title_fill
+                        max_col = ws.max_column if ws.max_column > 0 else 1
+                        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+                        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+                        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
+                        title_cell = ws.cell(row=1, column=1)
+                        title_cell.value = str(owner_name).upper()
+                        title_cell.font = title_font
+                        title_cell.alignment = Alignment(horizontal="center", vertical="center")
+                        title_cell.fill = title_fill
 
-                    subtitle_cell = ws.cell(row=2, column=1)
-                    subtitle_cell.value = f"REPORTE DE CLASIFICACIÓN - Período: {date_from_label} al {date_to_label}"
-                    subtitle_cell.font = subtitle_font
-                    subtitle_cell.alignment = Alignment(horizontal="center", vertical="center")
-                    subtitle_cell.fill = subtitle_fill
+                        subtitle_cell = ws.cell(row=2, column=1)
+                        subtitle_cell.value = f"REPORTE DE {sheet_name} - Período: {date_from_label} al {date_to_label}"
+                        subtitle_cell.font = subtitle_font
+                        subtitle_cell.alignment = Alignment(horizontal="center", vertical="center")
+                        subtitle_cell.fill = subtitle_fill
 
-                    monto_total = Decimal("0")
-                    valid_amounts: list[Decimal] = []
-                    if "total_comprobante" in df.columns:
-                        for value in df["total_comprobante"].dropna().tolist():
-                            try:
-                                valid_amounts.append(Decimal(str(value)))
-                            except Exception:
-                                continue
-                    if valid_amounts:
-                        monto_total = sum(valid_amounts, Decimal("0"))
-                    monedas = sorted({str(m).strip() for m in df["moneda"].dropna().tolist() if str(m).strip()}) if "moneda" in df.columns else []
-                    if not monedas:
-                        moneda_value = "N/A"
-                    elif len(monedas) == 1:
-                        moneda_value = monedas[0]
-                    else:
-                        moneda_value = "MIXTA: " + ", ".join(monedas)
-                    generated = datetime.now().strftime("%d/%m/%Y %H:%M")
+                        monto_total = Decimal("0")
+                        valid_amounts: list[Decimal] = []
+                        if "total_comprobante" in sheet_df.columns:
+                            for value in sheet_df["total_comprobante"].dropna().tolist():
+                                try:
+                                    valid_amounts.append(Decimal(str(value)))
+                                except Exception:
+                                    continue
+                        if valid_amounts:
+                            monto_total = sum(valid_amounts, Decimal("0"))
 
-                    summary_cell = ws.cell(row=3, column=1)
-                    summary_cell.value = (
-                        f"Total filas: {len(df)}   |   Monto Total: {_format_amount_es(monto_total)}   |   "
-                        f"Moneda: {moneda_value}   |   Generado: {generated}"
-                    )
-                    summary_cell.font = summary_font
-                    summary_cell.alignment = Alignment(horizontal="center", vertical="center")
-                    summary_cell.fill = summary_fill
+                        monedas = (
+                            sorted({str(m).strip() for m in sheet_df["moneda"].dropna().tolist() if str(m).strip()})
+                            if "moneda" in sheet_df.columns
+                            else []
+                        )
+                        if not monedas:
+                            moneda_value = "N/A"
+                        elif len(monedas) == 1:
+                            moneda_value = monedas[0]
+                        else:
+                            moneda_value = "MIXTA: " + ", ".join(monedas)
+                        generated = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-                    header_row = 5
-                    for col_idx in range(1, ws.max_column + 1):
-                        cell = ws.cell(row=header_row, column=col_idx)
-                        cell.font = header_font
-                        cell.fill = header_fill
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                        summary_cell = ws.cell(row=3, column=1)
+                        summary_cell.value = (
+                            f"Total filas: {len(sheet_df)}   |   Monto Total: {_format_amount_es(monto_total)}   |   "
+                            f"Moneda: {moneda_value}   |   Generado: {generated}"
+                        )
+                        summary_cell.font = summary_font
+                        summary_cell.alignment = Alignment(horizontal="center", vertical="center")
+                        summary_cell.fill = summary_fill
 
-                    tipo_idx = list(df.columns).index("tipo_documento") + 1 if "tipo_documento" in df.columns else None
+                        header_row = 5
+                        for col_idx in range(1, ws.max_column + 1):
+                            cell = ws.cell(row=header_row, column=col_idx)
+                            cell.font = header_font
+                            cell.fill = header_fill
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                    for col_idx, col_name in enumerate(df.columns, start=1):
-                        for row_idx in range(header_row + 1, len(df) + header_row + 1):
-                            cell = ws.cell(row=row_idx, column=col_idx)
-                            if col_name in text_columns:
-                                cell.number_format = "@"
-                                cell.value = "" if cell.value is None else str(cell.value)
-                            elif col_name == date_column and cell.value is not None:
-                                cell.number_format = "dd/mm/yyyy"
-                            elif col_name in numeric_columns and cell.value is not None:
-                                cell.number_format = "#,##0.00"
+                        tipo_idx = list(sheet_df.columns).index("tipo_documento") + 1 if "tipo_documento" in sheet_df.columns else None
 
-                    if tipo_idx is not None:
-                        for row_idx in range(header_row + 1, len(df) + header_row + 1):
-                            if ws.cell(row=row_idx, column=tipo_idx).value == "Nota de Crédito":
-                                for col in range(1, ws.max_column + 1):
-                                    ws.cell(row=row_idx, column=col).fill = credit_fill
+                        for col_idx, col_name in enumerate(sheet_df.columns, start=1):
+                            for row_idx in range(header_row + 1, len(sheet_df) + header_row + 1):
+                                cell = ws.cell(row=row_idx, column=col_idx)
+                                if col_name in text_columns:
+                                    cell.number_format = "@"
+                                    cell.value = "" if cell.value is None else str(cell.value)
+                                elif col_name == date_column and cell.value is not None:
+                                    cell.number_format = "dd/mm/yyyy"
+                                elif col_name in numeric_columns and cell.value is not None:
+                                    cell.number_format = "#,##0.00"
 
-                    for col_idx in range(1, ws.max_column + 1):
-                        max_len = 0
-                        for row_idx in range(header_row, ws.max_row + 1):
-                            value = ws.cell(row=row_idx, column=col_idx).value
-                            if value is None:
-                                continue
-                            max_len = max(max_len, len(str(value)))
-                        ws.column_dimensions[ws.cell(row=header_row, column=col_idx).column_letter].width = min(max(max_len + 3, 12), 65)
+                        if tipo_idx is not None:
+                            for row_idx in range(header_row + 1, len(sheet_df) + header_row + 1):
+                                if ws.cell(row=row_idx, column=tipo_idx).value == "Nota de Crédito":
+                                    for col in range(1, ws.max_column + 1):
+                                        ws.cell(row=row_idx, column=col).fill = credit_fill
 
-                    ws.freeze_panes = ws["A6"]
+                        for col_idx in range(1, ws.max_column + 1):
+                            max_len = 0
+                            for row_idx in range(header_row, ws.max_row + 1):
+                                value = ws.cell(row=row_idx, column=col_idx).value
+                                if value is None:
+                                    continue
+                                max_len = max(max_len, len(str(value)))
+                            ws.column_dimensions[ws.cell(row=header_row, column=col_idx).column_letter].width = min(max(max_len + 3, 12), 65)
+
+                        ws.freeze_panes = ws["A6"]
             messagebox.showinfo("Exportar", f"Reporte guardado en:\n{target}")
             self._set_status("Reporte exportado")
         except Exception as exc:
