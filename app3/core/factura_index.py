@@ -55,7 +55,11 @@ class FacturaIndexer:
         self.audit_report: dict = {}
 
     def load_period(
-        self, client_folder: Path, from_date: str = "", to_date: str = ""
+        self,
+        client_folder: Path,
+        from_date: str = "",
+        to_date: str = "",
+        include_pdf_scan: bool = True,
     ) -> list[FacturaRecord]:
         self.parse_errors = []
         self.audit_report = {}
@@ -121,36 +125,54 @@ class FacturaIndexer:
             except Exception as exc:
                 self.parse_errors.append(f"Error cargando carpeta XML: {exc}")
 
-        # --- PASO 2: vincular PDFs usando logica de App 1 ---
+        # --- PASO 2: vincular PDFs usando logica de App 1 (opcional) ---
+        if include_pdf_scan:
+            self._scan_and_link_pdfs(pdf_root, records)
+
+        self._recompute_states(records)
+        return sorted(records.values(), key=lambda r: (r.fecha_emision, r.clave))
+
+    def link_pdfs_for_records(self, client_folder: Path, records: list[FacturaRecord]) -> list[FacturaRecord]:
+        """Enriquece una lista ya cargada con vínculos PDF sin reprocesar XML."""
+        record_map = {r.clave: r for r in records if r.clave}
+        self._scan_and_link_pdfs(client_folder / "PDF", record_map)
+        self._recompute_states(record_map)
+        return sorted(record_map.values(), key=lambda r: (r.fecha_emision, r.clave))
+
+    def _scan_and_link_pdfs(self, pdf_root: Path, records: dict[str, FacturaRecord]) -> None:
         # extract_clave_and_cedula prioriza el nombre del archivo,
         # solo lee el contenido si no hay clave en el nombre
-        if pdf_root.exists():
-            for pdf_file in pdf_root.rglob("*.pdf"):
-                clave = _extract_clave_from_filename(pdf_file.name)
+        if not pdf_root.exists():
+            return
 
-                # Fallback costoso solo si el nombre no trae clave.
-                if not clave:
-                    try:
-                        clave, _ced = extract_clave_and_cedula(
-                            pdf_file.read_bytes(),
-                            original_filename=pdf_file.name,
-                        )
-                    except Exception:
-                        clave = None
+        for pdf_file in pdf_root.rglob("*.pdf"):
+            clave = _extract_clave_from_filename(pdf_file.name)
 
-                if not clave:
-                    continue
-
-                if clave in records:
-                    records[clave].pdf_path = pdf_file
-                else:
-                    records[clave] = FacturaRecord(
-                        clave=clave,
-                        pdf_path=pdf_file,
-                        estado="sin_xml",
+            # Fallback costoso solo si el nombre no trae clave.
+            if not clave:
+                try:
+                    clave, _ced = extract_clave_and_cedula(
+                        pdf_file.read_bytes(),
+                        original_filename=pdf_file.name,
                     )
+                except Exception:
+                    clave = None
 
-        # --- PASO 3: estado final de cada registro ---
+            if not clave:
+                continue
+
+            if clave in records:
+                records[clave].pdf_path = pdf_file
+            else:
+                records[clave] = FacturaRecord(
+                    clave=clave,
+                    pdf_path=pdf_file,
+                    estado="sin_xml",
+                )
+
+    @staticmethod
+    def _recompute_states(records: dict[str, FacturaRecord]) -> None:
+        # Estado final de cada registro
         for record in records.values():
             if record.pdf_path and record.xml_path:
                 record.estado = "pendiente"
@@ -158,8 +180,6 @@ class FacturaIndexer:
                 record.estado = "pendiente_pdf"
             elif record.pdf_path and not record.xml_path:
                 record.estado = "sin_xml"
-
-        return sorted(records.values(), key=lambda r: (r.fecha_emision, r.clave))
 
     @staticmethod
     def _parse_ui_date(value: str):

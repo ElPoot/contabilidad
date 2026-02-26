@@ -395,6 +395,7 @@ class App3Window(ctk.CTk):
         self.selected: FacturaRecord | None = None
         self._load_queue: Queue = Queue()
         self._active_calendar: DatePickerDropdown | None = None
+        self._load_generation: int = 0
 
         _apply_tree_style()
         self._build()
@@ -413,7 +414,9 @@ class App3Window(ctk.CTk):
         self._load_session(session)
 
     def _load_session(self, session: ClientSession):
-        self._set_status("Cargando facturas...")
+        self._load_generation += 1
+        generation = self._load_generation
+        self._set_status("Cargando facturas (rápido)...")
         self._load_queue = Queue()
 
         def worker():
@@ -426,10 +429,11 @@ class App3Window(ctk.CTk):
                     session.folder,
                     from_date="",
                     to_date="",
+                    include_pdf_scan=False,
                 )
-                self._load_queue.put(("ok", (session, catalog, db, records, indexer.parse_errors)))
+                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors)))
             except Exception as exc:
-                self._load_queue.put(("error", str(exc)))
+                self._load_queue.put(("error", (generation, str(exc))))
 
         threading.Thread(target=worker, daemon=True).start()
         self.after(150, self._poll_load)
@@ -442,11 +446,16 @@ class App3Window(ctk.CTk):
         status, payload = self._load_queue.get()
 
         if status == "error":
+            generation, message = payload
+            if generation != self._load_generation:
+                return
             self._set_status("Error al cargar")
-            self._show_error("Error al cargar cliente", payload)
+            self._show_error("Error al cargar cliente", message)
             return
 
-        session, catalog, db, records, parse_errors = payload
+        generation, session, catalog, db, records, parse_errors = payload
+        if generation != self._load_generation:
+            return
         self.session = session
         self.catalog = catalog
         self.db = db
@@ -469,7 +478,9 @@ class App3Window(ctk.CTk):
         self.pdf_viewer.clear()
         self._refresh_tree()
         self._update_progress()
-        self._set_status("Listo")
+        self._set_status("Listo (escaneando PDFs en segundo plano...)")
+
+        self._start_pdf_enrichment(generation, session, records)
 
         if parse_errors:
             self._show_warning(
@@ -477,6 +488,35 @@ class App3Window(ctk.CTk):
                 f"Facturas cargadas: {len(records)}\n"
                 f"XML con error (omitidos): {len(parse_errors)}\n\n"
                 + "\n".join(parse_errors[:5])
+            )
+
+    def _start_pdf_enrichment(self, generation: int, session: ClientSession, base_records: list[FacturaRecord]):
+        """Completa asociación de PDFs en segundo plano para acelerar carga inicial."""
+
+        def worker():
+            try:
+                indexer = FacturaIndexer()
+                enriched_records = indexer.link_pdfs_for_records(session.folder, list(base_records))
+                self.after(0, lambda: self._apply_pdf_enrichment(generation, enriched_records, indexer.parse_errors))
+            except Exception as exc:
+                self.after(0, lambda e=exc: self._set_status(f"Carga parcial (PDF): {e}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_pdf_enrichment(self, generation: int, enriched_records: list[FacturaRecord], parse_errors: list[str]):
+        if generation != self._load_generation:
+            return
+
+        self.all_records = enriched_records
+        self.records = self._apply_date_filter(self.all_records)
+        self._refresh_tree()
+        self._update_progress()
+        self._set_status("Listo")
+
+        if parse_errors:
+            self._show_warning(
+                "Advertencias en PDFs",
+                f"Se detectaron incidencias en {len(parse_errors)} PDF(s).\n\n" + "\n".join(parse_errors[:5]),
             )
 
     # ── CONSTRUCCIÓN UI ───────────────────────────────────────────────────────
