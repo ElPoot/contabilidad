@@ -496,7 +496,11 @@ class App3Window(ctk.CTk):
         def worker():
             try:
                 indexer = FacturaIndexer()
-                enriched_records = indexer.link_pdfs_for_records(session.folder, list(base_records))
+                enriched_records = indexer.link_pdfs_for_records(
+                    session.folder,
+                    list(base_records),
+                    allow_pdf_content_fallback=False,
+                )
                 self.after(0, lambda: self._apply_pdf_enrichment(generation, enriched_records, indexer.parse_errors))
             except Exception as exc:
                 self.after(0, lambda e=exc: self._set_status(f"Carga parcial (PDF): {e}"))

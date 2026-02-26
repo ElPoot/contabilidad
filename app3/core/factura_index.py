@@ -60,6 +60,7 @@ class FacturaIndexer:
         from_date: str = "",
         to_date: str = "",
         include_pdf_scan: bool = True,
+        allow_pdf_content_fallback: bool = True,
     ) -> list[FacturaRecord]:
         self.parse_errors = []
         self.audit_report = {}
@@ -127,19 +128,33 @@ class FacturaIndexer:
 
         # --- PASO 2: vincular PDFs usando logica de App 1 (opcional) ---
         if include_pdf_scan:
-            self._scan_and_link_pdfs(pdf_root, records)
+            self._scan_and_link_pdfs(pdf_root, records, allow_pdf_content_fallback=allow_pdf_content_fallback)
 
         self._recompute_states(records)
         return sorted(records.values(), key=lambda r: (r.fecha_emision, r.clave))
 
-    def link_pdfs_for_records(self, client_folder: Path, records: list[FacturaRecord]) -> list[FacturaRecord]:
+    def link_pdfs_for_records(
+        self,
+        client_folder: Path,
+        records: list[FacturaRecord],
+        allow_pdf_content_fallback: bool = True,
+    ) -> list[FacturaRecord]:
         """Enriquece una lista ya cargada con vínculos PDF sin reprocesar XML."""
         record_map = {r.clave: r for r in records if r.clave}
-        self._scan_and_link_pdfs(client_folder / "PDF", record_map)
+        self._scan_and_link_pdfs(
+            client_folder / "PDF",
+            record_map,
+            allow_pdf_content_fallback=allow_pdf_content_fallback,
+        )
         self._recompute_states(record_map)
         return sorted(record_map.values(), key=lambda r: (r.fecha_emision, r.clave))
 
-    def _scan_and_link_pdfs(self, pdf_root: Path, records: dict[str, FacturaRecord]) -> None:
+    def _scan_and_link_pdfs(
+        self,
+        pdf_root: Path,
+        records: dict[str, FacturaRecord],
+        allow_pdf_content_fallback: bool = True,
+    ) -> None:
         # extract_clave_and_cedula prioriza el nombre del archivo,
         # solo lee el contenido si no hay clave en el nombre
         if not pdf_root.exists():
@@ -148,8 +163,8 @@ class FacturaIndexer:
         for pdf_file in pdf_root.rglob("*.pdf"):
             clave = _extract_clave_from_filename(pdf_file.name)
 
-            # Fallback costoso solo si el nombre no trae clave.
-            if not clave:
+            # Fallback costoso solo si el nombre no trae clave y está habilitado.
+            if not clave and allow_pdf_content_fallback:
                 try:
                     clave, _ced = extract_clave_and_cedula(
                         pdf_file.read_bytes(),
