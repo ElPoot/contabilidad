@@ -125,6 +125,9 @@ class App3Window(ctk.CTk):
         self.geometry("1440x860")
         self.minsize(1100, 680)
         self.configure(fg_color=BG)
+        self.grid_rowconfigure(0, weight=0, minsize=64)
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
         self.session: ClientSession | None = None
         self.db: ClassificationDB | None = None
@@ -220,32 +223,27 @@ class App3Window(ctk.CTk):
 
     # ── CONSTRUCCIÓN UI ───────────────────────────────────────────────────────
     def _build(self):
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_columnconfigure(0, weight=1)
         self._build_header()
         self._build_body()
 
     def _build_header(self):
-        hdr = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=58)
+        hdr = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=64)
         hdr.grid(row=0, column=0, sticky="ew")
         hdr.grid_propagate(False)
-        hdr.grid_columnconfigure(3, weight=1)
+        hdr.grid_columnconfigure(1, weight=1)
+        hdr.grid_columnconfigure(2, weight=1)
 
         # Logo
         ctk.CTkLabel(hdr, text="📊", fg_color="#1a3a36", corner_radius=8,
                       width=32, height=32,
-                      font=ctk.CTkFont(size=16)).grid(row=0, column=0, padx=(16,8), pady=13)
+                      font=ctk.CTkFont(size=16)).grid(row=0, column=0, padx=(16,8), pady=14)
         ctk.CTkLabel(hdr, text="Clasificador  Contable",
                       font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
-                      text_color=TEXT).grid(row=0, column=1, sticky="w")
+                      text_color=TEXT).grid(row=0, column=1, sticky="w", padx=(0, 12))
 
-        # Separador
-        ctk.CTkFrame(hdr, fg_color=BORDER, width=1).grid(
-            row=0, column=2, sticky="ns", padx=20, pady=10)
-
-        # Info cliente activo
+        # Info cliente activo (bloque izquierdo)
         client_frame = ctk.CTkFrame(hdr, fg_color="transparent")
-        client_frame.grid(row=0, column=3, sticky="w")
+        client_frame.grid(row=0, column=2, sticky="w")
 
         ctk.CTkLabel(client_frame, text="Cliente:",
                       font=F_SMALL(), text_color=MUTED).pack(side="left", padx=(0,6))
@@ -258,9 +256,9 @@ class App3Window(ctk.CTk):
                                        fg_color=CARD, corner_radius=20)
         self._lbl_year.pack(side="left", padx=(10,0), ipadx=8, ipady=2)
 
-        # Filtros de fecha
+        # Filtros de fecha (bloque central)
         date_frame = ctk.CTkFrame(hdr, fg_color="transparent")
-        date_frame.grid(row=0, column=4, sticky="e", padx=12)
+        date_frame.grid(row=0, column=3, sticky="e", padx=8)
 
         ctk.CTkLabel(date_frame, text="Desde:", font=F_SMALL(),
                       text_color=MUTED).pack(side="left", padx=(0,4))
@@ -289,21 +287,25 @@ class App3Window(ctk.CTk):
                        border_color=BORDER, border_width=1,
                        font=F_SMALL(), corner_radius=8,
                        command=self._open_session_view).grid(
-            row=0, column=5, padx=16, pady=13)
+            row=0, column=4, padx=(10, 8), pady=14)
 
         # Status
         self._status_var = ctk.StringVar(value="")
         ctk.CTkLabel(hdr, textvariable=self._status_var,
                       font=F_SMALL(), text_color=MUTED).grid(
-            row=0, column=6, padx=(0, 16))
+            row=0, column=5, padx=(0, 16))
+
+        ctk.CTkFrame(self, fg_color=BORDER, height=1, corner_radius=0).grid(
+            row=0, column=0, sticky="sew", pady=(63, 0)
+        )
 
     def _build_body(self):
         body = ctk.CTkFrame(self, fg_color="transparent")
-        body.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(8, 8))
         body.grid_rowconfigure(0, weight=1)
-        body.grid_columnconfigure(0, weight=3, minsize=260)  # lista
-        body.grid_columnconfigure(1, weight=7, minsize=400)  # visor PDF — más espacio
-        body.grid_columnconfigure(2, weight=2, minsize=200)  # clasificación — delgada
+        body.grid_columnconfigure(0, weight=33, minsize=360)  # lista
+        body.grid_columnconfigure(1, weight=52, minsize=520)  # visor PDF
+        body.grid_columnconfigure(2, weight=15, minsize=260)  # clasificación
 
         self._build_list_panel(body)
         self._build_pdf_panel(body)
@@ -311,13 +313,13 @@ class App3Window(ctk.CTk):
 
     # ── PANEL IZQUIERDO — LISTA ───────────────────────────────────────────────
     def _build_list_panel(self, parent):
-        frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=0)
-        frame.grid(row=0, column=0, sticky="nsew")
+        frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=10, border_width=1, border_color=BORDER)
+        frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         frame.grid_rowconfigure(1, weight=1)
         frame.grid_columnconfigure(0, weight=1)
 
         # Header del panel
-        top = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=0, height=44)
+        top = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10, height=44)
         top.grid(row=0, column=0, sticky="ew")
         top.grid_propagate(False)
         top.grid_columnconfigure(0, weight=1)
@@ -332,7 +334,7 @@ class App3Window(ctk.CTk):
             row=0, column=1, sticky="e", padx=14)
 
         # Treeview con estilo oscuro
-        tree_frame = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=0)
+        tree_frame = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10)
         tree_frame.grid(row=1, column=0, sticky="nsew")
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
@@ -367,8 +369,8 @@ class App3Window(ctk.CTk):
 
     # ── PANEL CENTRAL — VISOR PDF ─────────────────────────────────────────────
     def _build_pdf_panel(self, parent):
-        frame = ctk.CTkFrame(parent, fg_color=BG, corner_radius=0)
-        frame.grid(row=0, column=1, sticky="nsew")
+        frame = ctk.CTkFrame(parent, fg_color=BG, corner_radius=10, border_width=1, border_color=BORDER)
+        frame.grid(row=0, column=1, sticky="nsew", padx=6)
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
         # NO usar grid_propagate(False) — colapsa el frame a tamaño 0
@@ -380,13 +382,13 @@ class App3Window(ctk.CTk):
 
     # ── PANEL DERECHO — CLASIFICACIÓN ────────────────────────────────────────
     def _build_classify_panel(self, parent):
-        frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=0)
-        frame.grid(row=0, column=2, sticky="nsew")
+        frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=10, border_width=1, border_color=BORDER)
+        frame.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(1, weight=1)
 
         # Header fijo
-        top = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=0, height=40)
+        top = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10, height=44)
         top.grid(row=0, column=0, sticky="ew")
         top.grid_propagate(False)
         ctk.CTkLabel(top, text="Clasificación",
