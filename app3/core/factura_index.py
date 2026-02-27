@@ -51,6 +51,31 @@ def _is_invoice_candidate(filename: str) -> bool:
     return any(k in name for k in keywords)
 
 
+def _extract_consecutivo_from_clave(clave: str) -> str | None:
+    """Extrae consecutivo (20 dígitos) desde clave Hacienda de 50 dígitos.
+
+    Formato clave CR (50):
+    - 0:3   país (506)
+    - 3:9   fecha (ddmmyy)
+    - 9:21  cédula emisor (12)
+    - 21:41 consecutivo (20)
+    - 41:42 situación (1)
+    - 42:50 seguridad (8)
+    """
+    raw = (clave or "").strip()
+    if len(raw) != 50 or not raw.isdigit():
+        return None
+    return raw[21:41]
+
+
+def _extract_emisor_from_clave(clave: str) -> str | None:
+    """Extrae cédula emisor (12 dígitos) desde clave Hacienda de 50 dígitos."""
+    raw = (clave or "").strip()
+    if len(raw) != 50 or not raw.isdigit():
+        return None
+    return raw[9:21]
+
+
 class FacturaIndexer:
     """
     Construye la lista de FacturaRecord para un cliente y periodo usando
@@ -519,22 +544,31 @@ class FacturaIndexer:
     @staticmethod
     def _build_consecutivo_index(records: dict[str, FacturaRecord]) -> dict[str, str]:
         """
-        Construye índice de consecutivo único -> clave.
+        Construye índice robusto token -> clave basado en estructura Hacienda.
 
-        Usa `record.consecutivo` cuando existe y además secuencias numéricas largas dentro de `clave`.
-        Si un consecutivo aparece en más de una clave, se descarta para evitar falsos positivos.
+        Prioriza:
+        - Consecutivo oficial (posiciones 21:41 de la clave de 50).
+        - Consecutivo del XML (`record.consecutivo`) normalizado a dígitos.
+        - Combinación emisor+consecutivo para desambiguación.
+
+        Solo conserva tokens con mapeo único para evitar falsos positivos.
         """
         candidates: dict[str, set[str]] = {}
         for clave, record in records.items():
-            bucket = candidates.setdefault(clave[-20:], set())
-            bucket.add(clave)
+            consecutivo_oficial = _extract_consecutivo_from_clave(clave)
+            emisor_oficial = _extract_emisor_from_clave(clave)
+            if consecutivo_oficial:
+                candidates.setdefault(consecutivo_oficial, set()).add(clave)
+                # sufijos útiles para nombres truncados (mínimo 10)
+                for size in (19, 18, 17, 16, 15, 14, 13, 12, 11, 10):
+                    candidates.setdefault(consecutivo_oficial[-size:], set()).add(clave)
 
-            cons = re.sub(r"\D", "", record.consecutivo or "")
-            if len(cons) >= 10:
-                candidates.setdefault(cons, set()).add(clave)
+            cons_xml = re.sub(r"\D", "", record.consecutivo or "")
+            if len(cons_xml) >= 10:
+                candidates.setdefault(cons_xml, set()).add(clave)
 
-            for token in re.findall(r"\d{10,20}", clave):
-                candidates.setdefault(token, set()).add(clave)
+            if emisor_oficial and consecutivo_oficial:
+                candidates.setdefault(f"{emisor_oficial}{consecutivo_oficial}", set()).add(clave)
 
         return {token: next(iter(claves)) for token, claves in candidates.items() if len(claves) == 1}
 

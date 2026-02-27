@@ -108,5 +108,19 @@ class FacturaIndexerMultipleClaveSelectionTests(unittest.TestCase):
         self.assertIsNotNone(records[clave_real].pdf_path)
 
 
+class FacturaIndexerClaveStructureTests(unittest.TestCase):
+    def test_consecutivo_index_uses_hacienda_positions(self) -> None:
+        # consecutivo oficial (21:41) = 00100001010000003076
+        clave = "50602022600310187947700100001010000003076100000001"
+        consecutivo_oficial = "00100001010000003076"
+
+        record = FacturaRecord(clave=clave, consecutivo="", xml_path=Path("x.xml"))
+        index = FacturaIndexer._build_consecutivo_index({clave: record})
+
+        self.assertIn(consecutivo_oficial, index)
+        self.assertEqual(index[consecutivo_oficial], clave)
+
+
+
 if __name__ == "__main__":
     unittest.main()
