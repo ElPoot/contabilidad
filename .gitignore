@@ -205,3 +205,21 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ── Proyecto: datos de runtime generados automáticamente ─────────────────────
+
+# Claude Code — memoria local del proyecto
+.claude/
+
+# App 2 — cache de nombres/cédulas (se regenera consultando la API de Hacienda)
+APP 2/data/hacienda_cache.db
+
+# App 2 — logs de auditoría generados en cada ejecución
+APP 2/data/audit_logs/
+
+# App 3 / App 1 — bases de datos de estado y clasificación por cliente
+# (viven en Z:/DATA/…/.metadata/, pero por si se crean localmente)
+.metadata/
+*.sqlite
+clasificacion.sqlite
+state.sqlite
