@@ -42,6 +42,15 @@ def _extract_numeric_tokens(filename: str, min_len: int = 10) -> list[str]:
     return [token for token in re.findall(r"\d+", filename or "") if len(token) >= min_len]
 
 
+def _is_invoice_candidate(filename: str) -> bool:
+    """Heurística para distinguir comprobantes de PDFs administrativos."""
+    name = (filename or "").lower()
+    if re.search(r"\d{10,}", name):
+        return True
+    keywords = ("factura", "fe", "nc", "nd", "credito", "debito", "electr")
+    return any(k in name for k in keywords)
+
+
 class FacturaIndexer:
     """
     Construye la lista de FacturaRecord para un cliente y periodo usando
@@ -246,6 +255,12 @@ class FacturaIndexer:
                     if clave:
                         metodo = "filename_consecutivo"
 
+                if not clave:
+                    text_tokens = result.get("text_tokens") or []
+                    clave = self._resolve_clave_from_tokens(text_tokens, consecutivo_index)
+                    if clave:
+                        metodo = "contenido_consecutivo"
+
                 if clave:
                     linked[clave] = pdf_file
                     if clave in records:
@@ -257,10 +272,15 @@ class FacturaIndexer:
 
                 reason = str(result.get("razon", "extract_failed"))
                 message = str(result.get("error") or "")
+                if reason == "extract_failed" and not _is_invoice_candidate(pdf_file.name):
+                    reason = "non_invoice"
+
                 if reason == "timeout":
                     logger.warning("PDF: %s → timeout (%sms) - omitido", pdf_file.name, elapsed_ms)
                 elif reason == "corrupted":
                     logger.error("PDF: %s → corrupted (%s)", pdf_file.name, message)
+                elif reason == "non_invoice":
+                    logger.debug("PDF: %s → ignorado (no comprobante)", pdf_file.name)
                 else:
                     logger.debug("PDF: %s → omitido (%s)", pdf_file.name, reason)
 
@@ -272,12 +292,14 @@ class FacturaIndexer:
 
         total_time = time.perf_counter() - started
         successful = len(linked)
-        skipped = len(omitidos)
+        ignored = sum(1 for detail in omitidos.values() if detail.get("razon") == "non_invoice")
+        skipped = len(omitidos) - ignored
+        candidate_total = max(total_files - ignored, 1)
         avg_ms = (total_time * 1000.0 / total_files) if total_files else 0.0
-        omit_pct = (skipped / total_files * 100.0) if total_files else 0.0
+        omit_pct = (skipped / candidate_total * 100.0) if candidate_total else 0.0
 
         logger.info("Vinculadas %s/%s (%.1f%%) en %.2fs", successful, total_files, successful * 100.0 / total_files, total_time)
-        logger.info("Omitidos: %s PDFs (%.2f%%)", skipped, omit_pct)
+        logger.info("Omitidos factura: %s/%s (%.2f%%). Ignorados no factura: %s", skipped, candidate_total, omit_pct, ignored)
         if omit_pct > 1.0:
             logger.warning("Margen de error alto: %.2f%% omitidos (> 1%%).", omit_pct)
 
@@ -288,6 +310,8 @@ class FacturaIndexer:
                 "total_procesados": total_files,
                 "exitosos": successful,
                 "omitidos": skipped,
+                "ignorados_no_factura": ignored,
+                "total_candidatos_factura": candidate_total,
                 "tiempo_total_segundos": round(total_time, 4),
                 "velocidad_promedio_ms_por_pdf": round(avg_ms, 2),
                 "porcentaje_omitidos": round(omit_pct, 2),
@@ -395,7 +419,7 @@ class FacturaIndexer:
             logger.debug("PDF: %s → extract_clave_and_cedula falló: %s", pdf_file.name, exc)
 
         attempts = 2
-        clave_retry, retry_error = self._extract_clave_from_pdf_text(pdf_data)
+        clave_retry, retry_error, text_tokens = self._extract_clave_from_pdf_text(pdf_data)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         if elapsed_ms > timeout_seconds * 1000:
             return {
@@ -423,6 +447,7 @@ class FacturaIndexer:
             "intento": attempts,
             "tiempo_ms": elapsed_ms,
             "size_mb": size_mb,
+            "text_tokens": text_tokens,
         }
 
     @staticmethod
@@ -438,14 +463,14 @@ class FacturaIndexer:
         return bytes(chunks)
 
     @staticmethod
-    def _extract_clave_from_pdf_text(pdf_data: bytes) -> tuple[str | None, str]:
-        """Reintento con PyMuPDF para detectar clave 50 dígitos y PDFs corruptos."""
+    def _extract_clave_from_pdf_text(pdf_data: bytes) -> tuple[str | None, str, list[str]]:
+        """Reintento con PyMuPDF para detectar clave 50 dígitos y tokens numéricos útiles."""
         if fitz is None:
-            return None, "extract_failed"
+            return None, "extract_failed", []
         try:
             document = fitz.open(stream=pdf_data, filetype="pdf")
         except Exception as exc:
-            return None, "corrupted" if "cannot open" in str(exc).lower() else "extract_failed"
+            return None, ("corrupted" if "cannot open" in str(exc).lower() else "extract_failed"), []
 
         try:
             text_content = "\n".join(page.get_text("text") for page in document)
@@ -453,12 +478,14 @@ class FacturaIndexer:
             document.close()
 
         if not text_content.strip():
-            return None, "empty"
+            return None, "empty", []
 
         match = re.search(r"(\d{50})", text_content)
         if match:
-            return match.group(1), "ok"
-        return None, "extract_failed"
+            return match.group(1), "ok", []
+
+        tokens = [token for token in re.findall(r"\d{10,20}", text_content)][:20]
+        return None, "extract_failed", tokens
 
     @staticmethod
     def _build_consecutivo_index(records: dict[str, FacturaRecord]) -> dict[str, str]:
@@ -486,14 +513,18 @@ class FacturaIndexer:
     def _resolve_clave_from_filename_tokens(filename: str, consecutivo_index: dict[str, str]) -> str | None:
         """Intenta resolver una clave de 50 dígitos usando tokens numéricos del nombre."""
         tokens = sorted(_extract_numeric_tokens(filename, min_len=10), key=len, reverse=True)
-        for token in tokens:
+        return FacturaIndexer._resolve_clave_from_tokens(tokens, consecutivo_index)
+
+    @staticmethod
+    def _resolve_clave_from_tokens(tokens: list[str], consecutivo_index: dict[str, str]) -> str | None:
+        """Resuelve clave por tokens numéricos priorizando coincidencia exacta y luego sufijo."""
+        for token in sorted((t for t in tokens if len(t) >= 10), key=len, reverse=True):
             exact = consecutivo_index.get(token)
             if exact:
                 return exact
-            # fallback por sufijo para tokens cortos al final del consecutivo
-            for known_token, clave in consecutivo_index.items():
-                if len(token) >= 10 and known_token.endswith(token):
-                    return clave
+            matches = [clave for known_token, clave in consecutivo_index.items() if known_token.endswith(token)]
+            if len(set(matches)) == 1:
+                return matches[0]
         return None
 
     @staticmethod

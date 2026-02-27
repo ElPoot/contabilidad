@@ -26,6 +26,7 @@ class FacturaIndexerPDFScanTests(unittest.TestCase):
             (pdf_root / "CORROMPIDO.pdf").write_bytes(b"NOT_A_REAL_PDF")
             (sender_dir / f"{clave_subfolder}.pdf").write_bytes(b"%PDF-1.4 nested filename-key")
             (pdf_root / f"Factura {consecutivo}.pdf").write_bytes(b"%PDF-1.4 consecutivo in filename")
+            (pdf_root / "brochure_bioclean.pdf").write_bytes(b"%PDF-1.4 brochure")
 
             records = {
                 clave_nombre: FacturaRecord(clave=clave_nombre, xml_path=Path("dummy.xml"), estado="pendiente"),
@@ -40,14 +41,14 @@ class FacturaIndexerPDFScanTests(unittest.TestCase):
             indexer = FacturaIndexer()
 
             def fake_extract_clave_and_cedula(data: bytes, original_filename: str = "") -> tuple[str | None, str | None]:
-                if original_filename in {"factura_sin_clave_en_nombre.pdf", "CORROMPIDO.pdf", f"Factura {consecutivo}.pdf"}:
+                if original_filename in {"factura_sin_clave_en_nombre.pdf", "CORROMPIDO.pdf", f"Factura {consecutivo}.pdf", "brochure_bioclean.pdf"}:
                     return None, None
                 return None, None
 
-            def fake_fallback(pdf_data: bytes) -> tuple[str | None, str]:
+            def fake_fallback(pdf_data: bytes) -> tuple[str | None, str, list[str]]:
                 if b"NOT_A_REAL_PDF" in pdf_data:
-                    return None, "corrupted"
-                return None, "extract_failed"
+                    return None, "corrupted", []
+                return None, "extract_failed", []
 
             with patch("app3.core.factura_index.extract_clave_and_cedula", side_effect=fake_extract_clave_and_cedula):
                 with patch.object(FacturaIndexer, "_extract_clave_from_pdf_text", side_effect=fake_fallback):
@@ -57,9 +58,10 @@ class FacturaIndexerPDFScanTests(unittest.TestCase):
         self.assertIn("omitidos", report)
         self.assertIn("audit", report)
 
-        self.assertEqual(report["audit"]["total_procesados"], 5)
+        self.assertEqual(report["audit"]["total_procesados"], 6)
         self.assertEqual(report["audit"]["exitosos"], 3)
         self.assertEqual(report["audit"]["omitidos"], 2)
+        self.assertEqual(report["audit"]["ignorados_no_factura"], 1)
 
         self.assertIn(clave_nombre, report["linked"])
         self.assertIn(clave_subfolder, report["linked"])
@@ -72,6 +74,7 @@ class FacturaIndexerPDFScanTests(unittest.TestCase):
 
         self.assertEqual(report["omitidos"]["factura_sin_clave_en_nombre.pdf"]["razon"], "extract_failed")
         self.assertEqual(report["omitidos"]["CORROMPIDO.pdf"]["razon"], "corrupted")
+        self.assertEqual(report["omitidos"]["brochure_bioclean.pdf"]["razon"], "non_invoice")
 
 
 if __name__ == "__main__":
