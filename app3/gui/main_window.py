@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox, ttk  # Treeview + diálogos
 
 from app3.config import metadata_dir
 from app3.core.catalog import CatalogManager
-from app3.core.classifier import ClassificationDB, classify_record
+from app3.core.classifier import ClassificationDB, build_dest_folder, classify_record
 from app3.core.factura_index import FacturaIndexer
 from app3.core.models import FacturaRecord
 from app3.core.session import ClientSession
@@ -388,7 +388,7 @@ class App3Window(ctk.CTk):
 
         self.session: ClientSession | None = None
         self.db: ClassificationDB | None = None
-        self.catalog: dict = {}
+        self.catalog_mgr: CatalogManager | None = None
         self.records: list[FacturaRecord] = []
         self.all_records: list[FacturaRecord] = []
         self._db_records: dict[str, dict] = {}
@@ -453,11 +453,11 @@ class App3Window(ctk.CTk):
             self._show_error("Error al cargar cliente", message)
             return
 
-        generation, session, catalog, db, records, parse_errors = payload
+        generation, session, catalog_mgr, db, records, parse_errors = payload
         if generation != self._load_generation:
             return
         self.session = session
-        self.catalog = catalog
+        self.catalog_mgr = catalog_mgr
         self.db = db
         self.all_records = records
         self._db_records = db.get_records_map()
@@ -469,7 +469,7 @@ class App3Window(ctk.CTk):
         self._lbl_year.configure(text=f"PF-{session.year}")
 
         # Actualizar catálogo
-        cats = sorted(catalog.keys())
+        cats = catalog_mgr.categorias()
         self._cat_cb.configure(values=cats)
         if cats:
             self._cat_var.set(cats[0])
@@ -749,42 +749,89 @@ class App3Window(ctk.CTk):
         clf.pack(fill="both", expand=True, padx=1, pady=1)
         clf.grid_columnconfigure(0, weight=1)
 
+        # row 0 — título sección
         ctk.CTkLabel(clf, text="CLASIFICACIÓN CONTABLE",
                       font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
                       text_color=TEAL).grid(row=0, column=0, sticky="w",
                                              padx=12, pady=(12, 6))
 
+        # row 1-2 — Categoría (siempre visible)
         ctk.CTkLabel(clf, text="Categoría", font=F_SMALL(),
                       text_color=MUTED).grid(row=1, column=0, sticky="w", padx=12)
         self._cat_var = ctk.StringVar()
-        self._cat_cb = ctk.CTkComboBox(clf, variable=self._cat_var, values=[],
-                                        state="readonly",
-                                        fg_color=SURFACE, border_color=BORDER,
-                                        button_color=BORDER, button_hover_color=TEAL,
-                                        text_color=TEXT, font=F_LABEL(),
-                                        dropdown_fg_color=CARD, dropdown_text_color=TEXT,
-                                        command=self._on_categoria_change)
+        self._cat_cb = ctk.CTkComboBox(
+            clf, variable=self._cat_var, values=[],
+            state="readonly",
+            fg_color=SURFACE, border_color=BORDER,
+            button_color=BORDER, button_hover_color=TEAL,
+            text_color=TEXT, font=F_LABEL(),
+            dropdown_fg_color=CARD, dropdown_text_color=TEXT,
+            command=self._on_categoria_change,
+        )
         self._cat_cb.grid(row=2, column=0, sticky="ew", padx=12, pady=(2, 8))
 
-        ctk.CTkLabel(clf, text="Subcategoría", font=F_SMALL(),
-                      text_color=MUTED).grid(row=3, column=0, sticky="w", padx=12)
-        self._subcat_var = ctk.StringVar()
-        self._subcat_cb = ctk.CTkComboBox(clf, variable=self._subcat_var, values=[],
-                                           state="readonly",
-                                           fg_color=SURFACE, border_color=BORDER,
-                                           button_color=BORDER, button_hover_color=TEAL,
-                                           text_color=TEXT, font=F_LABEL(),
-                                           dropdown_fg_color=CARD, dropdown_text_color=TEXT)
-        self._subcat_cb.grid(row=4, column=0, sticky="ew", padx=12, pady=(2, 8))
+        # row 3 — Tipo (GASTOS: GENERALES/ESPECIFICOS | OGND: OGND/DNR/ORS/CNR)
+        self._tipo_frame = ctk.CTkFrame(clf, fg_color="transparent")
+        self._tipo_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(self._tipo_frame, text="Tipo", font=F_SMALL(),
+                      text_color=MUTED).grid(row=0, column=0, sticky="w", padx=12)
+        self._tipo_var = ctk.StringVar()
+        self._tipo_cb = ctk.CTkComboBox(
+            self._tipo_frame, variable=self._tipo_var, values=[],
+            state="readonly",
+            fg_color=SURFACE, border_color=BORDER,
+            button_color=BORDER, button_hover_color=TEAL,
+            text_color=TEXT, font=F_LABEL(),
+            dropdown_fg_color=CARD, dropdown_text_color=TEXT,
+            command=self._on_subtipo_change,
+        )
+        self._tipo_cb.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
+        self._tipo_frame.grid(row=3, column=0, sticky="ew")
+        self._tipo_frame.grid_remove()  # oculto hasta que se seleccione GASTOS u OGND
 
-        ctk.CTkLabel(clf, text="Proveedor", font=F_SMALL(),
-                      text_color=MUTED).grid(row=5, column=0, sticky="w", padx=12)
+        # row 4 — Cuenta (solo para GASTOS)
+        self._cuenta_frame = ctk.CTkFrame(clf, fg_color="transparent")
+        self._cuenta_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(self._cuenta_frame, text="Cuenta", font=F_SMALL(),
+                      text_color=MUTED).grid(row=0, column=0, sticky="w", padx=12)
+        self._cuenta_var = ctk.StringVar()
+        self._cuenta_cb = ctk.CTkComboBox(
+            self._cuenta_frame, variable=self._cuenta_var, values=[],
+            state="readonly",
+            fg_color=SURFACE, border_color=BORDER,
+            button_color=BORDER, button_hover_color=TEAL,
+            text_color=TEXT, font=F_LABEL(),
+            dropdown_fg_color=CARD, dropdown_text_color=TEXT,
+            command=lambda _v: self._update_path_preview(),
+        )
+        self._cuenta_cb.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
+        self._cuenta_frame.grid(row=4, column=0, sticky="ew")
+        self._cuenta_frame.grid_remove()
+
+        # row 5 — Proveedor (COMPRAS y GASTOS)
+        self._prov_frame = ctk.CTkFrame(clf, fg_color="transparent")
+        self._prov_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(self._prov_frame, text="Proveedor", font=F_SMALL(),
+                      text_color=MUTED).grid(row=0, column=0, sticky="w", padx=12)
         self._prov_var = ctk.StringVar()
-        ctk.CTkEntry(clf, textvariable=self._prov_var,
-                      fg_color=SURFACE, border_color=BORDER, text_color=TEXT,
-                      font=F_LABEL(), height=34, corner_radius=8).grid(
-            row=6, column=0, sticky="ew", padx=12, pady=(2, 12))
+        self._prov_var.trace_add("write", lambda *_: self.after(0, self._update_path_preview))
+        ctk.CTkEntry(
+            self._prov_frame, textvariable=self._prov_var,
+            fg_color=SURFACE, border_color=BORDER, text_color=TEXT,
+            font=F_LABEL(), height=34, corner_radius=8,
+        ).grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
+        self._prov_frame.grid(row=5, column=0, sticky="ew")
 
+        # row 6 — Preview de ruta destino
+        self._preview_lbl = ctk.CTkLabel(
+            clf, text="",
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=MUTED,
+            wraplength=220, justify="left", anchor="w",
+        )
+        self._preview_lbl.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 4))
+
+        # row 7 — Botón Clasificar
         self._btn_classify = ctk.CTkButton(
             clf, text="✔  Clasificar",
             font=F_BTN(), fg_color=TEAL, hover_color=TEAL_DIM,
@@ -891,21 +938,96 @@ class App3Window(ctk.CTk):
         if self.db:
             prev = self._db_records.get(r.clave)
             if prev and prev.get("estado") == "clasificado":
-                self._prev_var.set(
-                    f"{prev['categoria']} › {prev['subcategoria']}\n"
-                    f"{prev['proveedor']}\n"
-                    f"{prev['fecha_clasificacion']}"
+                crumbs = " › ".join(
+                    p for p in [
+                        prev.get("categoria"),
+                        prev.get("subtipo"),
+                        prev.get("nombre_cuenta"),
+                        prev.get("proveedor"),
+                    ] if p
                 )
+                self._prev_var.set(f"{crumbs}\n{prev.get('fecha_clasificacion', '')}")
             else:
                 self._prev_var.set("—")
 
     # ── CATÁLOGO ──────────────────────────────────────────────────────────────
     def _on_categoria_change(self, _value=None):
         cat = self._cat_var.get()
-        subcats = sorted(self.catalog.get(cat, {}).keys())
-        self._subcat_cb.configure(values=subcats,
-                                   state="readonly" if subcats else "normal")
-        self._subcat_var.set(subcats[0] if subcats else "")
+        mgr = self.catalog_mgr
+
+        if cat == "COMPRAS":
+            self._tipo_frame.grid_remove()
+            self._cuenta_frame.grid_remove()
+            self._prov_frame.grid()
+
+        elif cat == "GASTOS":
+            tipos = mgr.subtipos("GASTOS") if mgr else []
+            self._tipo_cb.configure(values=tipos)
+            self._tipo_var.set(tipos[0] if tipos else "")
+            self._tipo_frame.grid()
+            self._cuenta_frame.grid()
+            self._prov_frame.grid()
+            self._on_subtipo_change()  # actualiza cuentas
+            return  # _on_subtipo_change llama a _update_path_preview
+
+        elif cat == "OGND":
+            tipos = mgr.subtipos("OGND") if mgr else ["OGND", "DNR", "ORS", "CNR"]
+            self._tipo_cb.configure(values=tipos)
+            self._tipo_var.set(tipos[0] if tipos else "")
+            self._tipo_frame.grid()
+            self._cuenta_frame.grid_remove()
+            self._prov_frame.grid_remove()
+
+        self._update_path_preview()
+
+    def _on_subtipo_change(self, _value=None):
+        cat    = self._cat_var.get()
+        subtipo = self._tipo_var.get()
+        mgr    = self.catalog_mgr
+
+        if cat == "GASTOS" and mgr:
+            cuentas = mgr.cuentas("GASTOS", subtipo)
+            self._cuenta_cb.configure(values=cuentas)
+            self._cuenta_var.set(cuentas[0] if cuentas else "")
+            self._cuenta_frame.grid()
+        else:
+            self._cuenta_frame.grid_remove()
+
+        self._update_path_preview()
+
+    def _update_path_preview(self):
+        """Muestra la ruta de destino estimada debajo del formulario."""
+        if not self.session:
+            self._preview_lbl.configure(text="")
+            return
+
+        cat     = self._cat_var.get()
+        subtipo = self._tipo_var.get() if cat in ("GASTOS", "OGND") else ""
+        cuenta  = self._cuenta_var.get() if cat == "GASTOS" else ""
+        prov    = self._prov_var.get().strip() if cat in ("COMPRAS", "GASTOS") else ""
+        fecha   = (self.selected.fecha_emision if self.selected else "") or ""
+
+        # Validar mínimos necesarios para construir la ruta
+        if not cat:
+            self._preview_lbl.configure(text="")
+            return
+        if cat == "COMPRAS" and not prov:
+            self._preview_lbl.configure(text="")
+            return
+        if cat == "GASTOS" and not (subtipo and cuenta and prov):
+            self._preview_lbl.configure(text="")
+            return
+        if cat == "OGND" and not subtipo:
+            self._preview_lbl.configure(text="")
+            return
+
+        try:
+            dest  = build_dest_folder(self.session.folder, fecha, cat, subtipo, cuenta, prov)
+            parts = dest.parts
+            snippet = ("…/" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else str(dest) + "/"
+            self._preview_lbl.configure(text=snippet)
+        except Exception:
+            self._preview_lbl.configure(text="")
 
     def _on_filter(self):
         if not self.all_records:
@@ -986,7 +1108,8 @@ class App3Window(ctk.CTk):
                     "total_comprobante": r.total_comprobante,
                     "estado_hacienda": r.estado_hacienda,
                     "categoria": str(meta.get("categoria") or ""),
-                    "subcategoria": str(meta.get("subcategoria") or ""),
+                    "subtipo": str(meta.get("subtipo") or ""),
+                    "nombre_cuenta": str(meta.get("nombre_cuenta") or ""),
                     "proveedor": str(meta.get("proveedor") or r.emisor_nombre or ""),
                     "consecutivo": r.consecutivo,
                     "xml_path": str(r.xml_path or ""),
@@ -1039,7 +1162,8 @@ class App3Window(ctk.CTk):
                     "estado_hacienda": "Estado Hacienda",
                     "estado": "Estado App 3",
                     "categoria": "Categoría",
-                    "subcategoria": "Subcategoría",
+                    "subtipo": "Subtipo",
+                    "nombre_cuenta": "Cuenta",
                     "proveedor": "Proveedor",
                     "xml_path": "Ruta XML",
                     "pdf_path": "Ruta PDF",
@@ -1195,11 +1319,24 @@ class App3Window(ctk.CTk):
             return
 
         cat    = self._cat_var.get().strip().upper()
-        subcat = self._subcat_var.get().strip().upper()
-        prov   = self._prov_var.get().strip().upper()
+        subtipo = self._tipo_var.get().strip().upper() if cat in ("GASTOS", "OGND") else ""
+        cuenta  = self._cuenta_var.get().strip().upper() if cat == "GASTOS" else ""
+        prov    = self._prov_var.get().strip().upper() if cat in ("COMPRAS", "GASTOS") else ""
 
-        if not cat or not prov:
-            self._show_warning("Atención", "Completa categoría y proveedor.")
+        if not cat:
+            self._show_warning("Atención", "Selecciona una categoría.")
+            return
+        if cat == "GASTOS" and not subtipo:
+            self._show_warning("Atención", "Selecciona el tipo de gasto.")
+            return
+        if cat == "GASTOS" and not cuenta:
+            self._show_warning("Atención", "Selecciona la cuenta contable.")
+            return
+        if cat in ("COMPRAS", "GASTOS") and not prov:
+            self._show_warning("Atención", "Ingresa el proveedor.")
+            return
+        if cat == "OGND" and not subtipo:
+            self._show_warning("Atención", "Selecciona el tipo OGND.")
             return
 
         if self._db_records.get(self.selected.clave, {}).get("estado") == "clasificado":
@@ -1218,7 +1355,7 @@ class App3Window(ctk.CTk):
 
         def worker():
             try:
-                classify_record(record, session.folder, db, cat, subcat, prov)
+                classify_record(record, session.folder, db, cat, subtipo, cuenta, prov)
                 self.after(0, self._on_classify_ok)
             except Exception as exc:
                 self.after(0, lambda e=exc: self._on_classify_error(str(e)))

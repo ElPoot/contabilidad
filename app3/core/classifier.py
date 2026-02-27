@@ -10,6 +10,15 @@ from pathlib import Path
 
 from .models import FacturaRecord
 
+_MESES = {
+    1: "ENERO",    2: "FEBRERO",  3: "MARZO",     4: "ABRIL",
+    5: "MAYO",     6: "JUNIO",    7: "JULIO",      8: "AGOSTO",
+    9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
+}
+
+# Caracteres no permitidos en nombres de carpetas en Windows
+_INVALID_CHARS = frozenset(r'\/:*?"<>|')
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -17,6 +26,61 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sanitize_folder(name: str) -> str:
+    """Elimina caracteres no válidos en nombres de carpeta de Windows."""
+    clean = "".join("_" if c in _INVALID_CHARS else c for c in str(name or "").strip())
+    return clean[:100] or "SIN_NOMBRE"
+
+
+def build_dest_folder(
+    session_folder: Path,
+    fecha_emision: str,
+    categoria: str,
+    subtipo: str,
+    nombre_cuenta: str,
+    proveedor: str,
+) -> Path:
+    """
+    Construye la ruta de destino para un PDF clasificado:
+
+    Z:/DATA/PF-{año}/Contabilidades/{mes}/{cliente}/
+      COMPRAS/{proveedor}/
+      GASTOS/{subtipo}/{nombre_cuenta}/{proveedor}/
+      OGND/{subtipo}/
+    """
+    try:
+        dt = datetime.strptime(fecha_emision.strip(), "%d/%m/%Y")
+    except (ValueError, AttributeError):
+        dt = datetime.now()
+
+    mes_str = f"{dt.month:02d}-{_MESES[dt.month]}"
+    # session_folder = Z:/DATA/PF-{year}/CLIENTES/{CLIENT_NAME}
+    pf_root     = session_folder.parent.parent  # Z:/DATA/PF-{year}/
+    client_name = session_folder.name
+    base = pf_root / "Contabilidades" / mes_str / client_name
+
+    cat = categoria.upper()
+    if cat == "COMPRAS":
+        return base / "COMPRAS" / _sanitize_folder(proveedor)
+    if cat == "GASTOS":
+        return (
+            base
+            / "GASTOS"
+            / _sanitize_folder(subtipo)
+            / _sanitize_folder(nombre_cuenta)
+            / _sanitize_folder(proveedor)
+        )
+    if cat == "OGND":
+        return base / "OGND" / _sanitize_folder(subtipo)
+
+    # Categoría genérica — fallback
+    parts = [_sanitize_folder(x) for x in [categoria, subtipo, nombre_cuenta, proveedor] if x]
+    result = base
+    for p in parts:
+        result = result / p
+    return result
 
 
 class ClassificationDB:
@@ -34,7 +98,8 @@ class ClassificationDB:
                   clave_numerica       TEXT PRIMARY KEY,
                   estado               TEXT,
                   categoria            TEXT,
-                  subcategoria         TEXT,
+                  subtipo              TEXT,
+                  nombre_cuenta        TEXT,
                   proveedor            TEXT,
                   ruta_origen          TEXT,
                   ruta_destino         TEXT,
@@ -44,6 +109,24 @@ class ClassificationDB:
                 )
                 """
             )
+            # Migración: agregar columnas nuevas si la tabla venía de versión anterior
+            existing = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(clasificaciones)").fetchall()
+            }
+            for col in ("subtipo", "nombre_cuenta"):
+                if col not in existing:
+                    conn.execute(
+                        f"ALTER TABLE clasificaciones ADD COLUMN {col} TEXT"
+                    )
+
+    # ── Lectura ────────────────────────────────────────────────────────────────
+
+    _COLS = [
+        "clave_numerica", "estado", "categoria", "subtipo", "nombre_cuenta",
+        "proveedor", "ruta_origen", "ruta_destino", "sha256",
+        "fecha_clasificacion", "clasificado_por",
+    ]
 
     def get_estado(self, clave: str) -> str | None:
         with self._lock, sqlite3.connect(self.path) as conn:
@@ -53,59 +136,38 @@ class ClassificationDB:
             return row[0] if row else None
 
     def get_record(self, clave: str) -> dict | None:
-        """Retorna el registro completo de clasificacion o None si no existe."""
         with self._lock, sqlite3.connect(self.path) as conn:
             row = conn.execute(
-                "SELECT * FROM clasificaciones WHERE clave_numerica=?", (clave,)
+                f"SELECT {', '.join(self._COLS)} FROM clasificaciones "
+                "WHERE clave_numerica=?",
+                (clave,),
             ).fetchone()
-            if not row:
-                return None
-            cols = [
-                "clave_numerica", "estado", "categoria", "subcategoria", "proveedor",
-                "ruta_origen", "ruta_destino", "sha256", "fecha_clasificacion", "clasificado_por",
-            ]
-            return dict(zip(cols, row))
+            return dict(zip(self._COLS, row)) if row else None
 
     def get_records_map(self) -> dict[str, dict]:
-        """Retorna todas las clasificaciones en memoria para evitar consultas por fila."""
+        """Carga todas las clasificaciones en memoria para evitar consultas por fila."""
         with self._lock, sqlite3.connect(self.path) as conn:
             rows = conn.execute(
-                """
-                SELECT clave_numerica, estado, categoria, subcategoria, proveedor,
-                       ruta_origen, ruta_destino, sha256, fecha_clasificacion, clasificado_por
-                FROM clasificaciones
-                """
+                f"SELECT {', '.join(self._COLS)} FROM clasificaciones"
             ).fetchall()
+        return {str(row[0]): dict(zip(self._COLS, row)) for row in rows}
 
-        cols = [
-            "clave_numerica", "estado", "categoria", "subcategoria", "proveedor",
-            "ruta_origen", "ruta_destino", "sha256", "fecha_clasificacion", "clasificado_por",
-        ]
-        return {str(row[0]): dict(zip(cols, row)) for row in rows}
+    # ── Escritura ──────────────────────────────────────────────────────────────
 
     def upsert(self, **kwargs: str) -> None:
-        keys = [
-            "clave_numerica", "estado", "categoria", "subcategoria", "proveedor",
-            "ruta_origen", "ruta_destino", "sha256", "fecha_clasificacion", "clasificado_por",
-        ]
-        payload = {k: kwargs.get(k, "") for k in keys}
+        payload = {k: kwargs.get(k, "") for k in self._COLS}
+        cols_sql   = ", ".join(self._COLS)
+        params_sql = ", ".join(f":{k}" for k in self._COLS)
+        update_sql = ", ".join(
+            f"{k}=excluded.{k}" for k in self._COLS if k != "clave_numerica"
+        )
         with self._lock, sqlite3.connect(self.path) as conn:
             conn.execute(
-                """
-                INSERT INTO clasificaciones(clave_numerica, estado, categoria, subcategoria, proveedor,
-                                            ruta_origen, ruta_destino, sha256, fecha_clasificacion, clasificado_por)
-                VALUES(:clave_numerica, :estado, :categoria, :subcategoria, :proveedor,
-                       :ruta_origen, :ruta_destino, :sha256, :fecha_clasificacion, :clasificado_por)
+                f"""
+                INSERT INTO clasificaciones({cols_sql})
+                VALUES({params_sql})
                 ON CONFLICT(clave_numerica) DO UPDATE SET
-                  estado=excluded.estado,
-                  categoria=excluded.categoria,
-                  subcategoria=excluded.subcategoria,
-                  proveedor=excluded.proveedor,
-                  ruta_origen=excluded.ruta_origen,
-                  ruta_destino=excluded.ruta_destino,
-                  sha256=excluded.sha256,
-                  fecha_clasificacion=excluded.fecha_clasificacion,
-                  clasificado_por=excluded.clasificado_por
+                  {update_sql}
                 """,
                 payload,
             )
@@ -113,24 +175,27 @@ class ClassificationDB:
 
 def classify_record(
     record: FacturaRecord,
-    client_folder: Path,
+    session_folder: Path,
     db: ClassificationDB,
     categoria: str,
-    subcategoria: str,
+    subtipo: str,
+    nombre_cuenta: str,
     proveedor: str,
     user: str = "local",
 ) -> Path | None:
     """
-    Clasifica una factura moviendola a la carpeta contable correspondiente.
-    Si no hay PDF, registra como 'pendiente_pdf' sin mover archivos.
-    Movimiento atomico: copiar -> verificar SHA256 -> borrar original.
+    Clasifica una factura moviéndola a la carpeta contable correspondiente.
+
+    Si no hay PDF registra como 'pendiente_pdf' sin mover archivos.
+    Movimiento atómico: SHA256 → copiar → verificar SHA256 → borrar original.
     """
     if record.pdf_path is None:
         db.upsert(
             clave_numerica=record.clave,
             estado="pendiente_pdf",
             categoria=categoria,
-            subcategoria=subcategoria,
+            subtipo=subtipo,
+            nombre_cuenta=nombre_cuenta,
             proveedor=proveedor,
             ruta_origen=str(record.xml_path or ""),
             ruta_destino="",
@@ -140,18 +205,25 @@ def classify_record(
         )
         return None
 
-    dest_folder = client_folder / categoria / subcategoria / proveedor
+    dest_folder = build_dest_folder(
+        session_folder,
+        record.fecha_emision,
+        categoria,
+        subtipo,
+        nombre_cuenta,
+        proveedor,
+    )
     dest_folder.mkdir(parents=True, exist_ok=True)
 
-    original = record.pdf_path
-    ruta_origen_str = str(original)  # guardar antes de cualquier operacion
+    original       = record.pdf_path
+    ruta_origen_str = str(original)
 
     target = dest_folder / original.name
     if target.exists():
         suffix = sha256_file(original)[:8]
         target = dest_folder / f"{original.stem}__{suffix}{original.suffix}"
 
-    # Movimiento atomico: copiar -> verificar SHA256 -> borrar
+    # Movimiento atómico: copiar → verificar SHA256 → borrar
     source_hash = sha256_file(original)
     shutil.copy2(original, target)
 
@@ -159,11 +231,11 @@ def classify_record(
     if source_hash != copy_hash:
         target.unlink(missing_ok=True)
         raise RuntimeError(
-            f"Fallo validacion SHA256 al copiar '{original.name}'.\n"
+            f"Fallo validación SHA256 al copiar '{original.name}'.\n"
             "El archivo original no fue modificado."
         )
 
-    removed = False
+    removed   = False
     last_err: Exception | None = None
     for attempt in range(6):
         try:
@@ -188,7 +260,8 @@ def classify_record(
         clave_numerica=record.clave,
         estado="clasificado",
         categoria=categoria,
-        subcategoria=subcategoria,
+        subtipo=subtipo,
+        nombre_cuenta=nombre_cuenta,
         proveedor=proveedor,
         ruta_origen=ruta_origen_str,
         ruta_destino=str(target),
@@ -197,8 +270,7 @@ def classify_record(
         clasificado_por=user,
     )
 
-    # Actualizar record en memoria
     record.pdf_path = target
-    record.estado = "clasificado"
+    record.estado   = "clasificado"
 
     return target
