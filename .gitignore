@@ -223,3 +223,6 @@ APP 2/data/audit_logs/
 *.sqlite
 clasificacion.sqlite
 state.sqlite
+
+# App 3 — cache de Hacienda propio (fallback cuando APP 2/data/ no existe)
+app3/data/

@@ -6,14 +6,9 @@ from pathlib import Path
 
 from app3.bootstrap import bootstrap_legacy_paths
 from .models import FacturaRecord
+from .xml_manager import CRXMLManager
 
 bootstrap_legacy_paths()
-
-# App 2 - logica completa: parsing paralelo, dedup SHA256, MensajeHacienda, nombres Hacienda
-try:
-    from facturacion.xml_manager import CRXMLManager
-except ModuleNotFoundError:
-    from facturacion_system.core.xml_manager import CRXMLManager  # type: ignore[no-redef]
 
 # App 1 - extraccion de clave desde PDF con scoring y fallback por nombre de archivo
 try:

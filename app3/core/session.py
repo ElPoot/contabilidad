@@ -6,17 +6,12 @@ from pathlib import Path
 
 from app3.bootstrap import bootstrap_legacy_paths
 from app3.config import client_root
+from .xml_manager import CRXMLManager
 
 bootstrap_legacy_paths()
 
 from facturacion_system.core.client_profiles import load_profiles  # noqa: E402
 from facturacion_system.core.settings import get_setting  # noqa: E402
-
-# Soporte para ambos nombres de carpeta de App 2
-try:
-    from facturacion.xml_manager import CRXMLManager  # APP 2 renombrada como "facturacion"
-except ModuleNotFoundError:
-    from facturacion_system.core.xml_manager import CRXMLManager  # nombre original  # noqa: E402
 
 
 @dataclass(slots=True)
