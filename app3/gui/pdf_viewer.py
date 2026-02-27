@@ -95,7 +95,7 @@ class PDFViewer(ctk.CTkFrame):
 
         self._btn_next = ctk.CTkButton(bar, text="▶", state="disabled",
                                         command=self._next_page, **btn)
-        self._btn_next.pack(side="left", padx=(2, 10))
+        self._btn_next.pack(side="left", padx=(2, 10), pady=8)
 
         # Separador
         ctk.CTkFrame(bar, fg_color=BORDER, width=1).pack(side="left", fill="y", pady=8)
@@ -174,6 +174,12 @@ class PDFViewer(ctk.CTkFrame):
     # ── API PÚBLICA ───────────────────────────────────────────────────────────
     def load(self, pdf_path: Path) -> None:
         self._close_doc()
+        # Reiniciar viewport antes de abrir un nuevo documento para evitar
+        # que Tk conserve desplazamientos previos al cambiar de factura.
+        self._canvas.delete("all")
+        self._canvas.configure(scrollregion=(0, 0, 1, 1))
+        self._canvas.xview_moveto(0)
+        self._canvas.yview_moveto(0)
         if not PYMUPDF_OK:
             self._show_placeholder("pymupdf no está instalado.\n\npip install pymupdf")
             return
@@ -196,6 +202,12 @@ class PDFViewer(ctk.CTkFrame):
     def clear(self) -> None:
         self._close_doc()
         self._show_placeholder("Sin documento cargado")
+
+    def release_file_handles(self, message: str = "") -> None:
+        """Cierra el documento actual para liberar locks en Windows."""
+        self._close_doc()
+        if message:
+            self._show_placeholder(message)
 
     # ── NAVEGACIÓN ────────────────────────────────────────────────────────────
     def _prev_page(self):
@@ -344,8 +356,8 @@ class PDFViewer(ctk.CTkFrame):
         # PPM → PhotoImage
         self._tk_image = tk.PhotoImage(data=pix.tobytes("ppm"))
 
-        hpad = 16   # solo padding horizontal — verticalmente empieza en 0
-        vpad = 8    # padding vertical mínimo
+        hpad = 16   # solo padding horizontal
+        vpad = 0    # evitar hueco superior perceptible
         w, h = pix.width, pix.height
         self._canvas.configure(scrollregion=(0, 0, w + hpad * 2, h + vpad * 2))
         self._canvas.delete("all")
@@ -358,7 +370,10 @@ class PDFViewer(ctk.CTkFrame):
         # Página — empieza casi en y=0
         self._canvas.create_image(hpad, vpad, anchor="nw", image=self._tk_image)
         # Forzar scroll al inicio cada vez que se carga una página
+        self._canvas.xview_moveto(0)
         self._canvas.yview_moveto(0)
+        # Asegurar que no queden offsets de scroll aplicados asincrónicamente.
+        self._canvas.after_idle(lambda: self._canvas.yview_moveto(0))
 
         # Actualizar toolbar
         total = len(self._doc)

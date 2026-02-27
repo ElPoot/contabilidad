@@ -4,6 +4,7 @@ import hashlib
 import shutil
 import sqlite3
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -64,6 +65,23 @@ class ClassificationDB:
                 "ruta_origen", "ruta_destino", "sha256", "fecha_clasificacion", "clasificado_por",
             ]
             return dict(zip(cols, row))
+
+    def get_records_map(self) -> dict[str, dict]:
+        """Retorna todas las clasificaciones en memoria para evitar consultas por fila."""
+        with self._lock, sqlite3.connect(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT clave_numerica, estado, categoria, subcategoria, proveedor,
+                       ruta_origen, ruta_destino, sha256, fecha_clasificacion, clasificado_por
+                FROM clasificaciones
+                """
+            ).fetchall()
+
+        cols = [
+            "clave_numerica", "estado", "categoria", "subcategoria", "proveedor",
+            "ruta_origen", "ruta_destino", "sha256", "fecha_clasificacion", "clasificado_por",
+        ]
+        return {str(row[0]): dict(zip(cols, row)) for row in rows}
 
     def upsert(self, **kwargs: str) -> None:
         keys = [
@@ -145,7 +163,26 @@ def classify_record(
             "El archivo original no fue modificado."
         )
 
-    original.unlink()
+    removed = False
+    last_err: Exception | None = None
+    for attempt in range(6):
+        try:
+            original.unlink()
+            removed = True
+            break
+        except PermissionError as err:
+            last_err = err
+            time.sleep(0.15 * (attempt + 1))
+        except OSError as err:
+            last_err = err
+            break
+
+    if not removed:
+        target.unlink(missing_ok=True)
+        raise RuntimeError(
+            "No se pudo mover el PDF porque está en uso por otra aplicación (ej: visor PDF abierto).\n"
+            "Cierra el archivo e intenta nuevamente."
+        ) from last_err
 
     db.upsert(
         clave_numerica=record.clave,

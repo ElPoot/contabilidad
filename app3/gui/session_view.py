@@ -12,6 +12,7 @@ from app3.core.session import ClientSession, resolve_client_session
 
 bootstrap_legacy_paths()
 
+from facturacion_system.core.client_profiles import load_profiles  # noqa: E402
 from facturacion_system.core.settings import get_setting  # noqa: E402
 
 # ── PALETA ────────────────────────────────────────────────────────────────────
@@ -66,6 +67,20 @@ def _load_saved_clients(year: int) -> list[dict]:
     if not base.exists():
         return []
 
+    # Intentar enriquecer accesos rápidos con cédula real desde perfiles de App 1.
+    profile_ced_by_folder: dict[str, str] = {}
+    try:
+        profiles = load_profiles()
+        for folder_name, profile in profiles.items():
+            if folder_name.startswith("__email__:"):
+                continue
+            if isinstance(profile, dict):
+                ced = _digits(str(profile.get("cedula", "")))
+                if ced:
+                    profile_ced_by_folder[folder_name.strip()] = ced
+    except Exception:
+        profile_ced_by_folder = {}
+
     clients = []
     for folder in sorted(base.iterdir()):
         if not folder.is_dir() or folder.name.startswith("."):
@@ -90,7 +105,7 @@ def _load_saved_clients(year: int) -> list[dict]:
 
         clients.append({
             "nombre": folder.name,
-            "cedula": "",
+            "cedula": profile_ced_by_folder.get(folder.name, ""),
             "pendientes": pendientes,
             "clasificadas": clasificadas,
             "year": year,
@@ -471,23 +486,35 @@ class SessionView(ctk.CTkToplevel):
         folder: Path = client["folder"]
         year: int = client["year"]
         nombre: str = client["nombre"]
+        cedula: str = _digits(str(client.get("cedula", "")))
 
-        # Llenar input visualmente
+        # Mantener el input de cédula limpio: acceso rápido no debe escribir nombres.
         self._cedula_entry.delete(0, "end")
-        self._cedula_entry.insert(0, nombre)
 
         self._set_preview_searching()
         self._btn_continuar.configure(state="disabled")
 
         def worker():
             try:
-                # Construir sesión directamente desde la carpeta conocida
-                session = ClientSession(
-                    cedula="",
-                    nombre=nombre,
-                    folder=folder,
-                    year=year,
-                )
+                session: ClientSession
+                if len(cedula) >= 9:
+                    try:
+                        # Preferir resolución completa para mantener consistencia con sesión manual.
+                        session = resolve_client_session(cedula, year=year)
+                    except Exception:
+                        session = ClientSession(
+                            cedula=cedula,
+                            nombre=nombre,
+                            folder=folder,
+                            year=year,
+                        )
+                else:
+                    session = ClientSession(
+                        cedula=cedula,
+                        nombre=nombre,
+                        folder=folder,
+                        year=year,
+                    )
                 self.after(0, lambda s=session: self._on_resolve_ok(s))
             except Exception as exc:
                 self.after(0, lambda e=exc: self._on_resolve_error(str(e)))
