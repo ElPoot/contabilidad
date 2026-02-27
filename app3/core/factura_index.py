@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 import logging
-import time
-import re
 from pathlib import Path
+import re
+import time
 from typing import Any
 
 from app3.bootstrap import bootstrap_legacy_paths
@@ -19,10 +19,11 @@ except ModuleNotFoundError:  # pragma: no cover - dependencia opcional en runtim
 
 bootstrap_legacy_paths()
 
-# App 1 - extraccion de clave desde PDF con scoring y fallback por nombre de archivo
+# App 1 - extracción de clave desde PDF con scoring y fallback por nombre de archivo
 try:
     from facturacion_system.core.pdf_classifier import extract_clave_and_cedula
 except ModuleNotFoundError:
+
     def extract_clave_and_cedula(data: bytes, original_filename: str = "") -> tuple:  # type: ignore[misc]
         return None, None
 
@@ -30,30 +31,21 @@ except ModuleNotFoundError:
 logger = logging.getLogger(__name__)
 
 
-
-
 def _extract_clave_from_filename(filename: str) -> str | None:
     """Extrae clave de 50 dígitos desde el nombre del PDF sin abrir el archivo."""
     match = re.search(r"(\d{50})", str(filename or ""))
     return match.group(1) if match else None
 
+
+def _extract_numeric_tokens(filename: str, min_len: int = 10) -> list[str]:
+    """Extrae secuencias numéricas relevantes desde nombre de archivo."""
+    return [token for token in re.findall(r"\d+", filename or "") if len(token) >= min_len]
+
+
 class FacturaIndexer:
     """
     Construye la lista de FacturaRecord para un cliente y periodo usando
-    toda la logica existente de App 1 y App 2.
-
-    App 2 (CRXMLManager.load_xml_folder) maneja:
-      - Parsing paralelo con ThreadPoolExecutor
-      - Deduplicacion por SHA256
-      - Asociacion de MensajeHacienda -> estado Hacienda
-      - Resolucion de nombres desde cache/API Hacienda
-      - Auditoria y logging
-
-    App 1 (extract_clave_and_cedula) maneja:
-      - Extrae clave de 50 digitos desde PDFs
-      - Prioriza nombre de archivo (instantaneo) antes de leer el contenido
-      - Scoring para elegir clave correcta cuando hay varias (ej: Documento Referencia)
-      - Fallback de cedula a 10 digitos si Hacienda no responde con 12
+    toda la lógica existente de App 1 y App 2.
     """
 
     def __init__(self) -> None:
@@ -80,9 +72,6 @@ class FacturaIndexer:
 
         records: dict[str, FacturaRecord] = {}
 
-        # --- PASO 1: cargar XMLs con la logica completa de App 2 ---
-        # load_xml_folder hace parsing paralelo + dedup SHA256 +
-        # MensajeHacienda + resolucion nombres + auditoria
         if xml_root.exists():
             try:
                 df, audit = self.xml_manager.load_xml_folder(xml_root)
@@ -129,11 +118,9 @@ class FacturaIndexer:
                             xml_path=xml_path,
                             estado="pendiente",
                         )
-
             except Exception as exc:
                 self.parse_errors.append(f"Error cargando carpeta XML: {exc}")
 
-        # --- PASO 2: vincular PDFs usando logica de App 1 (opcional) ---
         if include_pdf_scan:
             pdf_scan_report = self._scan_and_link_pdfs_optimized(
                 pdf_root,
@@ -189,40 +176,28 @@ class FacturaIndexer:
             >>> report = indexer._scan_and_link_pdfs_optimized(Path("/tmp/PDF"), {})
             >>> sorted(report.keys())
             ['audit', 'linked', 'omitidos']
-
-        Args:
-            pdf_root: Carpeta raíz de PDFs.
-            records: dict[clave_50dig] -> FacturaRecord (se modifica in-place).
-            allow_pdf_content_fallback: Si False, solo usa nombre del archivo.
-            timeout_seconds: Máximo tiempo por PDF.
-            max_workers: ThreadPoolExecutor workers.
-
-        Returns:
-            {
-                "linked": {clave: Path, ...},
-                "omitidos": {nombre: {razon, error, intento}, ...},
-                "audit": {total, exitosos, omitidos, tiempo_total_segundos, ...},
-            }
         """
+        base_audit = {
+            "total_procesados": 0,
+            "exitosos": 0,
+            "omitidos": 0,
+            "tiempo_total_segundos": 0.0,
+            "velocidad_promedio_ms_por_pdf": 0.0,
+            "porcentaje_omitidos": 0.0,
+            "picos": {
+                "pdf_mas_lento": ("", 0),
+                "pdf_mas_grande_mb": ("", 0.0),
+            },
+        }
         if not pdf_root.exists():
-            return {
-                "linked": {},
-                "omitidos": {},
-                "audit": {
-                    "total_procesados": 0,
-                    "exitosos": 0,
-                    "omitidos": 0,
-                    "tiempo_total_segundos": 0.0,
-                    "velocidad_promedio_ms_por_pdf": 0.0,
-                    "picos": {
-                        "pdf_mas_lento": ("", 0),
-                        "pdf_mas_grande_mb": ("", 0.0),
-                    },
-                },
-            }
+            return {"linked": {}, "omitidos": {}, "audit": base_audit}
 
         pdf_files = list(pdf_root.rglob("*.pdf"))
         total_files = len(pdf_files)
+        if not pdf_files:
+            return {"linked": {}, "omitidos": {}, "audit": base_audit}
+
+        started = time.perf_counter()
         linked: dict[str, Path] = {}
         omitidos: dict[str, dict[str, Any]] = {}
         max_slow_name = ""
@@ -230,30 +205,11 @@ class FacturaIndexer:
         max_size_name = ""
         max_size_mb = 0.0
 
-        started = time.perf_counter()
+        consecutivo_index = self._build_consecutivo_index(records)
         logger.info("Escaneando %s PDFs en %s", total_files, pdf_root)
+        logger.info("ThreadPoolExecutor lanzado: %s workers", max(1, min(max_workers, total_files)))
 
-        if not pdf_files:
-            return {
-                "linked": linked,
-                "omitidos": omitidos,
-                "audit": {
-                    "total_procesados": 0,
-                    "exitosos": 0,
-                    "omitidos": 0,
-                    "tiempo_total_segundos": 0.0,
-                    "velocidad_promedio_ms_por_pdf": 0.0,
-                    "picos": {
-                        "pdf_mas_lento": ("", 0),
-                        "pdf_mas_grande_mb": ("", 0.0),
-                    },
-                },
-            }
-
-        workers = max(1, min(max_workers, total_files))
-        logger.info("ThreadPoolExecutor lanzado: %s workers", workers)
-
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, total_files))) as executor:
             future_map = {
                 executor.submit(
                     self._process_single_pdf,
@@ -267,13 +223,9 @@ class FacturaIndexer:
                 pdf_file = future_map[future]
                 try:
                     result = future.result()
-                except Exception as exc:  # pragma: no cover - extrema defensa
+                except Exception as exc:  # pragma: no cover
                     logger.exception("Error no controlado procesando PDF %s", pdf_file)
-                    omitidos[pdf_file.name] = {
-                        "razon": "extract_failed",
-                        "error": str(exc),
-                        "intento": 1,
-                    }
+                    omitidos[pdf_file.name] = {"razon": "extract_failed", "error": str(exc), "intento": 1}
                     continue
 
                 elapsed_ms = int(result.get("tiempo_ms", 0))
@@ -286,47 +238,48 @@ class FacturaIndexer:
                     max_size_name = pdf_file.name
 
                 clave = result.get("clave")
+                metodo = str(result.get("metodo") or "")
+
+                if not clave:
+                    # fallback fuerte por consecutivo presente en nombre, contra XMLs ya cargados
+                    clave = self._resolve_clave_from_filename_tokens(pdf_file.name, consecutivo_index)
+                    if clave:
+                        metodo = "filename_consecutivo"
+
                 if clave:
                     linked[clave] = pdf_file
                     if clave in records:
                         records[clave].pdf_path = pdf_file
                     else:
                         records[clave] = FacturaRecord(clave=clave, pdf_path=pdf_file, estado="sin_xml")
-                    logger.debug(
-                        "PDF: %s → FOUND EN %s (%sms)",
-                        pdf_file.name,
-                        str(result.get("metodo", "desconocido")).upper(),
-                        elapsed_ms,
-                    )
-                else:
-                    reason = str(result.get("razon", "extract_failed"))
-                    message = str(result.get("error") or "")
-                    if reason == "timeout":
-                        logger.warning("PDF: %s → timeout (%sms) - omitido", pdf_file.name, elapsed_ms)
-                    elif reason == "corrupted":
-                        logger.error("PDF: %s → corrupted (%s)", pdf_file.name, message)
-                    else:
-                        logger.warning("PDF: %s → omitido (%s)", pdf_file.name, reason)
+                    logger.debug("PDF: %s → FOUND EN %s (%sms)", pdf_file.name, metodo.upper(), elapsed_ms)
+                    continue
 
-                    omitidos[pdf_file.name] = {
-                        "razon": reason,
-                        "error": message,
-                        "intento": int(result.get("intento", 1)),
-                    }
+                reason = str(result.get("razon", "extract_failed"))
+                message = str(result.get("error") or "")
+                if reason == "timeout":
+                    logger.warning("PDF: %s → timeout (%sms) - omitido", pdf_file.name, elapsed_ms)
+                elif reason == "corrupted":
+                    logger.error("PDF: %s → corrupted (%s)", pdf_file.name, message)
+                else:
+                    logger.debug("PDF: %s → omitido (%s)", pdf_file.name, reason)
+
+                omitidos[pdf_file.name] = {
+                    "razon": reason,
+                    "error": message,
+                    "intento": int(result.get("intento", 1)),
+                }
 
         total_time = time.perf_counter() - started
         successful = len(linked)
         skipped = len(omitidos)
         avg_ms = (total_time * 1000.0 / total_files) if total_files else 0.0
-        logger.info(
-            "Vinculadas %s/%s (%.1f%%) en %.2fs",
-            successful,
-            total_files,
-            (successful / total_files * 100.0) if total_files else 0.0,
-            total_time,
-        )
-        if skipped:
-            logger.info("Omitidos: %s PDFs - ver reporte de auditoría", skipped)
+        omit_pct = (skipped / total_files * 100.0) if total_files else 0.0
+
+        logger.info("Vinculadas %s/%s (%.1f%%) en %.2fs", successful, total_files, successful * 100.0 / total_files, total_time)
+        logger.info("Omitidos: %s PDFs (%.2f%%)", skipped, omit_pct)
+        if omit_pct > 1.0:
+            logger.warning("Margen de error alto: %.2f%% omitidos (> 1%%).", omit_pct)
 
         return {
             "linked": linked,
@@ -337,6 +290,7 @@ class FacturaIndexer:
                 "omitidos": skipped,
                 "tiempo_total_segundos": round(total_time, 4),
                 "velocidad_promedio_ms_por_pdf": round(avg_ms, 2),
+                "porcentaje_omitidos": round(omit_pct, 2),
                 "picos": {
                     "pdf_mas_lento": (max_slow_name, max_slow_ms),
                     "pdf_mas_grande_mb": (max_size_name, round(max_size_mb, 2)),
@@ -351,7 +305,6 @@ class FacturaIndexer:
         timeout_seconds: int,
     ) -> dict[str, Any]:
         started = time.perf_counter()
-        attempts = 0
         clave = _extract_clave_from_filename(pdf_file.name)
 
         try:
@@ -417,21 +370,31 @@ class FacturaIndexer:
                 "size_mb": size_mb,
             }
 
-        attempts += 1
+        attempts = 1
         try:
             clave, _ced = extract_clave_and_cedula(pdf_data, original_filename=pdf_file.name)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            if elapsed_ms > timeout_seconds * 1000:
+                return {
+                    "clave": None,
+                    "razon": "timeout",
+                    "error": f"Superó timeout de {timeout_seconds}s.",
+                    "intento": attempts,
+                    "tiempo_ms": elapsed_ms,
+                    "size_mb": size_mb,
+                }
             if clave:
                 return {
                     "clave": clave,
                     "metodo": "contenido",
                     "intento": attempts,
-                    "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                    "tiempo_ms": elapsed_ms,
                     "size_mb": size_mb,
                 }
         except Exception as exc:
             logger.debug("PDF: %s → extract_clave_and_cedula falló: %s", pdf_file.name, exc)
 
-        attempts += 1
+        attempts = 2
         clave_retry, retry_error = self._extract_clave_from_pdf_text(pdf_data)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         if elapsed_ms > timeout_seconds * 1000:
@@ -464,7 +427,7 @@ class FacturaIndexer:
 
     @staticmethod
     def _read_pdf_bytes_streaming(pdf_file: Path, chunk_size: int = 1024 * 1024) -> bytes:
-        """Lee un PDF por streaming (sin read_bytes)."""
+        """Lee un PDF por streaming (sin read_bytes())."""
         chunks = bytearray()
         with pdf_file.open("rb") as stream:
             while True:
@@ -476,7 +439,7 @@ class FacturaIndexer:
 
     @staticmethod
     def _extract_clave_from_pdf_text(pdf_data: bytes) -> tuple[str | None, str]:
-        """Reintento usando texto extraído por PyMuPDF para detectar PDFs corruptos/vacíos."""
+        """Reintento con PyMuPDF para detectar clave 50 dígitos y PDFs corruptos."""
         if fitz is None:
             return None, "extract_failed"
         try:
@@ -498,8 +461,43 @@ class FacturaIndexer:
         return None, "extract_failed"
 
     @staticmethod
+    def _build_consecutivo_index(records: dict[str, FacturaRecord]) -> dict[str, str]:
+        """
+        Construye índice de consecutivo único -> clave.
+
+        Usa `record.consecutivo` cuando existe y además secuencias numéricas largas dentro de `clave`.
+        Si un consecutivo aparece en más de una clave, se descarta para evitar falsos positivos.
+        """
+        candidates: dict[str, set[str]] = {}
+        for clave, record in records.items():
+            bucket = candidates.setdefault(clave[-20:], set())
+            bucket.add(clave)
+
+            cons = re.sub(r"\D", "", record.consecutivo or "")
+            if len(cons) >= 10:
+                candidates.setdefault(cons, set()).add(clave)
+
+            for token in re.findall(r"\d{10,20}", clave):
+                candidates.setdefault(token, set()).add(clave)
+
+        return {token: next(iter(claves)) for token, claves in candidates.items() if len(claves) == 1}
+
+    @staticmethod
+    def _resolve_clave_from_filename_tokens(filename: str, consecutivo_index: dict[str, str]) -> str | None:
+        """Intenta resolver una clave de 50 dígitos usando tokens numéricos del nombre."""
+        tokens = sorted(_extract_numeric_tokens(filename, min_len=10), key=len, reverse=True)
+        for token in tokens:
+            exact = consecutivo_index.get(token)
+            if exact:
+                return exact
+            # fallback por sufijo para tokens cortos al final del consecutivo
+            for known_token, clave in consecutivo_index.items():
+                if len(token) >= 10 and known_token.endswith(token):
+                    return clave
+        return None
+
+    @staticmethod
     def _recompute_states(records: dict[str, FacturaRecord]) -> None:
-        # Estado final de cada registro
         for record in records.values():
             if record.pdf_path and record.xml_path:
                 record.estado = "pendiente"

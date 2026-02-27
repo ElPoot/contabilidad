@@ -13,32 +13,35 @@ class FacturaIndexerPDFScanTests(unittest.TestCase):
     def test_scan_and_link_pdfs_optimized(self) -> None:
         clave_nombre = "11111111111111111111111111111111111111111111111111"
         clave_subfolder = "22222222222222222222222222222222222222222222222222"
+        clave_consecutivo = "33333333333333333333333333333312345678901234567890"
+        consecutivo = "12345678901234567890"
 
         with TemporaryDirectory() as temp_dir:
             pdf_root = Path(temp_dir) / "PDF"
             sender_dir = pdf_root / "SENDER"
             sender_dir.mkdir(parents=True)
 
-            # Clave directa en nombre
             (pdf_root / f"{clave_nombre}.pdf").write_bytes(b"%PDF-1.4 filename-key")
-            # No trae clave, debe fallar extracción
             (pdf_root / "factura_sin_clave_en_nombre.pdf").write_bytes(b"%PDF-1.4 no key here")
-            # Corrupto
             (pdf_root / "CORROMPIDO.pdf").write_bytes(b"NOT_A_REAL_PDF")
-            # Subfolder con clave en nombre
             (sender_dir / f"{clave_subfolder}.pdf").write_bytes(b"%PDF-1.4 nested filename-key")
+            (pdf_root / f"Factura {consecutivo}.pdf").write_bytes(b"%PDF-1.4 consecutivo in filename")
 
             records = {
-                clave_nombre: FacturaRecord(clave=clave_nombre, xml_path=Path("dummy.xml"), estado="pendiente")
+                clave_nombre: FacturaRecord(clave=clave_nombre, xml_path=Path("dummy.xml"), estado="pendiente"),
+                clave_consecutivo: FacturaRecord(
+                    clave=clave_consecutivo,
+                    consecutivo=consecutivo,
+                    xml_path=Path("dummy2.xml"),
+                    estado="pendiente",
+                ),
             }
 
             indexer = FacturaIndexer()
 
             def fake_extract_clave_and_cedula(data: bytes, original_filename: str = "") -> tuple[str | None, str | None]:
-                if original_filename == "factura_sin_clave_en_nombre.pdf":
+                if original_filename in {"factura_sin_clave_en_nombre.pdf", "CORROMPIDO.pdf", f"Factura {consecutivo}.pdf"}:
                     return None, None
-                if original_filename == "CORROMPIDO.pdf":
-                    raise ValueError("cannot parse")
                 return None, None
 
             def fake_fallback(pdf_data: bytes) -> tuple[str | None, str]:
@@ -54,23 +57,20 @@ class FacturaIndexerPDFScanTests(unittest.TestCase):
         self.assertIn("omitidos", report)
         self.assertIn("audit", report)
 
-        self.assertEqual(report["audit"]["total_procesados"], 4)
-        self.assertEqual(report["audit"]["exitosos"], 2)
+        self.assertEqual(report["audit"]["total_procesados"], 5)
+        self.assertEqual(report["audit"]["exitosos"], 3)
         self.assertEqual(report["audit"]["omitidos"], 2)
 
         self.assertIn(clave_nombre, report["linked"])
         self.assertIn(clave_subfolder, report["linked"])
+        self.assertIn(clave_consecutivo, report["linked"])
 
-        # Registro existente actualizado
         self.assertIsNotNone(records[clave_nombre].pdf_path)
-        # Registro nuevo creado sin XML
         self.assertIn(clave_subfolder, records)
         self.assertEqual(records[clave_subfolder].estado, "sin_xml")
+        self.assertIsNotNone(records[clave_consecutivo].pdf_path)
 
-        self.assertEqual(
-            report["omitidos"]["factura_sin_clave_en_nombre.pdf"]["razon"],
-            "extract_failed",
-        )
+        self.assertEqual(report["omitidos"]["factura_sin_clave_en_nombre.pdf"]["razon"], "extract_failed")
         self.assertEqual(report["omitidos"]["CORROMPIDO.pdf"]["razon"], "corrupted")
 
 
