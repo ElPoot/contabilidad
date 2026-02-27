@@ -300,6 +300,18 @@ class FacturaIndexer:
 
         logger.info("Vinculadas %s/%s (%.1f%%) en %.2fs", successful, total_files, successful * 100.0 / total_files, total_time)
         logger.info("Omitidos factura: %s/%s (%.2f%%). Ignorados no factura: %s", skipped, candidate_total, omit_pct, ignored)
+
+        claves_faltantes_pdf = sorted(
+            clave for clave, record in records.items() if record.xml_path and not record.pdf_path
+        )
+        if claves_faltantes_pdf:
+            logger.warning(
+                "Claves con XML sin PDF vinculado: %s. Se listan para revisión manual.",
+                len(claves_faltantes_pdf),
+            )
+            for clave in claves_faltantes_pdf:
+                logger.warning("CLAVE SIN PDF: %s", clave)
+
         if omit_pct > 1.0:
             logger.warning("Margen de error alto: %.2f%% omitidos (> 1%%).", omit_pct)
 
@@ -312,6 +324,7 @@ class FacturaIndexer:
                 "omitidos": skipped,
                 "ignorados_no_factura": ignored,
                 "total_candidatos_factura": candidate_total,
+                "claves_faltantes_pdf": claves_faltantes_pdf,
                 "tiempo_total_segundos": round(total_time, 4),
                 "velocidad_promedio_ms_por_pdf": round(avg_ms, 2),
                 "porcentaje_omitidos": round(omit_pct, 2),
