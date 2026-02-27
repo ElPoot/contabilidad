@@ -249,6 +249,20 @@ class FacturaIndexer:
                 clave = result.get("clave")
                 metodo = str(result.get("metodo") or "")
 
+                if clave and clave not in records:
+                    for candidate in result.get("claves_detectadas", []):
+                        if candidate in records:
+                            clave = candidate
+                            metodo = "contenido_clave_en_records"
+                            break
+
+                if not clave:
+                    for candidate in result.get("claves_detectadas", []):
+                        if candidate in records:
+                            clave = candidate
+                            metodo = "contenido_clave_en_records"
+                            break
+
                 if not clave:
                     # fallback fuerte por consecutivo presente en nombre, contra XMLs ya cargados
                     clave = self._resolve_clave_from_filename_tokens(pdf_file.name, consecutivo_index)
@@ -432,7 +446,7 @@ class FacturaIndexer:
             logger.debug("PDF: %s → extract_clave_and_cedula falló: %s", pdf_file.name, exc)
 
         attempts = 2
-        clave_retry, retry_error, text_tokens = self._extract_clave_from_pdf_text(pdf_data)
+        clave_retry, retry_error, text_tokens, claves_detectadas = self._extract_clave_from_pdf_text(pdf_data)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         if elapsed_ms > timeout_seconds * 1000:
             return {
@@ -451,6 +465,7 @@ class FacturaIndexer:
                 "intento": attempts,
                 "tiempo_ms": elapsed_ms,
                 "size_mb": size_mb,
+                "claves_detectadas": claves_detectadas,
             }
 
         return {
@@ -461,6 +476,7 @@ class FacturaIndexer:
             "tiempo_ms": elapsed_ms,
             "size_mb": size_mb,
             "text_tokens": text_tokens,
+            "claves_detectadas": claves_detectadas,
         }
 
     @staticmethod
@@ -476,14 +492,14 @@ class FacturaIndexer:
         return bytes(chunks)
 
     @staticmethod
-    def _extract_clave_from_pdf_text(pdf_data: bytes) -> tuple[str | None, str, list[str]]:
+    def _extract_clave_from_pdf_text(pdf_data: bytes) -> tuple[str | None, str, list[str], list[str]]:
         """Reintento con PyMuPDF para detectar clave 50 dígitos y tokens numéricos útiles."""
         if fitz is None:
-            return None, "extract_failed", []
+            return None, "extract_failed", [], []
         try:
             document = fitz.open(stream=pdf_data, filetype="pdf")
         except Exception as exc:
-            return None, ("corrupted" if "cannot open" in str(exc).lower() else "extract_failed"), []
+            return None, ("corrupted" if "cannot open" in str(exc).lower() else "extract_failed"), [], []
 
         try:
             text_content = "\n".join(page.get_text("text") for page in document)
@@ -491,14 +507,14 @@ class FacturaIndexer:
             document.close()
 
         if not text_content.strip():
-            return None, "empty", []
+            return None, "empty", [], []
 
-        match = re.search(r"(\d{50})", text_content)
-        if match:
-            return match.group(1), "ok", []
+        matches_50 = list(dict.fromkeys(re.findall(r"\d{50}", text_content)))
+        if matches_50:
+            return matches_50[0], "ok", [], matches_50[:20]
 
         tokens = [token for token in re.findall(r"\d{10,20}", text_content)][:20]
-        return None, "extract_failed", tokens
+        return None, "extract_failed", tokens, []
 
     @staticmethod
     def _build_consecutivo_index(records: dict[str, FacturaRecord]) -> dict[str, str]:

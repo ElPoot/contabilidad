@@ -45,10 +45,10 @@ class FacturaIndexerPDFScanTests(unittest.TestCase):
                     return None, None
                 return None, None
 
-            def fake_fallback(pdf_data: bytes) -> tuple[str | None, str, list[str]]:
+            def fake_fallback(pdf_data: bytes) -> tuple[str | None, str, list[str], list[str]]:
                 if b"NOT_A_REAL_PDF" in pdf_data:
-                    return None, "corrupted", []
-                return None, "extract_failed", []
+                    return None, "corrupted", [], []
+                return None, "extract_failed", [], []
 
             with patch("app3.core.factura_index.extract_clave_and_cedula", side_effect=fake_extract_clave_and_cedula):
                 with patch.object(FacturaIndexer, "_extract_clave_from_pdf_text", side_effect=fake_fallback):
@@ -76,6 +76,36 @@ class FacturaIndexerPDFScanTests(unittest.TestCase):
         self.assertEqual(report["omitidos"]["factura_sin_clave_en_nombre.pdf"]["razon"], "extract_failed")
         self.assertEqual(report["omitidos"]["CORROMPIDO.pdf"]["razon"], "corrupted")
         self.assertEqual(report["omitidos"]["brochure_bioclean.pdf"]["razon"], "non_invoice")
+
+
+class FacturaIndexerMultipleClaveSelectionTests(unittest.TestCase):
+    def test_prefers_clave_detectada_que_existe_en_records(self) -> None:
+        clave_real = "5" * 50
+        clave_ajena = "6" * 50
+
+        with TemporaryDirectory() as temp_dir:
+            pdf_root = Path(temp_dir) / "PDF"
+            pdf_root.mkdir(parents=True)
+            (pdf_root / "documento.pdf").write_bytes(b"%PDF-1.4")
+
+            records = {
+                clave_real: FacturaRecord(clave=clave_real, xml_path=Path("x.xml"), estado="pendiente"),
+            }
+            indexer = FacturaIndexer()
+
+            def fake_extract_clave_and_cedula(data: bytes, original_filename: str = "") -> tuple[str | None, str | None]:
+                return None, None
+
+            def fake_fallback(pdf_data: bytes) -> tuple[str | None, str, list[str], list[str]]:
+                return None, "extract_failed", [], [clave_ajena, clave_real]
+
+            with patch("app3.core.factura_index.extract_clave_and_cedula", side_effect=fake_extract_clave_and_cedula):
+                with patch.object(FacturaIndexer, "_extract_clave_from_pdf_text", side_effect=fake_fallback):
+                    report = indexer._scan_and_link_pdfs_optimized(pdf_root, records)
+
+        self.assertIn(clave_real, report["linked"])
+        self.assertNotIn(clave_ajena, report["linked"])
+        self.assertIsNotNone(records[clave_real].pdf_path)
 
 
 if __name__ == "__main__":
