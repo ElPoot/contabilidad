@@ -324,6 +324,119 @@ class DatePickerDropdown(ctk.CTkToplevel):
         self._safe_close()
 
 
+class NewCuentaDialog(ctk.CTkToplevel):
+    """Modal dialog for adding a new account."""
+
+    def __init__(self, parent, categoria: str, subtipo: str, existing_cuentas: list,
+                 catalog_mgr, on_success):
+        super().__init__(parent)
+        self.overrideredirect(True)
+        self.configure(fg_color=CARD)
+        self.attributes("-topmost", True)
+        self._on_success = on_success
+        self._categoria = categoria
+        self._subtipo = subtipo
+        self._existing_cuentas = existing_cuentas
+        self._catalog_mgr = catalog_mgr
+        self.geometry("350x180+400+300")
+
+        self._card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=10,
+                                   border_width=1, border_color=BORDER)
+        self._card.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.bind("<Return>", lambda _e: self._save())
+
+        # Title
+        ctk.CTkLabel(
+            self._card, text="Agregar Nueva Cuenta",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=TEXT,
+        ).pack(fill="x", padx=12, pady=(12, 8))
+
+        # Input field
+        self._input_var = ctk.StringVar()
+        ctk.CTkLabel(
+            self._card, text="Nombre de la cuenta",
+            font=F_SMALL(), text_color=MUTED,
+        ).pack(fill="x", padx=12, pady=(0, 4))
+
+        self._entry = ctk.CTkEntry(
+            self._card, textvariable=self._input_var,
+            fg_color=SURFACE, border_color=BORDER, text_color=TEXT,
+            font=F_LABEL(), height=32, corner_radius=6,
+        )
+        self._entry.pack(fill="x", padx=12, pady=(0, 12))
+        self._entry.focus()
+
+        # Error message label
+        self._error_label = ctk.CTkLabel(
+            self._card, text="", text_color=DANGER,
+            font=F_SMALL(), wraplength=300,
+        )
+        self._error_label.pack(fill="x", padx=12, pady=(0, 8))
+
+        # Button row
+        btn_frame = ctk.CTkFrame(self._card, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=12, pady=(0, 12))
+
+        ctk.CTkButton(
+            btn_frame, text="Cancelar", width=100,
+            fg_color=SURFACE, hover_color=BORDER,
+            font=F_SMALL(), text_color=TEXT,
+            command=self._cancel,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            btn_frame, text="Guardar", width=100,
+            fg_color=TEAL, hover_color=TEAL_DIM,
+            font=F_SMALL(), text_color="#0d1a18",
+            command=self._save,
+        ).pack(side="right")
+
+        self.after(10, self.focus_force)
+
+    def _show_error(self, msg: str):
+        self._error_label.configure(text=msg)
+
+    def _validate_and_save(self) -> str | None:
+        """Validate input and return new account name or None if invalid."""
+        name = self._input_var.get().strip()
+
+        if not name:
+            self._show_error("El nombre no puede estar vacío.")
+            return None
+
+        if len(name) > 100:
+            self._show_error("El nombre no puede exceder 100 caracteres.")
+            return None
+
+        if name.upper() in [c.upper() for c in self._existing_cuentas]:
+            self._show_error(f"La cuenta '{name}' ya existe.")
+            return None
+
+        return name
+
+    def _save(self):
+        name = self._validate_and_save()
+        if name:
+            try:
+                self._catalog_mgr.add_cuenta(self._categoria, self._subtipo, name)
+                self._on_success(name)
+                self._safe_close()
+            except Exception as e:
+                self._show_error(f"Error al guardar: {str(e)}")
+
+    def _cancel(self):
+        self._safe_close()
+
+    def _safe_close(self):
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
+
 def _format_amount_es(number: Decimal) -> str:
     sign = "-" if number < 0 else ""
     n = abs(number)
@@ -396,6 +509,7 @@ class App3Window(ctk.CTk):
         self._load_queue: Queue = Queue()
         self._active_calendar: DatePickerDropdown | None = None
         self._load_generation: int = 0
+        self._all_cuentas: list[str] = []  # Unfiltered account list
 
         _apply_tree_style()
         self._build()
@@ -792,8 +906,32 @@ class App3Window(ctk.CTk):
         # row 4 — Cuenta (solo para GASTOS)
         self._cuenta_frame = ctk.CTkFrame(clf, fg_color="transparent")
         self._cuenta_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self._cuenta_frame, text="Cuenta", font=F_SMALL(),
-                      text_color=MUTED).grid(row=0, column=0, sticky="w", padx=12)
+
+        # Header row: Label + "New Account" button
+        header_frame = ctk.CTkFrame(self._cuenta_frame, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=12)
+        header_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(header_frame, text="Cuenta", font=F_SMALL(),
+                      text_color=MUTED).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            header_frame, text="➕", width=30, height=28,
+            fg_color=TEAL, hover_color=TEAL_DIM,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text_color="#0d1a18",
+            command=self._open_new_cuenta_dialog,
+        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+        # Search filter
+        self._cuenta_search_var = ctk.StringVar()
+        self._cuenta_search_var.trace_add("write", self._filter_cuentas)
+        ctk.CTkEntry(
+            self._cuenta_frame, textvariable=self._cuenta_search_var,
+            placeholder_text="Buscar cuenta...",
+            fg_color=SURFACE, border_color=BORDER, text_color=TEXT,
+            font=F_LABEL(), height=28, corner_radius=6,
+        ).grid(row=1, column=0, sticky="ew", padx=12, pady=(4, 2))
+
+        # ComboBox
         self._cuenta_var = ctk.StringVar()
         self._cuenta_cb = ctk.CTkComboBox(
             self._cuenta_frame, variable=self._cuenta_var, values=[],
@@ -804,7 +942,7 @@ class App3Window(ctk.CTk):
             dropdown_fg_color=CARD, dropdown_text_color=TEXT,
             command=lambda _v: self._update_path_preview(),
         )
-        self._cuenta_cb.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
+        self._cuenta_cb.grid(row=2, column=0, sticky="ew", padx=12, pady=(2, 8))
         self._cuenta_frame.grid(row=4, column=0, sticky="ew")
         self._cuenta_frame.grid_remove()
 
@@ -987,6 +1125,8 @@ class App3Window(ctk.CTk):
 
         if cat == "GASTOS" and mgr:
             cuentas = mgr.cuentas("GASTOS", subtipo)
+            self._all_cuentas = cuentas  # Store unfiltered list
+            self._cuenta_search_var.set("")  # Clear search
             self._cuenta_cb.configure(values=cuentas)
             self._cuenta_var.set(cuentas[0] if cuentas else "")
             self._cuenta_frame.grid()
@@ -994,6 +1134,51 @@ class App3Window(ctk.CTk):
             self._cuenta_frame.grid_remove()
 
         self._update_path_preview()
+
+    def _filter_cuentas(self, *_args):
+        """Filter accounts by search term (case-insensitive substring match)."""
+        search_term = self._cuenta_search_var.get().strip().lower()
+        if search_term:
+            filtered = [c for c in self._all_cuentas if search_term in c.lower()]
+        else:
+            filtered = self._all_cuentas
+        self._cuenta_cb.configure(values=filtered)
+        # Auto-select first matching item if available
+        if filtered and not self._cuenta_var.get():
+            self._cuenta_var.set(filtered[0])
+        elif filtered and self._cuenta_var.get() not in filtered:
+            self._cuenta_var.set(filtered[0])
+
+    def _open_new_cuenta_dialog(self):
+        """Open modal dialog to add a new account."""
+        if not self.catalog_mgr:
+            self._show_warning("Atención", "Catálogo no disponible.")
+            return
+
+        cat = self._cat_var.get()
+        subtipo = self._tipo_var.get()
+        if cat != "GASTOS" or not subtipo:
+            self._show_warning("Atención", "Selecciona una categoría y tipo primero.")
+            return
+
+        dialog = NewCuentaDialog(
+            self,
+            categoria=cat,
+            subtipo=subtipo,
+            existing_cuentas=self._all_cuentas,
+            catalog_mgr=self.catalog_mgr,
+            on_success=self._on_nueva_cuenta_added,
+        )
+
+    def _on_nueva_cuenta_added(self, new_cuenta: str):
+        """Called when a new account is successfully added."""
+        # Reload the subtipo to get updated list
+        self._on_subtipo_change()
+        # Select the new account
+        if new_cuenta in self._all_cuentas:
+            self._cuenta_var.set(new_cuenta)
+        self._update_path_preview()
+        self._set_status(f"Cuenta '{new_cuenta}' agregada.")
 
     def _update_path_preview(self):
         """Muestra la ruta de destino estimada debajo del formulario."""
