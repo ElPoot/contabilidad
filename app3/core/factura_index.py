@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+import time
 import re
 from pathlib import Path
+from typing import Any
 
 from app3.bootstrap import bootstrap_legacy_paths
 from .models import FacturaRecord
 from .xml_manager import CRXMLManager
+
+try:
+    import fitz
+except ModuleNotFoundError:  # pragma: no cover - dependencia opcional en runtime
+    fitz = None  # type: ignore[assignment]
 
 bootstrap_legacy_paths()
 
@@ -16,6 +25,9 @@ try:
 except ModuleNotFoundError:
     def extract_clave_and_cedula(data: bytes, original_filename: str = "") -> tuple:  # type: ignore[misc]
         return None, None
+
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -123,7 +135,12 @@ class FacturaIndexer:
 
         # --- PASO 2: vincular PDFs usando logica de App 1 (opcional) ---
         if include_pdf_scan:
-            self._scan_and_link_pdfs(pdf_root, records, allow_pdf_content_fallback=allow_pdf_content_fallback)
+            pdf_scan_report = self._scan_and_link_pdfs_optimized(
+                pdf_root,
+                records,
+                allow_pdf_content_fallback=allow_pdf_content_fallback,
+            )
+            self.audit_report["pdf_scan"] = pdf_scan_report.get("audit", {})
 
         self._recompute_states(records)
         return sorted(records.values(), key=lambda r: (r.fecha_emision, r.clave))
@@ -136,7 +153,7 @@ class FacturaIndexer:
     ) -> list[FacturaRecord]:
         """Enriquece una lista ya cargada con vínculos PDF sin reprocesar XML."""
         record_map = {r.clave: r for r in records if r.clave}
-        self._scan_and_link_pdfs(
+        self._scan_and_link_pdfs_optimized(
             client_folder / "PDF",
             record_map,
             allow_pdf_content_fallback=allow_pdf_content_fallback,
@@ -150,35 +167,335 @@ class FacturaIndexer:
         records: dict[str, FacturaRecord],
         allow_pdf_content_fallback: bool = True,
     ) -> None:
-        # extract_clave_and_cedula prioriza el nombre del archivo,
-        # solo lee el contenido si no hay clave en el nombre
+        self._scan_and_link_pdfs_optimized(
+            pdf_root,
+            records,
+            allow_pdf_content_fallback=allow_pdf_content_fallback,
+        )
+
+    def _scan_and_link_pdfs_optimized(
+        self,
+        pdf_root: Path,
+        records: dict[str, FacturaRecord],
+        allow_pdf_content_fallback: bool = True,
+        timeout_seconds: int = 5,
+        max_workers: int = 8,
+    ) -> dict[str, Any]:
+        """
+        Vincula PDFs a registros de factura con paralelismo y auditoría.
+
+        Example:
+            >>> indexer = FacturaIndexer()
+            >>> report = indexer._scan_and_link_pdfs_optimized(Path("/tmp/PDF"), {})
+            >>> sorted(report.keys())
+            ['audit', 'linked', 'omitidos']
+
+        Args:
+            pdf_root: Carpeta raíz de PDFs.
+            records: dict[clave_50dig] -> FacturaRecord (se modifica in-place).
+            allow_pdf_content_fallback: Si False, solo usa nombre del archivo.
+            timeout_seconds: Máximo tiempo por PDF.
+            max_workers: ThreadPoolExecutor workers.
+
+        Returns:
+            {
+                "linked": {clave: Path, ...},
+                "omitidos": {nombre: {razon, error, intento}, ...},
+                "audit": {total, exitosos, omitidos, tiempo_total_segundos, ...},
+            }
+        """
         if not pdf_root.exists():
-            return
+            return {
+                "linked": {},
+                "omitidos": {},
+                "audit": {
+                    "total_procesados": 0,
+                    "exitosos": 0,
+                    "omitidos": 0,
+                    "tiempo_total_segundos": 0.0,
+                    "velocidad_promedio_ms_por_pdf": 0.0,
+                    "picos": {
+                        "pdf_mas_lento": ("", 0),
+                        "pdf_mas_grande_mb": ("", 0.0),
+                    },
+                },
+            }
 
-        for pdf_file in pdf_root.rglob("*.pdf"):
-            clave = _extract_clave_from_filename(pdf_file.name)
+        pdf_files = list(pdf_root.rglob("*.pdf"))
+        total_files = len(pdf_files)
+        linked: dict[str, Path] = {}
+        omitidos: dict[str, dict[str, Any]] = {}
+        max_slow_name = ""
+        max_slow_ms = 0
+        max_size_name = ""
+        max_size_mb = 0.0
 
-            # Fallback costoso solo si el nombre no trae clave y está habilitado.
-            if not clave and allow_pdf_content_fallback:
+        started = time.perf_counter()
+        logger.info("Escaneando %s PDFs en %s", total_files, pdf_root)
+
+        if not pdf_files:
+            return {
+                "linked": linked,
+                "omitidos": omitidos,
+                "audit": {
+                    "total_procesados": 0,
+                    "exitosos": 0,
+                    "omitidos": 0,
+                    "tiempo_total_segundos": 0.0,
+                    "velocidad_promedio_ms_por_pdf": 0.0,
+                    "picos": {
+                        "pdf_mas_lento": ("", 0),
+                        "pdf_mas_grande_mb": ("", 0.0),
+                    },
+                },
+            }
+
+        workers = max(1, min(max_workers, total_files))
+        logger.info("ThreadPoolExecutor lanzado: %s workers", workers)
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {
+                executor.submit(
+                    self._process_single_pdf,
+                    pdf_file,
+                    allow_pdf_content_fallback,
+                    timeout_seconds,
+                ): pdf_file
+                for pdf_file in pdf_files
+            }
+            for future in as_completed(future_map):
+                pdf_file = future_map[future]
                 try:
-                    clave, _ced = extract_clave_and_cedula(
-                        pdf_file.read_bytes(),
-                        original_filename=pdf_file.name,
+                    result = future.result()
+                except Exception as exc:  # pragma: no cover - extrema defensa
+                    logger.exception("Error no controlado procesando PDF %s", pdf_file)
+                    omitidos[pdf_file.name] = {
+                        "razon": "extract_failed",
+                        "error": str(exc),
+                        "intento": 1,
+                    }
+                    continue
+
+                elapsed_ms = int(result.get("tiempo_ms", 0))
+                size_mb = float(result.get("size_mb", 0.0))
+                if elapsed_ms > max_slow_ms:
+                    max_slow_ms = elapsed_ms
+                    max_slow_name = pdf_file.name
+                if size_mb > max_size_mb:
+                    max_size_mb = size_mb
+                    max_size_name = pdf_file.name
+
+                clave = result.get("clave")
+                if clave:
+                    linked[clave] = pdf_file
+                    if clave in records:
+                        records[clave].pdf_path = pdf_file
+                    else:
+                        records[clave] = FacturaRecord(clave=clave, pdf_path=pdf_file, estado="sin_xml")
+                    logger.debug(
+                        "PDF: %s → FOUND EN %s (%sms)",
+                        pdf_file.name,
+                        str(result.get("metodo", "desconocido")).upper(),
+                        elapsed_ms,
                     )
-                except Exception:
-                    clave = None
+                else:
+                    reason = str(result.get("razon", "extract_failed"))
+                    message = str(result.get("error") or "")
+                    if reason == "timeout":
+                        logger.warning("PDF: %s → timeout (%sms) - omitido", pdf_file.name, elapsed_ms)
+                    elif reason == "corrupted":
+                        logger.error("PDF: %s → corrupted (%s)", pdf_file.name, message)
+                    else:
+                        logger.warning("PDF: %s → omitido (%s)", pdf_file.name, reason)
 
-            if not clave:
-                continue
+                    omitidos[pdf_file.name] = {
+                        "razon": reason,
+                        "error": message,
+                        "intento": int(result.get("intento", 1)),
+                    }
 
-            if clave in records:
-                records[clave].pdf_path = pdf_file
-            else:
-                records[clave] = FacturaRecord(
-                    clave=clave,
-                    pdf_path=pdf_file,
-                    estado="sin_xml",
-                )
+        total_time = time.perf_counter() - started
+        successful = len(linked)
+        skipped = len(omitidos)
+        avg_ms = (total_time * 1000.0 / total_files) if total_files else 0.0
+        logger.info(
+            "Vinculadas %s/%s (%.1f%%) en %.2fs",
+            successful,
+            total_files,
+            (successful / total_files * 100.0) if total_files else 0.0,
+            total_time,
+        )
+        if skipped:
+            logger.info("Omitidos: %s PDFs - ver reporte de auditoría", skipped)
+
+        return {
+            "linked": linked,
+            "omitidos": omitidos,
+            "audit": {
+                "total_procesados": total_files,
+                "exitosos": successful,
+                "omitidos": skipped,
+                "tiempo_total_segundos": round(total_time, 4),
+                "velocidad_promedio_ms_por_pdf": round(avg_ms, 2),
+                "picos": {
+                    "pdf_mas_lento": (max_slow_name, max_slow_ms),
+                    "pdf_mas_grande_mb": (max_size_name, round(max_size_mb, 2)),
+                },
+            },
+        }
+
+    def _process_single_pdf(
+        self,
+        pdf_file: Path,
+        allow_pdf_content_fallback: bool,
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        attempts = 0
+        clave = _extract_clave_from_filename(pdf_file.name)
+
+        try:
+            size_bytes = pdf_file.stat().st_size
+        except PermissionError as exc:
+            return {
+                "clave": None,
+                "razon": "permission_denied",
+                "error": str(exc),
+                "intento": 1,
+                "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                "size_mb": 0.0,
+            }
+
+        size_mb = size_bytes / (1024 * 1024)
+        if clave:
+            return {
+                "clave": clave,
+                "metodo": "filename",
+                "intento": 1,
+                "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                "size_mb": size_mb,
+            }
+
+        if not allow_pdf_content_fallback:
+            return {
+                "clave": None,
+                "razon": "extract_failed",
+                "error": "Fallback de contenido deshabilitado.",
+                "intento": 1,
+                "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                "size_mb": size_mb,
+            }
+
+        try:
+            pdf_data = self._read_pdf_bytes_streaming(pdf_file)
+        except PermissionError as exc:
+            return {
+                "clave": None,
+                "razon": "permission_denied",
+                "error": str(exc),
+                "intento": 1,
+                "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                "size_mb": size_mb,
+            }
+        except Exception as exc:
+            return {
+                "clave": None,
+                "razon": "extract_failed",
+                "error": str(exc),
+                "intento": 1,
+                "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                "size_mb": size_mb,
+            }
+
+        if not pdf_data:
+            return {
+                "clave": None,
+                "razon": "empty",
+                "error": "PDF vacío.",
+                "intento": 1,
+                "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                "size_mb": size_mb,
+            }
+
+        attempts += 1
+        try:
+            clave, _ced = extract_clave_and_cedula(pdf_data, original_filename=pdf_file.name)
+            if clave:
+                return {
+                    "clave": clave,
+                    "metodo": "contenido",
+                    "intento": attempts,
+                    "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                    "size_mb": size_mb,
+                }
+        except Exception as exc:
+            logger.debug("PDF: %s → extract_clave_and_cedula falló: %s", pdf_file.name, exc)
+
+        attempts += 1
+        clave_retry, retry_error = self._extract_clave_from_pdf_text(pdf_data)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        if elapsed_ms > timeout_seconds * 1000:
+            return {
+                "clave": None,
+                "razon": "timeout",
+                "error": f"Superó timeout de {timeout_seconds}s.",
+                "intento": attempts,
+                "tiempo_ms": elapsed_ms,
+                "size_mb": size_mb,
+            }
+
+        if clave_retry:
+            return {
+                "clave": clave_retry,
+                "metodo": "reintento_texto_pdf",
+                "intento": attempts,
+                "tiempo_ms": elapsed_ms,
+                "size_mb": size_mb,
+            }
+
+        return {
+            "clave": None,
+            "razon": retry_error,
+            "error": "extract_clave_and_cedula retornó None" if retry_error == "extract_failed" else "",
+            "intento": attempts,
+            "tiempo_ms": elapsed_ms,
+            "size_mb": size_mb,
+        }
+
+    @staticmethod
+    def _read_pdf_bytes_streaming(pdf_file: Path, chunk_size: int = 1024 * 1024) -> bytes:
+        """Lee un PDF por streaming (sin read_bytes)."""
+        chunks = bytearray()
+        with pdf_file.open("rb") as stream:
+            while True:
+                chunk = stream.read(chunk_size)
+                if not chunk:
+                    break
+                chunks.extend(chunk)
+        return bytes(chunks)
+
+    @staticmethod
+    def _extract_clave_from_pdf_text(pdf_data: bytes) -> tuple[str | None, str]:
+        """Reintento usando texto extraído por PyMuPDF para detectar PDFs corruptos/vacíos."""
+        if fitz is None:
+            return None, "extract_failed"
+        try:
+            document = fitz.open(stream=pdf_data, filetype="pdf")
+        except Exception as exc:
+            return None, "corrupted" if "cannot open" in str(exc).lower() else "extract_failed"
+
+        try:
+            text_content = "\n".join(page.get_text("text") for page in document)
+        finally:
+            document.close()
+
+        if not text_content.strip():
+            return None, "empty"
+
+        match = re.search(r"(\d{50})", text_content)
+        if match:
+            return match.group(1), "ok"
+        return None, "extract_failed"
 
     @staticmethod
     def _recompute_states(records: dict[str, FacturaRecord]) -> None:
