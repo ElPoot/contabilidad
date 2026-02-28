@@ -1095,10 +1095,12 @@ class App3Window(ctk.CTk):
 
         # Filtrar registros según pestaña activa
         if self.session:
+            # Obtener cédula confiable del cliente desde perfiles (por nombre)
+            client_cedula = self._get_client_cedula()
             self.records = filter_records_by_tab(
                 self.all_records,
                 tab,
-                self.session.cedula,
+                client_cedula,
                 self._db_records,
             )
             self._refresh_tree()
@@ -1111,6 +1113,36 @@ class App3Window(ctk.CTk):
                 btn.configure(fg_color=TEAL, text_color=BG)
             else:
                 btn.configure(fg_color=CARD, text_color=TEXT)
+
+    def _get_client_cedula(self) -> str:
+        """Obtiene cédula confiable del cliente desde client_profiles.json por nombre.
+
+        Fallback a ClientSession.cedula si no se encuentra en perfiles.
+        """
+        if not self.session:
+            return ""
+
+        try:
+            from facturacion_system.core.client_profiles import load_profiles
+            profiles = load_profiles()
+
+            # Buscar perfil del cliente por nombre
+            client_name = self.session.nombre
+            if client_name in profiles:
+                profile = profiles[client_name]
+                if isinstance(profile, dict):
+                    cedula = str(profile.get("cedula", "")).strip()
+                    if cedula:
+                        # Limpiar cédula (solo dígitos)
+                        import re
+                        cedula_clean = re.sub(r"\D", "", cedula)
+                        if cedula_clean:
+                            return cedula_clean
+        except Exception as e:
+            logger.warning(f"Error obteniendo cédula desde perfiles: {e}")
+
+        # Fallback a cedula de sesión
+        return (self.session.cedula or "").strip()
 
     # ── TABLA ─────────────────────────────────────────────────────────────────
     def _refresh_tree(self):
