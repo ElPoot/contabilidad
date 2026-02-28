@@ -1,0 +1,124 @@
+"""Utilidades de clasificación de transacciones para Facturas del Período.
+
+Clasifica cada factura según la perspectiva del cliente actual.
+"""
+
+from app3.core.models import FacturaRecord
+
+
+def classify_transaction(record: FacturaRecord, client_cedula: str) -> str:
+    """Clasifica factura según perspectiva del cliente.
+
+    Args:
+        record: FacturaRecord con datos XML
+        client_cedula: Cédula del cliente actual (sesión)
+
+    Returns:
+        "ingreso" - Yo soy emisor (venta)
+        "egreso" - Yo soy receptor (compra)
+        "ors" - Terceros (ni emisor ni receptor soy yo)
+    """
+    client_ced = (client_cedula or "").strip()
+    if not client_ced:
+        return "ors"
+
+    emisor_ced = (record.emisor_cedula or "").strip()
+    receptor_ced = (record.receptor_cedula or "").strip()
+
+    # Yo soy emisor → Ingreso (venta)
+    if emisor_ced == client_ced:
+        return "ingreso"
+
+    # Yo soy receptor → Egreso (compra)
+    if receptor_ced == client_ced:
+        return "egreso"
+
+    # Terceros
+    return "ors"
+
+
+def get_classification_label(classification: str) -> str:
+    """Retorna etiqueta legible de clasificación."""
+    labels = {
+        "ingreso": "Ingresos",
+        "egreso": "Egresos",
+        "ors": "ORS",
+        "pendiente": "Pendientes",
+        "todas": "Todas las facturas",
+    }
+    return labels.get(classification, classification)
+
+
+def filter_records_by_tab(
+    records: list[FacturaRecord],
+    tab: str,
+    client_cedula: str,
+    db_records: dict[str, dict],
+) -> list[FacturaRecord]:
+    """Filtra registros según pestaña activa.
+
+    Args:
+        records: Lista de FacturaRecord
+        tab: Pestaña activa ("todas", "ingreso", "egreso", "ors", "pendiente")
+        client_cedula: Cédula del cliente actual
+        db_records: Mapeo de clave → datos de clasificación (BD)
+
+    Returns:
+        Lista filtrada de FacturaRecord
+    """
+    if tab == "todas":
+        return records
+
+    if tab == "pendiente":
+        # Pendientes: no clasificados
+        return [
+            r for r in records
+            if not (db_records.get(r.clave, {}).get("estado") == "clasificado")
+        ]
+
+    # Clasificar por tipo de transacción
+    filtered = []
+    for r in records:
+        classification = classify_transaction(r, client_cedula)
+        if classification == tab:
+            filtered.append(r)
+
+    return filtered
+
+
+def get_tab_statistics(
+    records: list[FacturaRecord],
+    client_cedula: str,
+    db_records: dict[str, dict],
+) -> dict[str, dict]:
+    """Calcula estadísticas por pestaña.
+
+    Returns:
+        {
+            "todas": {"count": int, "clasificados": int, "porcentaje": int},
+            "ingreso": {...},
+            "egreso": {...},
+            "ors": {...},
+            "pendiente": {...},
+        }
+    """
+    tabs = ["todas", "ingreso", "egreso", "ors", "pendiente"]
+    stats = {}
+
+    for tab in tabs:
+        filtered = filter_records_by_tab(records, tab, client_cedula, db_records)
+        clasificados = sum(
+            1
+            for r in filtered
+            if db_records.get(r.clave, {}).get("estado") == "clasificado"
+        )
+        total = len(filtered)
+        porcentaje = int((clasificados / total * 100)) if total > 0 else 0
+
+        stats[tab] = {
+            "count": total,
+            "clasificados": clasificados,
+            "porcentaje": porcentaje,
+        }
+
+    return stats

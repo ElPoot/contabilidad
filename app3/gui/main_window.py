@@ -15,6 +15,12 @@ import logging
 
 from app3.config import metadata_dir
 from app3.core.catalog import CatalogManager
+from app3.core.classification_utils import (
+    classify_transaction,
+    filter_records_by_tab,
+    get_classification_label,
+    get_tab_statistics,
+)
 from app3.core.classifier import ClassificationDB, build_dest_folder, classify_record
 from app3.core.factura_index import FacturaIndexer
 from app3.core.models import FacturaRecord
@@ -518,6 +524,8 @@ class App3Window(ctk.CTk):
         self._all_cuentas: list[str] = []  # Unfiltered account list
         self._loading_overlay: LoadingOverlay | None = None  # Overlay de carga
         self._tree_clave_map: dict[str, FacturaRecord] = {}  # Mapeo: clave → record (para mantener orden)
+        self._active_tab: str = "todas"  # Pestaña activa de facturas del período
+        self._tab_buttons: dict[str, ctk.CTkButton] = {}  # Botones de pestañas
 
         _apply_tree_style()
         self._build()
@@ -800,7 +808,8 @@ class App3Window(ctk.CTk):
         frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=10, border_width=1, border_color=BORDER)
         frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         frame.grid_rowconfigure(1, weight=1)
-        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)  # Treeview
+        frame.grid_columnconfigure(1, weight=0, minsize=160)  # Panel de pestañas
 
         # Header del panel
         top = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10, height=44)
@@ -821,6 +830,42 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(top, textvariable=self._progress_var,
                       font=F_SMALL(), text_color=TEAL).grid(
             row=0, column=1, sticky="e", padx=14)
+
+        # Panel de pestañas (todas, ingresos, egresos, ors, pendientes)
+        tabs_frame = ctk.CTkFrame(frame, fg_color=SURFACE, corner_radius=8)
+        tabs_frame.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(6, 0), pady=6)
+        tabs_frame.grid_rowconfigure(0, weight=1)
+        tabs_frame.grid_columnconfigure(0, weight=1)
+
+        # Contenedor de botones de pestañas
+        tabs_buttons_frame = ctk.CTkFrame(tabs_frame, fg_color=SURFACE)
+        tabs_buttons_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        tab_configs = [
+            ("todas", "Todas"),
+            ("ingreso", "Ingresos"),
+            ("egreso", "Egresos"),
+            ("ors", "ORS"),
+            ("pendiente", "Pendientes"),
+        ]
+
+        for tab_id, tab_label in tab_configs:
+            btn = ctk.CTkButton(
+                tabs_buttons_frame,
+                text=tab_label,
+                height=36,
+                fg_color=CARD,
+                hover_color=BORDER,
+                text_color=TEXT,
+                font=F_SMALL(),
+                corner_radius=6,
+                command=lambda t=tab_id: self._on_tab_clicked(t),
+            )
+            btn.pack(fill="x", pady=4)
+            self._tab_buttons[tab_id] = btn
+
+        # Marcar pestaña inicial como activa
+        self._update_tab_appearance("todas")
 
         # Treeview con estilo oscuro
         tree_frame = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10)
@@ -1042,6 +1087,30 @@ class App3Window(ctk.CTk):
                       justify="left", wraplength=200, anchor="w").grid(
             row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
 
+    # ── PESTAÑAS DE FACTURAS DEL PERÍODO ────────────────────────────────────────
+    def _on_tab_clicked(self, tab: str):
+        """Maneja click en pestaña. Filtra registros y actualiza UI."""
+        self._active_tab = tab
+        self._update_tab_appearance(tab)
+
+        # Filtrar registros según pestaña activa
+        if self.session:
+            self.records = filter_records_by_tab(
+                self.all_records,
+                tab,
+                self.session.client_cedula,
+                self._db_records,
+            )
+            self._refresh_tree()
+            self._update_progress()
+
+    def _update_tab_appearance(self, active_tab: str):
+        """Actualiza colores de botones de pestañas."""
+        for tab_id, btn in self._tab_buttons.items():
+            if tab_id == active_tab:
+                btn.configure(fg_color=TEAL, text_color=BG)
+            else:
+                btn.configure(fg_color=CARD, text_color=TEXT)
 
     # ── TABLA ─────────────────────────────────────────────────────────────────
     def _refresh_tree(self):
