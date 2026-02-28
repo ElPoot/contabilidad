@@ -547,6 +547,11 @@ class App3Window(ctk.CTk):
             self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self._loading_overlay.update_status("Iniciando...")
 
+        # 🔥 CRÍTICO: Forzar actualización visual del overlay
+        # Sin esto, el overlay no se ve en pantalla durante el worker thread
+        self.update_idletasks()
+        self.update()
+
         def worker():
             try:
                 start_total = time.perf_counter()
