@@ -122,5 +122,29 @@ class FacturaIndexerClaveStructureTests(unittest.TestCase):
 
 
 
+class FacturaIndexerReconcileTests(unittest.TestCase):
+    def test_reconcile_by_consecutivo_in_filename_when_unique(self) -> None:
+        clave = "50602022600310187947700100001010000003076100000001"
+        consecutivo = "00100001010000003076"
+
+        with TemporaryDirectory() as temp_dir:
+            pdf_root = Path(temp_dir) / "PDF"
+            pdf_root.mkdir(parents=True)
+            (pdf_root / f"FE_{consecutivo}.pdf").write_bytes(b"%PDF-1.4")
+
+            records = {
+                clave: FacturaRecord(clave=clave, xml_path=Path("x.xml"), estado="pendiente"),
+            }
+            indexer = FacturaIndexer()
+
+            with patch("app3.core.factura_index.extract_clave_and_cedula", return_value=(None, None)):
+                with patch.object(FacturaIndexer, "_extract_clave_from_pdf_text", return_value=(None, "extract_failed", [], [])):
+                    report = indexer._scan_and_link_pdfs_optimized(pdf_root, records)
+
+        self.assertIn(clave, report["linked"])
+        self.assertIsNotNone(records[clave].pdf_path)
+
+
+
 if __name__ == "__main__":
     unittest.main()

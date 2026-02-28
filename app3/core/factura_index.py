@@ -76,6 +76,11 @@ def _extract_emisor_from_clave(clave: str) -> str | None:
     return raw[9:21]
 
 
+def _normalize_digits(text: str) -> str:
+    """Retorna únicamente dígitos de un texto."""
+    return re.sub(r"\D", "", text or "")
+
+
 class FacturaIndexer:
     """
     Construye la lista de FacturaRecord para un cliente y periodo usando
@@ -226,7 +231,7 @@ class FacturaIndexer:
         if not pdf_root.exists():
             return {"linked": {}, "omitidos": {}, "audit": base_audit}
 
-        pdf_files = list(pdf_root.rglob("*.pdf"))
+        pdf_files = [p for p in pdf_root.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"]
         total_files = len(pdf_files)
         if not pdf_files:
             return {"linked": {}, "omitidos": {}, "audit": base_audit}
@@ -328,6 +333,8 @@ class FacturaIndexer:
                     "error": message,
                     "intento": int(result.get("intento", 1)),
                 }
+
+        self._reconcile_missing_with_filename_consecutivo(records, pdf_files, linked)
 
         total_time = time.perf_counter() - started
         successful = len(linked)
@@ -589,6 +596,36 @@ class FacturaIndexer:
             if len(set(matches)) == 1:
                 return matches[0]
         return None
+
+    @staticmethod
+    def _reconcile_missing_with_filename_consecutivo(
+        records: dict[str, FacturaRecord],
+        pdf_files: list[Path],
+        linked: dict[str, Path],
+    ) -> None:
+        """Segundo pase: vincula por consecutivo en nombre si la coincidencia es única."""
+        assigned_paths = set(linked.values())
+        for clave, record in records.items():
+            if not record.xml_path or record.pdf_path:
+                continue
+            consecutivo = _extract_consecutivo_from_clave(clave)
+            if not consecutivo:
+                continue
+
+            short_cons = consecutivo[-10:]
+            candidates: list[Path] = []
+            for pdf_file in pdf_files:
+                if pdf_file in assigned_paths:
+                    continue
+                digits_name = _normalize_digits(pdf_file.stem)
+                if consecutivo in digits_name or digits_name.endswith(short_cons):
+                    candidates.append(pdf_file)
+
+            if len(candidates) == 1:
+                record.pdf_path = candidates[0]
+                linked[clave] = candidates[0]
+                assigned_paths.add(candidates[0])
+                logger.debug("PDF: %s → FOUND EN RECONCILIACION_CONSECUTIVO", candidates[0].name)
 
     @staticmethod
     def _recompute_states(records: dict[str, FacturaRecord]) -> None:
