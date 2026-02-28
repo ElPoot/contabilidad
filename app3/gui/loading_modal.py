@@ -1,4 +1,4 @@
-"""Modal de carga con progreso real para App3."""
+"""Overlay de carga integrado (no ventana separada)."""
 
 import customtkinter as ctk
 
@@ -11,39 +11,33 @@ TEAL = "#2dd4bf"
 TEXT = "#e8eaf0"
 MUTED = "#6b7280"
 
-class LoadingModal(ctk.CTkToplevel):
-    """Modal de carga con barra de progreso y mensaje actualizable."""
+class LoadingOverlay(ctk.CTkFrame):
+    """Overlay de carga integrado como Frame que se superpone en la ventana principal.
 
-    def __init__(self, parent, title: str = "Cargando..."):
-        super().__init__(parent)
-        self.title(title)
-        self.geometry("500x250")
-        self.resizable(False, False)
+    No es una ventana separada (CTkToplevel), sino un Frame que cubre todo
+    y se ubica encima del contenido (usando grid con row/column 0, sticky="nsew").
+    """
 
-        # Centered en parent
-        self.transient(parent)
-        self.grab_set()
+    def __init__(self, parent):
+        super().__init__(parent, fg_color=f"rgba(13, 15, 20, 0.85)")  # Semi-transparente
 
-        # Estilo
-        self.configure(fg_color=BG)
-
-        # ── CONTENIDO ──
-        frame = ctk.CTkFrame(self, fg_color=BG)
-        frame.pack(fill="both", expand=True, padx=40, pady=40)
+        # Crear frame central
+        center_frame = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12)
+        center_frame.place(relx=0.5, rely=0.5, anchor="center", width=500, height=280)
 
         # Icono + título
         title_lbl = ctk.CTkLabel(
-            frame,
-            text="⏳ " + title,
+            center_frame,
+            text="⏳ Cargando facturas...",
             font=("Segoe UI", 16, "bold"),
             text_color=TEXT,
         )
-        title_lbl.pack(pady=(0, 20))
+        title_lbl.pack(pady=(30, 15))
 
         # Mensaje de estado (actualizable)
         self.status_var = ctk.StringVar(value="Iniciando...")
         self.status_lbl = ctk.CTkLabel(
-            frame,
+            center_frame,
             textvariable=self.status_var,
             font=("Segoe UI", 12),
             text_color=MUTED,
@@ -52,25 +46,23 @@ class LoadingModal(ctk.CTkToplevel):
 
         # Barra de progreso
         self.progress_bar = ctk.CTkProgressBar(
-            frame,
+            center_frame,
             fg_color=SURFACE,
             progress_color=TEAL,
-            height=6,
+            height=8,
         )
         self.progress_bar.set(0)
-        self.progress_bar.pack(fill="x", pady=(0, 15))
+        self.progress_bar.pack(fill="x", padx=30, pady=(0, 15))
 
         # Contador
         self.counter_var = ctk.StringVar(value="0/0 archivos")
         self.counter_lbl = ctk.CTkLabel(
-            frame,
+            center_frame,
             textvariable=self.counter_var,
             font=("Segoe UI", 11),
             text_color=MUTED,
         )
-        self.counter_lbl.pack()
-
-        self.after(100, self.focus)
+        self.counter_lbl.pack(pady=(0, 30))
 
     def update_status(self, message: str):
         """Actualiza mensaje de estado."""
@@ -83,10 +75,3 @@ class LoadingModal(ctk.CTkToplevel):
         self.progress_bar.set(pct)
         self.counter_var.set(f"{current}/{total} archivos")
         self.update_idletasks()
-
-    def close(self):
-        """Cierra modal."""
-        try:
-            self.destroy()
-        except:
-            pass

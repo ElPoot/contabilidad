@@ -10,15 +10,19 @@ from queue import Queue
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, ttk  # Treeview + diálogos
 
+import logging
+
 from app3.config import metadata_dir
 from app3.core.catalog import CatalogManager
 from app3.core.classifier import ClassificationDB, build_dest_folder, classify_record
 from app3.core.factura_index import FacturaIndexer
 from app3.core.models import FacturaRecord
 from app3.core.session import ClientSession
-from app3.gui.loading_modal import LoadingModal
+from app3.gui.loading_modal import LoadingOverlay
 from app3.gui.pdf_viewer import PDFViewer
 from app3.gui.session_view import SessionView
+
+logger = logging.getLogger(__name__)
 
 # ── PALETA (misma que session_view) ──────────────────────────────────────────
 BG      = "#0d0f14"
@@ -511,6 +515,7 @@ class App3Window(ctk.CTk):
         self._active_calendar: DatePickerDropdown | None = None
         self._load_generation: int = 0
         self._all_cuentas: list[str] = []  # Unfiltered account list
+        self._loading_overlay: LoadingOverlay | None = None  # Overlay de carga
 
         _apply_tree_style()
         self._build()
@@ -529,24 +534,36 @@ class App3Window(ctk.CTk):
         self._load_session(session)
 
     def _load_session(self, session: ClientSession):
+        import time
         self._load_generation += 1
         generation = self._load_generation
-
-        # Mostrar modal de carga
-        self._loading_modal = LoadingModal(self, title="Cargando facturas")
         self._load_queue = Queue()
+
+        # Mostrar overlay de carga integrado
+        if not hasattr(self, '_loading_overlay') or not self._loading_overlay:
+            self._loading_overlay = LoadingOverlay(self)
+            self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        else:
+            self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        self._loading_overlay.update_status("Iniciando...")
 
         def worker():
             try:
+                start_total = time.perf_counter()
+
                 mdir = metadata_dir(session.folder)
+                self.after(0, lambda: self._loading_overlay.update_status("Cargando catálogo..."))
                 catalog = CatalogManager(mdir).load()
+
+                self.after(0, lambda: self._loading_overlay.update_status("Abriendo base de datos..."))
                 db = ClassificationDB(mdir)
+
+                self.after(0, lambda: self._loading_overlay.update_status("Preparando indexador..."))
                 indexer = FacturaIndexer()
 
-                # Actualizar modal: XML
-                self.after(0, lambda: self._loading_modal.update_status("Escaneando XMLs..."))
-
-                # Cargar XMLs + PDFs EN PARALELO desde inicio (include_pdf_scan=True)
+                # Cargar XMLs + PDFs EN PARALELO
+                self.after(0, lambda: self._loading_overlay.update_status("Escaneando XMLs y PDFs..."))
+                start_load = time.perf_counter()
                 records = indexer.load_period(
                     session.folder,
                     from_date="",
@@ -554,27 +571,31 @@ class App3Window(ctk.CTk):
                     include_pdf_scan=True,
                     allow_pdf_content_fallback=True,
                 )
+                load_time = time.perf_counter() - start_load
+                logger.info(f"load_period() tardó {load_time:.2f}s para {len(records)} registros")
+
+                total_time = time.perf_counter() - start_total
+                logger.info(f"Worker total: {total_time:.2f}s")
 
                 self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors)))
             except Exception as exc:
+                logger.exception("Error en worker")
                 self._load_queue.put(("error", (generation, str(exc))))
 
         threading.Thread(target=worker, daemon=True).start()
         self.after(150, self._poll_load)
 
     def _poll_load(self):
+        import time
         if self._load_queue.empty():
             self.after(150, self._poll_load)
             return
 
         status, payload = self._load_queue.get()
 
-        # Cerrar modal de carga
-        if hasattr(self, '_loading_modal') and self._loading_modal:
-            try:
-                self._loading_modal.close()
-            except:
-                pass
+        # Ocultar overlay de carga
+        if hasattr(self, '_loading_overlay') and self._loading_overlay:
+            self._loading_overlay.grid_remove()
 
         if status == "error":
             generation, message = payload
@@ -607,7 +628,13 @@ class App3Window(ctk.CTk):
             self._on_categoria_change()
 
         self.pdf_viewer.clear()
+
+        # Timing del refresh
+        start_refresh = time.perf_counter()
         self._refresh_tree()
+        refresh_time = time.perf_counter() - start_refresh
+        logger.info(f"_refresh_tree() tardó {refresh_time:.2f}s para {len(self.records)} registros")
+
         self._update_progress()
         self._set_status("Listo")
 
