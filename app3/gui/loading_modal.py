@@ -22,9 +22,9 @@ class LoadingOverlay(ctk.CTkFrame):
         # Fondo oscuro para efecto de overlay (customtkinter no soporta RGBA)
         super().__init__(parent, fg_color=SURFACE)
 
-        # Crear frame central
-        center_frame = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12)
-        center_frame.place(relx=0.5, rely=0.5, anchor="center", width=500, height=280)
+        # Crear frame central (width/height en constructor, no en place)
+        center_frame = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12, width=500, height=280)
+        center_frame.place(relx=0.5, rely=0.5, anchor="center")
 
         # Icono + título
         title_lbl = ctk.CTkLabel(
