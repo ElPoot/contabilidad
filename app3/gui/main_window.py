@@ -1289,34 +1289,47 @@ class App3Window(ctk.CTk):
         else:
             self._hacienda_lbl.configure(text="", fg_color="transparent")
 
-        # PDF: Intentar cargar desde ruta original, o desde ruta clasificada si ya fue movido
-        pdf_to_load = None
-
-        # 1️⃣ Intenta ruta original (si no fue clasificado aún)
-        if r.pdf_path and r.pdf_path.exists():
-            pdf_to_load = r.pdf_path
-
-        # 2️⃣ Si no está en original, busca en ruta destino (si ya fue clasificado)
-        elif self.db and r.clave:
-            db_record = self._db_records.get(r.clave)
-            if db_record and db_record.get("ruta_destino"):
-                ruta_destino = Path(db_record["ruta_destino"])
-                if ruta_destino.exists():
-                    pdf_to_load = ruta_destino
-                    logger.debug(f"PDF cargado desde ruta clasificada: {ruta_destino}")
-
-        # Cargar o mostrar vacío
-        if pdf_to_load:
-            self.pdf_viewer.load(pdf_to_load)
+        # PDF: Verificar si es un registro omitido
+        if r.razon_omisión:
+            # Registro omitido: mostrar mensaje
+            razon_text = {
+                "non_invoice": "Detectado como no-factura (borrador, catálogo, comunicado, etc.)",
+                "timeout": "Timeout durante extracción de clave",
+                "extract_failed": "Error al extraer información del PDF",
+            }.get(r.razon_omisión, "PDF omitido sin PDF vinculado")
+            self.pdf_viewer.release_file_handles(f"⊘ PDF Omitido\n\n{razon_text}")
         else:
-            self.pdf_viewer.clear()
+            # Intentar cargar desde ruta original, o desde ruta clasificada si ya fue movido
+            pdf_to_load = None
+
+            # 1️⃣ Intenta ruta original (si no fue clasificado aún)
+            if r.pdf_path and r.pdf_path.exists():
+                pdf_to_load = r.pdf_path
+
+            # 2️⃣ Si no está en original, busca en ruta destino (si ya fue clasificado)
+            elif self.db and r.clave:
+                db_record = self._db_records.get(r.clave)
+                if db_record and db_record.get("ruta_destino"):
+                    ruta_destino = Path(db_record["ruta_destino"])
+                    if ruta_destino.exists():
+                        pdf_to_load = ruta_destino
+                        logger.debug(f"PDF cargado desde ruta clasificada: {ruta_destino}")
+
+            # Cargar o mostrar vacío
+            if pdf_to_load:
+                self.pdf_viewer.load(pdf_to_load)
+            else:
+                self.pdf_viewer.clear()
 
         # Prellenar proveedor
         if r.emisor_nombre:
             self._prov_var.set(r.emisor_nombre)
 
-        # Habilitar botón clasificar
-        self._btn_classify.configure(state="normal")
+        # Habilitar botón clasificar (excepto para registros omitidos)
+        if r.razon_omisión:
+            self._btn_classify.configure(state="disabled", text="⊘ No clasificable")
+        else:
+            self._btn_classify.configure(state="normal", text="✔  Clasificar")
 
         # Clasificación previa
         if self.db:

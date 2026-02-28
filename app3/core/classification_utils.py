@@ -68,20 +68,23 @@ def filter_records_by_tab(
     Returns:
         Lista filtrada de FacturaRecord
     """
+    # Excluir registros omitidos de todas las pestañas excepto "omitidos"
+    non_omitted = [r for r in records if not r.razon_omisión]
+
     if tab == "todas":
-        return records
+        return non_omitted
 
     if tab == "pendiente":
-        # Pendientes: no clasificados
+        # Pendientes: no clasificados (excluir omitidos)
         return [
-            r for r in records
+            r for r in non_omitted
             if not (db_records.get(r.clave, {}).get("estado") == "clasificado")
         ]
 
     if tab == "sin_clave":
         # PDFs sin clave: no tienen clave válida (50 dígitos) o falta vinculación
         return [
-            r for r in records
+            r for r in non_omitted
             if not r.clave or len(r.clave) != 50 or r.estado in ("pendiente_pdf", "sin_xml") or not r.pdf_path
         ]
 
@@ -92,9 +95,9 @@ def filter_records_by_tab(
             if r.razon_omisión in ("non_invoice", "timeout", "extract_failed")
         ]
 
-    # Clasificar por tipo de transacción
+    # Clasificar por tipo de transacción (excluir omitidos)
     filtered = []
-    for r in records:
+    for r in non_omitted:
         classification = classify_transaction(r, client_cedula)
         if classification == tab:
             filtered.append(r)
@@ -125,10 +128,11 @@ def get_tab_statistics(
 
     for tab in tabs:
         filtered = filter_records_by_tab(records, tab, client_cedula, db_records)
+        # Solo contar clasificados para registros sin razon_omisión
         clasificados = sum(
             1
             for r in filtered
-            if db_records.get(r.clave, {}).get("estado") == "clasificado"
+            if not r.razon_omisión and db_records.get(r.clave, {}).get("estado") == "clasificado"
         )
         total = len(filtered)
         porcentaje = int((clasificados / total * 100)) if total > 0 else 0
