@@ -78,21 +78,41 @@ class PDFCacheManager:
 
         return cached_path
 
-    def add_to_cache(self, pdf_file: Path) -> None:
+    def get_cached_clave(self, pdf_filename: str) -> str | None:
+        """
+        Obtener clave de factura asociada a un PDF cacheado.
+
+        Args:
+            pdf_filename: Nombre del archivo PDF
+
+        Returns:
+            Clave de factura (50 dígitos) si existe, None si no se guardó
+        """
+        entry = self.cache.get("pdfs", {}).get(pdf_filename)
+        if entry:
+            return entry.get("clave")
+        return None
+
+    def add_to_cache(self, pdf_file: Path, clave: str = "") -> None:
         """
         Agregar o actualizar entrada de caché.
 
         Args:
             pdf_file: Ruta completa del PDF
+            clave: Clave de factura asociada (50 dígitos), opcional
         """
         filename = pdf_file.name
         checksum = self._compute_checksum(pdf_file)
 
-        self.cache.setdefault("pdfs", {})[filename] = {
+        entry = {
             "path": str(pdf_file),
             "checksum": checksum,
             "timestamp": datetime.now().isoformat(),
         }
+        if clave:
+            entry["clave"] = clave
+
+        self.cache.setdefault("pdfs", {})[filename] = entry
 
     def remove_from_cache(self, pdf_filename: str) -> None:
         """Remover entrada del caché."""

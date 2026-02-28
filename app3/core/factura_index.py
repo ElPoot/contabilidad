@@ -352,7 +352,8 @@ class FacturaIndexer:
 
         # ── FILTRAR POR CACHÉ ──
         # PDFs que están en caché y no cambiaron: no necesitan escaneo
-        cached_pdfs = {}
+        cached_pdfs = {}  # {filename → path}
+        cached_pdf_claves = {}  # {filename → clave} - para vinculación correcta
         pdfs_to_scan = []
 
         if self.pdf_cache:
@@ -361,6 +362,10 @@ class FacturaIndexer:
                 if cached_path:
                     # PDF está en caché y no cambió
                     cached_pdfs[pdf_file.name] = cached_path
+                    # Obtener la clave asociada (si se guardó)
+                    cached_clave = self.pdf_cache.get_cached_clave(pdf_file.name)
+                    if cached_clave:
+                        cached_pdf_claves[pdf_file.name] = cached_clave
                 else:
                     # PDF es nuevo o cambió
                     pdfs_to_scan.append(pdf_file)
@@ -386,8 +391,17 @@ class FacturaIndexer:
             logger.info("Escaneando %s PDFs en %s (+ %s del caché)", scan_count, pdf_root, cached_count)
             logger.info("ThreadPoolExecutor lanzado: %s workers", max(1, min(max_workers, scan_count)))
 
-        # Incorporar PDFs del caché al resultado
-        linked.update(cached_pdfs)
+        # Procesar PDFs del caché: vincular con sus claves asociadas
+        for pdf_filename, pdf_path in cached_pdfs.items():
+            clave = cached_pdf_claves.get(pdf_filename)
+            if clave and clave in records:
+                # Vincular a registro existente usando clave guardada
+                linked[clave] = pdf_path
+                records[clave].pdf_path = pdf_path
+                logger.debug(f"PDF cacheado: {pdf_filename} → {clave} (VINCULADO)")
+            else:
+                # Sin clave guardada - usar para reconciliación posterior
+                pass  # Se procesará en _reconcile_missing_with_filename_consecutivo
 
         with ThreadPoolExecutor(max_workers=max(1, min(max_workers, scan_count))) as executor:
             future_map = {
@@ -548,9 +562,17 @@ class FacturaIndexer:
 
         # ── ACTUALIZAR CACHÉ ──
         if self.pdf_cache:
-            # Agregar solo PDFs recién escaneados al caché (cached ya están en caché)
+            # Agregar solo PDFs recién escaneados al caché (con su clave asociada)
             for pdf_file in pdfs_to_scan:
-                self.pdf_cache.add_to_cache(pdf_file)
+                # Buscar la clave asociada en linked
+                clave = ""
+                for clave_candidate, pdf_path in linked.items():
+                    if pdf_path == pdf_file:
+                        # Solo si es una clave de 50 dígitos (no un nombre de archivo)
+                        if len(clave_candidate) == 50 and clave_candidate.isdigit():
+                            clave = clave_candidate
+                        break
+                self.pdf_cache.add_to_cache(pdf_file, clave)
 
             self.pdf_cache.save_cache()
             logger.info(f"Caché actualizado: {len(self.pdf_cache.cache.get('pdfs', {}))} PDFs cacheados")
