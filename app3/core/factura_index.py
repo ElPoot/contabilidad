@@ -363,12 +363,15 @@ class FacturaIndexer:
             for pdf_file in all_pdf_files:
                 cached_path = self.pdf_cache.get_cached_path(pdf_file)
                 if cached_path:
-                    # PDF está en caché y no cambió
-                    cached_pdfs[pdf_file.name] = cached_path
-                    # Obtener la clave asociada (si se guardó)
+                    # PDF está en caché y no cambió - verificar si tiene clave asociada
                     cached_clave = self.pdf_cache.get_cached_clave(pdf_file.name)
                     if cached_clave:
+                        # Tiene clave → fue vinculado exitosamente, usar del caché
+                        cached_pdfs[pdf_file.name] = cached_path
                         cached_pdf_claves[pdf_file.name] = cached_clave
+                    else:
+                        # Sin clave → fue omitido originalmente, volver a procesar
+                        pdfs_to_scan.append(pdf_file)
                 else:
                     # PDF es nuevo o cambió
                     pdfs_to_scan.append(pdf_file)
