@@ -629,6 +629,11 @@ class App3Window(ctk.CTk):
 
         self.pdf_viewer.clear()
 
+        # Actualizar overlay: renderizando tabla
+        if hasattr(self, '_loading_overlay') and self._loading_overlay and self._loading_overlay.winfo_exists():
+            self._loading_overlay.update_status("Renderizando lista de facturas...")
+            self._loading_overlay.update_progress(0, len(self.records))
+
         # Timing del refresh
         start_refresh = time.perf_counter()
         self._refresh_tree()
@@ -1022,14 +1027,13 @@ class App3Window(ctk.CTk):
 
     # ── TABLA ─────────────────────────────────────────────────────────────────
     def _refresh_tree(self):
-        """Refresca el Treeview con registros actuales (optimizado)."""
+        """Refresca el Treeview con registros actuales (optimizado con batches)."""
         self.tree.delete(*self.tree.get_children())
 
-        # Pre-computar formatos para evitar operaciones en el loop
         if not self.records:
             return
 
-        # Mapear tipo_documento → abreviatura (una sola vez)
+        # Mapear tipo_documento → abreviatura
         tipo_map = {
             "Factura Electrónica": "FE",
             "Factura electronica": "FE",
@@ -1038,7 +1042,7 @@ class App3Window(ctk.CTk):
             "Tiquete": "TQ",
         }
 
-        # Preparar todos los datos para insertarlos de una vez
+        # Preparar todos los datos
         items_to_insert = []
         for idx, r in enumerate(self.records):
             estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
@@ -1046,10 +1050,8 @@ class App3Window(ctk.CTk):
             label = ESTADO_LABEL.get(estado, estado)
             tag   = estado if estado in ("clasificado", "pendiente_pdf", "sin_xml") else ""
 
-            # Abreviar tipo (usando map en lugar de múltiples replace)
             tipo_raw = str(r.tipo_documento or "")
             tipo_short = tipo_map.get(tipo_raw, tipo_raw[:4])
-
             moneda = str(r.moneda or "")[:3]
 
             items_to_insert.append((
@@ -1058,9 +1060,20 @@ class App3Window(ctk.CTk):
                 tag,
             ))
 
-        # Insertar todos de una vez (batch)
-        for iid, values, tag in items_to_insert:
-            self.tree.insert("", "end", iid=iid, values=values, tags=(tag,))
+        # Insertar en batches para que la UI responda
+        batch_size = 500  # Inserta 500 a la vez, luego actualiza UI
+        for batch_start in range(0, len(items_to_insert), batch_size):
+            batch_end = min(batch_start + batch_size, len(items_to_insert))
+            for iid, values, tag in items_to_insert[batch_start:batch_end]:
+                self.tree.insert("", "end", iid=iid, values=values, tags=(tag,))
+
+            # Actualizar UI cada batch (permite que responda)
+            self.update_idletasks()
+
+            # Actualizar overlay si existe
+            if hasattr(self, '_loading_overlay') and self._loading_overlay and self._loading_overlay.winfo_exists():
+                pct = batch_end / len(items_to_insert)
+                self._loading_overlay.update_progress(batch_end, len(items_to_insert))
 
     def _update_progress(self):
         if not self.records:
