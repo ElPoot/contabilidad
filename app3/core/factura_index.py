@@ -504,7 +504,7 @@ class FacturaIndexer:
                     "intento": int(result.get("intento", 1)),
                 }
 
-        self._reconcile_missing_with_filename_consecutivo(records, pdf_files, linked)
+        self._reconcile_missing_with_filename_consecutivo(records, all_pdf_files, linked)
 
         total_time = time.perf_counter() - started
         successful = len(linked)
