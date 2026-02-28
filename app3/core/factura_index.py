@@ -51,6 +51,19 @@ def _is_invoice_candidate(filename: str) -> bool:
     return any(k in name for k in keywords)
 
 
+def _is_clearly_non_invoice_filename(filename: str) -> bool:
+    """Detecta adjuntos administrativos que no vale la pena extraer en profundidad."""
+    name = (filename or "").lower()
+    non_invoice_keywords = (
+        "brochure",
+        "comunicado",
+        "cambio de comercializador",
+        "detallepedido",
+        "pedido",
+    )
+    return any(k in name for k in non_invoice_keywords)
+
+
 def _extract_consecutivo_from_clave(clave: str) -> str | None:
     """Extrae consecutivo (20 dígitos) desde clave Hacienda de 50 dígitos.
 
@@ -79,6 +92,16 @@ def _extract_emisor_from_clave(clave: str) -> str | None:
 def _normalize_digits(text: str) -> str:
     """Retorna únicamente dígitos de un texto."""
     return re.sub(r"\D", "", text or "")
+
+
+def _resolve_record_key_from_extracted_clave(clave: str, consecutivo_index: dict[str, str]) -> str | None:
+    """Si una clave extraída no existe en records, intenta mapearla por consecutivo oficial."""
+    consecutivo = _extract_consecutivo_from_clave(clave)
+    if not consecutivo:
+        return None
+    if consecutivo in consecutivo_index:
+        return consecutivo_index[consecutivo]
+    return None
 
 
 class FacturaIndexer:
@@ -281,6 +304,12 @@ class FacturaIndexer:
                 metodo = str(result.get("metodo") or "")
 
                 if clave and clave not in records:
+                    clave_por_consecutivo = _resolve_record_key_from_extracted_clave(clave, consecutivo_index)
+                    if clave_por_consecutivo:
+                        clave = clave_por_consecutivo
+                        metodo = "clave_extraida_mapeada_por_consecutivo"
+
+                if clave and clave not in records:
                     for candidate in result.get("claves_detectadas", []):
                         if candidate in records:
                             clave = candidate
@@ -450,6 +479,17 @@ class FacturaIndexer:
                 "clave": None,
                 "razon": "extract_failed",
                 "error": "Fallback de contenido deshabilitado.",
+                "intento": 1,
+                "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                "size_mb": size_mb,
+            }
+
+        # Para adjuntos claramente administrativos evitamos extracción costosa.
+        if _is_clearly_non_invoice_filename(pdf_file.name):
+            return {
+                "clave": None,
+                "razon": "non_invoice",
+                "error": "Descartado por heurística de no comprobante.",
                 "intento": 1,
                 "tiempo_ms": int((time.perf_counter() - started) * 1000),
                 "size_mb": size_mb,
