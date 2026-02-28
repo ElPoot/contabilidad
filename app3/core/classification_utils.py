@@ -90,10 +90,16 @@ def filter_records_by_tab(
 
     if tab == "omitidos":
         # PDFs omitidos: detectados como no-facturas o con errores de extracción
-        return [
+        omitted = [
             r for r in records
             if r.razon_omisión in ("non_invoice", "timeout", "extract_failed")
         ]
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Filter omitidos: {len(omitted)} de {len(records)} registros (razon_omisión != None)")
+        for r in omitted[:3]:  # Log first 3
+            logger.debug(f"  - {r.clave}: razon={r.razon_omisión}")
+        return omitted
 
     # Clasificar por tipo de transacción (excluir omitidos)
     filtered = []

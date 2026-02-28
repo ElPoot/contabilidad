@@ -250,6 +250,7 @@ class FacturaIndexer:
 
             # ── Crear registros dummy para PDFs omitidos (sin clave) ──
             omitidos = pdf_scan_report.get("omitidos", {})
+            logger.info(f"Creando {len(omitidos)} registros dummy para PDFs omitidos")
             for pdf_filename, omit_info in omitidos.items():
                 razon = omit_info.get("razon", "desconocido")
                 # Buscar el archivo PDF en la carpeta recursivamente
@@ -263,6 +264,7 @@ class FacturaIndexer:
 
                 # Crear un registro dummy para el PDF omitido
                 dummy_clave = f"OMITIDO_{pdf_filename.replace('.pdf', '').replace(' ', '_')}"
+                razon_final = razon if razon in ("non_invoice", "timeout", "extract_failed") else "non_invoice"
                 dummy_record = FacturaRecord(
                     clave=dummy_clave,
                     fecha_emision="",
@@ -270,9 +272,10 @@ class FacturaIndexer:
                     receptor_nombre="[PDF omitido]",
                     pdf_path=pdf_path,
                     estado="sin_xml",
-                    razon_omisión=razon if razon in ("non_invoice", "timeout", "extract_failed") else "non_invoice",
+                    razon_omisión=razon_final,
                 )
                 records[dummy_clave] = dummy_record
+                logger.debug(f"Registro dummy creado: {dummy_clave} | razon={razon_final} | tiene_pdf={pdf_path is not None}")
 
         # ── RECOMPUTE ──
         start_recompute = time.perf_counter()
