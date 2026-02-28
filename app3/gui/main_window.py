@@ -507,8 +507,8 @@ class App3Window(ctk.CTk):
         self.geometry("1440x860")
         self.minsize(1100, 680)
         self.configure(fg_color=BG)
-        self.grid_rowconfigure(0, weight=0, minsize=64)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=0)  # Header (can expand with tabs)
+        self.grid_rowconfigure(1, weight=1)  # Body
         self.grid_columnconfigure(0, weight=1)
 
         self.session: ClientSession | None = None
@@ -697,9 +697,8 @@ class App3Window(ctk.CTk):
         self._build_body()
 
     def _build_header(self):
-        hdr = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=64)
+        hdr = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0)
         hdr.grid(row=0, column=0, sticky="ew")
-        hdr.grid_propagate(False)
         hdr.grid_columnconfigure(1, weight=1)
         hdr.grid_columnconfigure(2, weight=1)
 
@@ -787,8 +786,41 @@ class App3Window(ctk.CTk):
                       font=F_SMALL(), text_color=MUTED).grid(
             row=0, column=5, padx=(0, 16))
 
+        # Pestañas de clasificación (fila 1)
+        tabs_container = ctk.CTkFrame(hdr, fg_color="transparent")
+        tabs_container.grid(row=1, column=0, columnspan=6, sticky="ew", padx=16, pady=(8, 8))
+        tabs_container.grid_columnconfigure(0, weight=1)
+
+        tab_configs = [
+            ("todas", "Todas"),
+            ("ingreso", "Ingresos"),
+            ("egreso", "Egresos"),
+            ("ors", "ORS"),
+            ("pendiente", "Pendientes"),
+        ]
+
+        for tab_id, tab_label in tab_configs:
+            btn = ctk.CTkButton(
+                tabs_container,
+                text=tab_label,
+                width=90,
+                height=28,
+                fg_color=CARD,
+                hover_color=BORDER,
+                text_color=TEXT,
+                font=F_SMALL(),
+                corner_radius=6,
+                command=lambda t=tab_id: self._on_tab_clicked(t),
+            )
+            btn.pack(side="left", padx=4)
+            self._tab_buttons[tab_id] = btn
+
+        # Marcar pestaña inicial como activa
+        self._update_tab_appearance("todas")
+
+        # Separador
         ctk.CTkFrame(self, fg_color=BORDER, height=1, corner_radius=0).grid(
-            row=0, column=0, sticky="sew", pady=(63, 0)
+            row=0, column=0, columnspan=6, sticky="ew", pady=(0, 0)
         )
 
     def _build_body(self):
@@ -809,7 +841,6 @@ class App3Window(ctk.CTk):
         frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         frame.grid_rowconfigure(1, weight=1)
         frame.grid_columnconfigure(0, weight=1)  # Treeview
-        frame.grid_columnconfigure(1, weight=0, minsize=160)  # Panel de pestañas
 
         # Header del panel
         top = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10, height=44)
@@ -830,42 +861,6 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(top, textvariable=self._progress_var,
                       font=F_SMALL(), text_color=TEAL).grid(
             row=0, column=1, sticky="e", padx=14)
-
-        # Panel de pestañas (todas, ingresos, egresos, ors, pendientes)
-        tabs_frame = ctk.CTkFrame(frame, fg_color=SURFACE, corner_radius=8)
-        tabs_frame.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(6, 0), pady=6)
-        tabs_frame.grid_rowconfigure(0, weight=1)
-        tabs_frame.grid_columnconfigure(0, weight=1)
-
-        # Contenedor de botones de pestañas
-        tabs_buttons_frame = ctk.CTkFrame(tabs_frame, fg_color=SURFACE)
-        tabs_buttons_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        tab_configs = [
-            ("todas", "Todas"),
-            ("ingreso", "Ingresos"),
-            ("egreso", "Egresos"),
-            ("ors", "ORS"),
-            ("pendiente", "Pendientes"),
-        ]
-
-        for tab_id, tab_label in tab_configs:
-            btn = ctk.CTkButton(
-                tabs_buttons_frame,
-                text=tab_label,
-                height=36,
-                fg_color=CARD,
-                hover_color=BORDER,
-                text_color=TEXT,
-                font=F_SMALL(),
-                corner_radius=6,
-                command=lambda t=tab_id: self._on_tab_clicked(t),
-            )
-            btn.pack(fill="x", pady=4)
-            self._tab_buttons[tab_id] = btn
-
-        # Marcar pestaña inicial como activa
-        self._update_tab_appearance("todas")
 
         # Treeview con estilo oscuro
         tree_frame = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10)
