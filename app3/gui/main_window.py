@@ -853,10 +853,10 @@ class App3Window(ctk.CTk):
         vsb.grid(row=0, column=1, sticky="ns")
 
         # Etiquetas para colores de fondo según estado
-        self.tree.tag_configure("clasificado",   background="#1d5d3d", foreground=SUCCESS)
-        self.tree.tag_configure("pendiente",     background="#3d3d1d", foreground=WARNING)
-        self.tree.tag_configure("pendiente_pdf", background="#3d2d1d", foreground=WARNING)
-        self.tree.tag_configure("sin_xml",       background="#2d2d2d", foreground=MUTED)
+        self.tree.tag_configure("clasificado",   background="#1a4d3d", foreground=TEXT)      # Verde oscuro
+        self.tree.tag_configure("pendiente",     background="",        foreground=TEXT)      # Sin color (normal)
+        self.tree.tag_configure("pendiente_pdf", background="#1a3d4d", foreground=TEXT)     # Azul oscuro
+        self.tree.tag_configure("sin_xml",       background="#2d2d2d", foreground=MUTED)    # Gris oscuro
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
     # ── PANEL CENTRAL — VISOR PDF ─────────────────────────────────────────────
