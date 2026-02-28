@@ -63,6 +63,7 @@ class FacturaIndexerPDFScanTests(unittest.TestCase):
         self.assertEqual(report["audit"]["omitidos"], 2)
         self.assertEqual(report["audit"]["ignorados_no_factura"], 1)
         self.assertEqual(report["audit"]["claves_faltantes_pdf"], [])
+        self.assertIn("diagnostico_sin_clave", report["audit"])
 
         self.assertIn(clave_nombre, report["linked"])
         self.assertIn(clave_subfolder, report["linked"])

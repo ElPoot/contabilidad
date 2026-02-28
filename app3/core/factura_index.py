@@ -239,6 +239,7 @@ class FacturaIndexer:
         started = time.perf_counter()
         linked: dict[str, Path] = {}
         omitidos: dict[str, dict[str, Any]] = {}
+        diagnostics_sin_clave: list[dict[str, Any]] = []
         max_slow_name = ""
         max_slow_ms = 0
         max_size_name = ""
@@ -328,6 +329,22 @@ class FacturaIndexer:
                 else:
                     logger.debug("PDF: %s → omitido (%s)", pdf_file.name, reason)
 
+                filename_tokens = _extract_numeric_tokens(pdf_file.stem, min_len=10)
+                text_tokens = result.get("text_tokens") or []
+                claves_detectadas = result.get("claves_detectadas") or []
+                diagnostics_sin_clave.append(
+                    {
+                        "archivo": str(pdf_file),
+                        "razon": reason,
+                        "error": message,
+                        "intento": int(result.get("intento", 1)),
+                        "tokens_nombre": filename_tokens[:10],
+                        "tokens_texto": text_tokens[:10],
+                        "claves_50_detectadas": claves_detectadas[:10],
+                        "tiempo_ms": elapsed_ms,
+                    }
+                )
+
                 omitidos[pdf_file.name] = {
                     "razon": reason,
                     "error": message,
@@ -358,6 +375,21 @@ class FacturaIndexer:
             for clave in claves_faltantes_pdf:
                 logger.warning("CLAVE SIN PDF: %s", clave)
 
+        if diagnostics_sin_clave:
+            logger.warning("ANALISIS DETALLADO PDFs SIN CLAVE (%s):", len(diagnostics_sin_clave))
+            for item in diagnostics_sin_clave:
+                logger.warning(
+                    "SIN_CLAVE | archivo=%s | razon=%s | intento=%s | tiempo_ms=%s | tokens_nombre=%s | tokens_texto=%s | claves_50=%s | error=%s",
+                    item.get("archivo", ""),
+                    item.get("razon", ""),
+                    item.get("intento", 0),
+                    item.get("tiempo_ms", 0),
+                    item.get("tokens_nombre", []),
+                    item.get("tokens_texto", []),
+                    item.get("claves_50_detectadas", []),
+                    item.get("error", ""),
+                )
+
         if omit_pct > 1.0:
             logger.warning("Margen de error alto: %.2f%% omitidos (> 1%%).", omit_pct)
 
@@ -371,6 +403,7 @@ class FacturaIndexer:
                 "ignorados_no_factura": ignored,
                 "total_candidatos_factura": candidate_total,
                 "claves_faltantes_pdf": claves_faltantes_pdf,
+                "diagnostico_sin_clave": diagnostics_sin_clave,
                 "tiempo_total_segundos": round(total_time, 4),
                 "velocidad_promedio_ms_por_pdf": round(avg_ms, 2),
                 "porcentaje_omitidos": round(omit_pct, 2),
