@@ -1098,7 +1098,7 @@ class App3Window(ctk.CTk):
             self.records = filter_records_by_tab(
                 self.all_records,
                 tab,
-                self.session.client_cedula,
+                self.session.cedula,
                 self._db_records,
             )
             self._refresh_tree()
