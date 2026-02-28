@@ -166,6 +166,8 @@ class FacturaIndexer:
         self.parse_errors = []
         self.audit_report = {}
 
+        start_total = time.perf_counter()
+
         from_dt = self._parse_ui_date(from_date)
         to_dt = self._parse_ui_date(to_date)
 
@@ -174,6 +176,8 @@ class FacturaIndexer:
 
         records: dict[str, FacturaRecord] = {}
 
+        # ── PASO 1: XML ──
+        start_xml = time.perf_counter()
         if xml_root.exists():
             try:
                 df, audit = self.xml_manager.load_xml_folder(xml_root)
@@ -222,16 +226,30 @@ class FacturaIndexer:
                         )
             except Exception as exc:
                 self.parse_errors.append(f"Error cargando carpeta XML: {exc}")
+        xml_time = time.perf_counter() - start_xml
+        logger.info(f"XML parsing: {xml_time:.2f}s → {len(records)} registros")
 
+        # ── PASO 2: PDFs ──
         if include_pdf_scan:
+            start_pdf = time.perf_counter()
             pdf_scan_report = self._scan_and_link_pdfs_optimized(
                 pdf_root,
                 records,
                 allow_pdf_content_fallback=allow_pdf_content_fallback,
             )
+            pdf_time = time.perf_counter() - start_pdf
             self.audit_report["pdf_scan"] = pdf_scan_report.get("audit", {})
+            logger.info(f"PDF scanning: {pdf_time:.2f}s")
 
+        # ── RECOMPUTE ──
+        start_recompute = time.perf_counter()
         self._recompute_states(records)
+        recompute_time = time.perf_counter() - start_recompute
+        logger.info(f"State recomputation: {recompute_time:.2f}s")
+
+        total_time = time.perf_counter() - start_total
+        logger.info(f"load_period() TOTAL: {total_time:.2f}s")
+
         return sorted(records.values(), key=lambda r: (r.fecha_emision, r.clave))
 
     def link_pdfs_for_records(
