@@ -827,21 +827,23 @@ class App3Window(ctk.CTk):
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
-        cols = ("estado", "fecha", "tipo", "emisor", "moneda", "total")
+        # Columnas: Emisor, Fecha, Tipo, IVA 13%, Impuesto, Total (sin Estado)
+        cols = ("emisor", "fecha", "tipo", "iva_13", "impuesto", "total")
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
                                   selectmode="browse", style="Dark.Treeview")
-        self.tree.heading("estado",  text="Estado")
-        self.tree.heading("fecha",   text="Fecha")
-        self.tree.heading("tipo",    text="Tipo")
-        self.tree.heading("emisor",  text="Emisor")
-        self.tree.heading("moneda",  text="Mon.")
-        self.tree.heading("total",   text="Total")
-        self.tree.column("estado",  width=72,  stretch=False)
-        self.tree.column("fecha",   width=78,  stretch=False)
-        self.tree.column("tipo",    width=46,  stretch=False)
-        self.tree.column("emisor",  width=160)
-        self.tree.column("moneda",  width=36,  stretch=False, anchor="center")
-        self.tree.column("total",   width=96,  anchor="e", stretch=False)
+        self.tree.heading("emisor",    text="Emisor")
+        self.tree.heading("fecha",     text="Fecha")
+        self.tree.heading("tipo",      text="Tipo")
+        self.tree.heading("iva_13",    text="IVA 13%")
+        self.tree.heading("impuesto",  text="Impuesto")
+        self.tree.heading("total",     text="Total")
+
+        self.tree.column("emisor",    width=140)
+        self.tree.column("fecha",     width=78,  stretch=False)
+        self.tree.column("tipo",      width=46,  stretch=False)
+        self.tree.column("iva_13",    width=80,  stretch=False, anchor="e")
+        self.tree.column("impuesto",  width=90,  stretch=False, anchor="e")
+        self.tree.column("total",     width=96,  stretch=False, anchor="e")
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical",
                              command=self.tree.yview, style="Dark.Vertical.TScrollbar")
@@ -849,10 +851,11 @@ class App3Window(ctk.CTk):
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
 
-        self.tree.tag_configure("clasificado",   foreground=SUCCESS)
-        self.tree.tag_configure("pendiente_pdf", foreground=WARNING)
-        self.tree.tag_configure("sin_xml",       foreground=MUTED)
-        self.tree.tag_configure("pendiente",     foreground=TEXT)
+        # Etiquetas para colores de fondo según estado
+        self.tree.tag_configure("clasificado",   background="#1d5d3d", foreground=SUCCESS)
+        self.tree.tag_configure("pendiente",     background="#3d3d1d", foreground=WARNING)
+        self.tree.tag_configure("pendiente_pdf", background="#3d2d1d", foreground=WARNING)
+        self.tree.tag_configure("sin_xml",       background="#2d2d2d", foreground=MUTED)
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
     # ── PANEL CENTRAL — VISOR PDF ─────────────────────────────────────────────
@@ -1041,13 +1044,13 @@ class App3Window(ctk.CTk):
 
     # ── TABLA ─────────────────────────────────────────────────────────────────
     def _refresh_tree(self):
-        """Refresca el Treeview con registros actuales (optimizado con batches)."""
+        """Refresca Treeview ordenado: Emisor → Tipo → Fecha (con colores por estado)."""
         self.tree.delete(*self.tree.get_children())
 
         if not self.records:
             return
 
-        # Mapear tipo_documento → abreviatura
+        # Mapeo de tipo_documento → abreviatura
         tipo_map = {
             "Factura Electrónica": "FE",
             "Factura electronica": "FE",
@@ -1056,35 +1059,53 @@ class App3Window(ctk.CTk):
             "Tiquete": "TQ",
         }
 
-        # Preparar todos los datos
-        items_to_insert = []
-        for idx, r in enumerate(self.records):
-            estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
-            icon  = ESTADO_ICON.get(estado, "·")
-            label = ESTADO_LABEL.get(estado, estado)
-            tag   = estado if estado in ("clasificado", "pendiente_pdf", "sin_xml") else ""
+        # Reordenar por: Emisor → Tipo de documento → Fecha
+        def sort_key(r):
+            emisor = (r.emisor_nombre or "").lower()
+            tipo = (r.tipo_documento or "").lower()
+            fecha = r.fecha_emision or ""
+            return (emisor, tipo, fecha)
 
+        sorted_records = sorted(self.records, key=sort_key)
+
+        # Preparar items con nuevas columnas
+        items_to_insert = []
+        for idx, r in enumerate(sorted_records):
+            # Estado para etiqueta de color
+            estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
+            tag = estado if estado in ("clasificado", "pendiente", "pendiente_pdf", "sin_xml") else "pendiente"
+
+            # Formatear campos
             tipo_raw = str(r.tipo_documento or "")
             tipo_short = tipo_map.get(tipo_raw, tipo_raw[:4])
-            moneda = str(r.moneda or "")[:3]
+            emisor_short = _short_name(r.emisor_nombre)
 
-            items_to_insert.append((
-                str(idx),
-                (icon + " " + label, r.fecha_emision, tipo_short, _short_name(r.emisor_nombre), moneda, _fmt_amount(r.total_comprobante)),
-                tag,
-            ))
+            # Valores numéricos con formato
+            iva_13_fmt = _fmt_amount(r.iva_13)
+            impuesto_fmt = _fmt_amount(r.impuesto_total)
+            total_fmt = _fmt_amount(r.total_comprobante)
 
-        # Insertar en batches pequeños para que la UI responda sin congelarse
-        batch_size = 200  # Inserta 200 a la vez, luego actualiza UI (menos bloqueos)
+            # Orden de columnas: emisor, fecha, tipo, iva_13, impuesto, total
+            row_values = (
+                emisor_short,
+                r.fecha_emision,
+                tipo_short,
+                iva_13_fmt,
+                impuesto_fmt,
+                total_fmt,
+            )
+
+            items_to_insert.append((str(idx), row_values, tag))
+
+        # Insertar en batches para que UI responda
+        batch_size = 200
         for batch_start in range(0, len(items_to_insert), batch_size):
             batch_end = min(batch_start + batch_size, len(items_to_insert))
             for iid, values, tag in items_to_insert[batch_start:batch_end]:
                 self.tree.insert("", "end", iid=iid, values=values, tags=(tag,))
 
-            # Actualizar UI cada batch (permite que responda)
             self.update_idletasks()
 
-            # Actualizar overlay si existe
             if hasattr(self, '_loading_overlay') and self._loading_overlay and self._loading_overlay.winfo_exists():
                 pct = batch_end / len(items_to_insert)
                 self._loading_overlay.update_progress(batch_end, len(items_to_insert))
