@@ -5,6 +5,7 @@ import csv
 import threading
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from queue import Queue
 
 import customtkinter as ctk
