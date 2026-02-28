@@ -517,6 +517,7 @@ class App3Window(ctk.CTk):
         self._load_generation: int = 0
         self._all_cuentas: list[str] = []  # Unfiltered account list
         self._loading_overlay: LoadingOverlay | None = None  # Overlay de carga
+        self._tree_clave_map: dict[str, FacturaRecord] = {}  # Mapeo: clave → record (para mantener orden)
 
         _apply_tree_style()
         self._build()
@@ -1068,9 +1069,11 @@ class App3Window(ctk.CTk):
 
         sorted_records = sorted(self.records, key=sort_key)
 
-        # Preparar items con nuevas columnas
+        # Preparar items + mapeo de clave → record
         items_to_insert = []
-        for idx, r in enumerate(sorted_records):
+        self._tree_clave_map = {}  # Mapeo visual: clave → record (para _on_select)
+
+        for r in sorted_records:
             # Estado para etiqueta de color
             estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
             tag = estado if estado in ("clasificado", "pendiente", "pendiente_pdf", "sin_xml") else "pendiente"
@@ -1095,7 +1098,9 @@ class App3Window(ctk.CTk):
                 total_fmt,
             )
 
-            items_to_insert.append((str(idx), row_values, tag))
+            # Usar clave como iid (no índice) para evitar problemas de orden
+            items_to_insert.append((r.clave, row_values, tag))
+            self._tree_clave_map[r.clave] = r
 
         # Insertar en batches para que UI responda
         batch_size = 200
@@ -1129,8 +1134,16 @@ class App3Window(ctk.CTk):
         sel = self.tree.selection()
         if not sel:
             return
-        idx = int(sel[0])
-        self.selected = self.records[idx]
+        # Usar clave (iid) para obtener record del mapeo (mantiene orden)
+        clave = sel[0]
+        if hasattr(self, '_tree_clave_map') and clave in self._tree_clave_map:
+            self.selected = self._tree_clave_map[clave]
+        else:
+            # Fallback: búsqueda por clave en records
+            matches = [r for r in self.records if r.clave == clave]
+            if not matches:
+                return
+            self.selected = matches[0]
         r = self.selected
 
         # Estado Hacienda — pill superior
