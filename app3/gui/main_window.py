@@ -1115,9 +1115,10 @@ class App3Window(ctk.CTk):
                 btn.configure(fg_color=CARD, text_color=TEXT)
 
     def _get_client_cedula(self) -> str:
-        """Obtiene cédula confiable del cliente desde client_profiles.json por nombre.
+        """Obtiene cédula confiable del cliente desde client_profiles.json.
 
-        Fallback a ClientSession.cedula si no se encuentra en perfiles.
+        Estructura: client_name → gmail_account → __email__:{gmail} → cedula
+        Con fallback inteligente a cedula más frecuente en XMLs si no hay match.
         """
         if not self.session:
             return ""
@@ -1126,23 +1127,56 @@ class App3Window(ctk.CTk):
             from facturacion_system.core.client_profiles import load_profiles
             profiles = load_profiles()
 
-            # Buscar perfil del cliente por nombre
+            # Paso 1: Buscar perfil del cliente por nombre
             client_name = self.session.nombre
             if client_name in profiles:
                 profile = profiles[client_name]
                 if isinstance(profile, dict):
-                    cedula = str(profile.get("cedula", "")).strip()
-                    if cedula:
-                        # Limpiar cédula (solo dígitos)
-                        import re
-                        cedula_clean = re.sub(r"\D", "", cedula)
-                        if cedula_clean:
-                            return cedula_clean
+                    # Paso 2: Obtener gmail_account del perfil
+                    gmail = str(profile.get("gmail_account", "")).strip().lower()
+                    if gmail:
+                        # Paso 3: Buscar entrada __email__:{gmail}
+                        email_key = f"__email__:{gmail}"
+                        if email_key in profiles:
+                            email_profile = profiles[email_key]
+                            if isinstance(email_profile, dict):
+                                cedula = str(email_profile.get("cedula", "")).strip()
+                                if cedula:
+                                    # Limpiar cédula (solo dígitos)
+                                    import re
+                                    cedula_clean = re.sub(r"\D", "", cedula)
+                                    if cedula_clean:
+                                        logger.info(f"Cédula obtenida de perfiles: {cedula_clean}")
+                                        return cedula_clean
         except Exception as e:
             logger.warning(f"Error obteniendo cédula desde perfiles: {e}")
 
-        # Fallback a cedula de sesión
-        return (self.session.cedula or "").strip()
+        # Fallback inteligente: si la cédula no match ningún registro,
+        # usar la cédula más frecuente en todos los registros
+        if self.all_records:
+            from collections import Counter
+            import re
+            cedula_candidates = Counter()
+
+            for r in self.all_records:
+                if r.emisor_cedula:
+                    cedula_clean = re.sub(r"\D", "", str(r.emisor_cedula))
+                    if cedula_clean:
+                        cedula_candidates[cedula_clean] += 1
+                if r.receptor_cedula:
+                    cedula_clean = re.sub(r"\D", "", str(r.receptor_cedula))
+                    if cedula_clean:
+                        cedula_candidates[cedula_clean] += 1
+
+            if cedula_candidates:
+                most_common_cedula, count = cedula_candidates.most_common(1)[0]
+                logger.info(f"Cedula más frecuente en registros: {most_common_cedula} ({count} apariciones)")
+                return most_common_cedula
+
+        # Último fallback: cedula de sesión
+        cedula_fallback = (self.session.cedula or "").strip()
+        logger.info(f"Usando cedula fallback de sesión: {cedula_fallback}")
+        return cedula_fallback
 
     # ── TABLA ─────────────────────────────────────────────────────────────────
     def _refresh_tree(self):
