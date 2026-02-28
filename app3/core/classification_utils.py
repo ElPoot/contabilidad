@@ -44,6 +44,8 @@ def get_classification_label(classification: str) -> str:
         "egreso": "Egresos",
         "ors": "ORS",
         "pendiente": "Pendientes",
+        "sin_clave": "PDFs sin clave",
+        "omitidos": "PDFs omitidos",
         "todas": "Todas las facturas",
     }
     return labels.get(classification, classification)
@@ -59,7 +61,7 @@ def filter_records_by_tab(
 
     Args:
         records: Lista de FacturaRecord
-        tab: Pestaña activa ("todas", "ingreso", "egreso", "ors", "pendiente")
+        tab: Pestaña activa ("todas", "ingreso", "egreso", "ors", "pendiente", "sin_clave", "omitidos")
         client_cedula: Cédula del cliente actual
         db_records: Mapeo de clave → datos de clasificación (BD)
 
@@ -74,6 +76,20 @@ def filter_records_by_tab(
         return [
             r for r in records
             if not (db_records.get(r.clave, {}).get("estado") == "clasificado")
+        ]
+
+    if tab == "sin_clave":
+        # PDFs sin clave: no tienen clave válida (50 dígitos) o falta vinculación
+        return [
+            r for r in records
+            if not r.clave or len(r.clave) != 50 or r.estado in ("pendiente_pdf", "sin_xml") or not r.pdf_path
+        ]
+
+    if tab == "omitidos":
+        # PDFs omitidos: detectados como no-facturas o con errores de extracción
+        return [
+            r for r in records
+            if r.razon_omisión in ("non_invoice", "timeout", "extract_failed")
         ]
 
     # Clasificar por tipo de transacción
@@ -100,9 +116,11 @@ def get_tab_statistics(
             "egreso": {...},
             "ors": {...},
             "pendiente": {...},
+            "sin_clave": {...},
+            "omitidos": {...},
         }
     """
-    tabs = ["todas", "ingreso", "egreso", "ors", "pendiente"]
+    tabs = ["todas", "ingreso", "egreso", "ors", "pendiente", "sin_clave", "omitidos"]
     stats = {}
 
     for tab in tabs:

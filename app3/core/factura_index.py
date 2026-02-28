@@ -241,6 +241,23 @@ class FacturaIndexer:
             self.audit_report["pdf_scan"] = pdf_scan_report.get("audit", {})
             logger.info(f"PDF scanning: {pdf_time:.2f}s")
 
+            # ── Crear registros dummy para PDFs omitidos (sin clave) ──
+            omitidos = pdf_scan_report.get("omitidos", {})
+            for pdf_filename, omit_info in omitidos.items():
+                razon = omit_info.get("razon", "desconocido")
+                # Crear un registro dummy para el PDF omitido
+                dummy_clave = f"OMITIDO_{pdf_filename.replace('.pdf', '').replace(' ', '_')}"
+                dummy_record = FacturaRecord(
+                    clave=dummy_clave,
+                    fecha_emision="",
+                    emisor_nombre="[PDF omitido]",
+                    receptor_nombre="[PDF omitido]",
+                    pdf_path=pdf_root / pdf_filename if (pdf_root / pdf_filename).exists() else None,
+                    estado="sin_xml",
+                    razon_omisión=razon if razon in ("non_invoice", "timeout", "extract_failed") else "non_invoice",
+                )
+                records[dummy_clave] = dummy_record
+
         # ── RECOMPUTE ──
         start_recompute = time.perf_counter()
         self._recompute_states(records)

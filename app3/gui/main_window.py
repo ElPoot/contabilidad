@@ -797,6 +797,8 @@ class App3Window(ctk.CTk):
             ("egreso", "Egresos"),
             ("ors", "ORS"),
             ("pendiente", "Pendientes"),
+            ("sin_clave", "📄 Sin clave"),
+            ("omitidos", "⊘ Omitidos"),
         ]
 
         for tab_id, tab_label in tab_configs:
@@ -1090,12 +1092,10 @@ class App3Window(ctk.CTk):
 
         # Filtrar registros según pestaña activa
         if self.session:
-            # Obtener cédula confiable del cliente desde perfiles (por nombre)
-            client_cedula = self._get_client_cedula()
             self.records = filter_records_by_tab(
                 self.all_records,
                 tab,
-                client_cedula,
+                self._get_client_cedula(),
                 self._db_records,
             )
             self._refresh_tree()

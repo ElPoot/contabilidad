@@ -44,3 +44,10 @@ class FacturaRecord:
     # pendiente_pdf  -> tiene XML pero no PDF
     # sin_xml        -> tiene PDF pero no XML
     # clasificado    -> ya fue clasificado (segun BD)
+
+    # Razon de omisión (si el PDF fue omitido)
+    razon_omisión: str | None = None
+    # None         -> no fue omitido
+    # "non_invoice" -> detectado como no-factura (borrador, catálogo, etc.)
+    # "timeout"    -> timeout durante extracción
+    # "extract_failed" -> error en extracción
