@@ -11,6 +11,7 @@ from typing import Any
 from app3.bootstrap import bootstrap_legacy_paths
 from .models import FacturaRecord
 from .xml_manager import CRXMLManager
+from .pdf_cache import PDFCacheManager
 
 try:
     import fitz
@@ -154,6 +155,7 @@ class FacturaIndexer:
         self.xml_manager = CRXMLManager()
         self.parse_errors: list[str] = []
         self.audit_report: dict = {}
+        self.pdf_cache: PDFCacheManager | None = None  # Se inicializa en load_period()
 
     def load_period(
         self,
@@ -173,8 +175,13 @@ class FacturaIndexer:
 
         xml_root = client_folder / "XML"
         pdf_root = client_folder / "PDF"
+        metadata_dir = client_folder / ".metadata"
 
         records: dict[str, FacturaRecord] = {}
+
+        # ── CACHÉ DE PDFs ──
+        cache_file = metadata_dir / "pdf_cache.json"
+        self.pdf_cache = PDFCacheManager(cache_file)
 
         # ── PASO 1: XML ──
         start_xml = time.perf_counter()
@@ -245,6 +252,15 @@ class FacturaIndexer:
             omitidos = pdf_scan_report.get("omitidos", {})
             for pdf_filename, omit_info in omitidos.items():
                 razon = omit_info.get("razon", "desconocido")
+                # Buscar el archivo PDF en la carpeta recursivamente
+                pdf_path = None
+                if pdf_root.exists():
+                    # Buscar por nombre exacto en subdirectorios
+                    for pdf_file in pdf_root.rglob("*.pdf"):
+                        if pdf_file.name == pdf_filename:
+                            pdf_path = pdf_file
+                            break
+
                 # Crear un registro dummy para el PDF omitido
                 dummy_clave = f"OMITIDO_{pdf_filename.replace('.pdf', '').replace(' ', '_')}"
                 dummy_record = FacturaRecord(
@@ -252,7 +268,7 @@ class FacturaIndexer:
                     fecha_emision="",
                     emisor_nombre="[PDF omitido]",
                     receptor_nombre="[PDF omitido]",
-                    pdf_path=pdf_root / pdf_filename if (pdf_root / pdf_filename).exists() else None,
+                    pdf_path=pdf_path,
                     estado="sin_xml",
                     razon_omisión=razon if razon in ("non_invoice", "timeout", "extract_failed") else "non_invoice",
                 )
@@ -329,10 +345,32 @@ class FacturaIndexer:
         if not pdf_root.exists():
             return {"linked": {}, "omitidos": {}, "audit": base_audit}
 
-        pdf_files = [p for p in pdf_root.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"]
-        total_files = len(pdf_files)
-        if not pdf_files:
+        all_pdf_files = [p for p in pdf_root.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"]
+        total_files = len(all_pdf_files)
+        if not all_pdf_files:
             return {"linked": {}, "omitidos": {}, "audit": base_audit}
+
+        # ── FILTRAR POR CACHÉ ──
+        # PDFs que están en caché y no cambiaron: no necesitan escaneo
+        cached_pdfs = {}
+        pdfs_to_scan = []
+
+        if self.pdf_cache:
+            for pdf_file in all_pdf_files:
+                cached_path = self.pdf_cache.get_cached_path(pdf_file)
+                if cached_path:
+                    # PDF está en caché y no cambió
+                    cached_pdfs[pdf_file.name] = cached_path
+                else:
+                    # PDF es nuevo o cambió
+                    pdfs_to_scan.append(pdf_file)
+        else:
+            pdfs_to_scan = all_pdf_files
+
+        cached_count = len(cached_pdfs)
+        scan_count = len(pdfs_to_scan)
+        if cached_count > 0:
+            logger.info(f"Caché de PDFs: {cached_count} reutilizados, {scan_count} por escanear")
 
         started = time.perf_counter()
         linked: dict[str, Path] = {}
@@ -344,10 +382,14 @@ class FacturaIndexer:
         max_size_mb = 0.0
 
         consecutivo_index = self._build_consecutivo_index(records)
-        logger.info("Escaneando %s PDFs en %s", total_files, pdf_root)
-        logger.info("ThreadPoolExecutor lanzado: %s workers", max(1, min(max_workers, total_files)))
+        if pdfs_to_scan:
+            logger.info("Escaneando %s PDFs en %s (+ %s del caché)", scan_count, pdf_root, cached_count)
+            logger.info("ThreadPoolExecutor lanzado: %s workers", max(1, min(max_workers, scan_count)))
 
-        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, total_files))) as executor:
+        # Incorporar PDFs del caché al resultado
+        linked.update(cached_pdfs)
+
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, scan_count))) as executor:
             future_map = {
                 executor.submit(
                     self._process_single_pdf,
@@ -355,7 +397,7 @@ class FacturaIndexer:
                     allow_pdf_content_fallback,
                     timeout_seconds,
                 ): pdf_file
-                for pdf_file in pdf_files
+                for pdf_file in pdfs_to_scan
             }
             processed_count = 0
             for future in as_completed(future_map):
@@ -364,7 +406,7 @@ class FacturaIndexer:
 
                 # Log de progreso cada 50 PDFs
                 if processed_count % 50 == 0:
-                    logger.debug(f"PDF scan progreso: {processed_count}/{total_files}")
+                    logger.debug(f"PDF scan progreso: {processed_count}/{scan_count}")
 
                 try:
                     result = future.result()
@@ -503,6 +545,16 @@ class FacturaIndexer:
 
         if omit_pct > 1.0:
             logger.warning("Margen de error alto: %.2f%% omitidos (> 1%%).", omit_pct)
+
+        # ── ACTUALIZAR CACHÉ ──
+        if self.pdf_cache:
+            for pdf_file in pdfs_to_scan:
+                if pdf_file.name in linked:
+                    # PDF fue exitosamente procesado
+                    self.pdf_cache.add_to_cache(pdf_file)
+                # Si fue omitido, no agregar al caché (re-escanear la próxima vez)
+
+            self.pdf_cache.save_cache()
 
         return {
             "linked": linked,
