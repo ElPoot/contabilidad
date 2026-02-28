@@ -551,18 +551,22 @@ class App3Window(ctk.CTk):
             try:
                 start_total = time.perf_counter()
 
+                # Fase 1: Setup
                 mdir = metadata_dir(session.folder)
-                self.after(0, lambda: self._loading_overlay.update_status("Cargando catálogo..."))
+                self.after(0, lambda: self._loading_overlay.update_status("📂 Preparando cliente..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(10, 100))
                 catalog = CatalogManager(mdir).load()
-
-                self.after(0, lambda: self._loading_overlay.update_status("Abriendo base de datos..."))
                 db = ClassificationDB(mdir)
-
-                self.after(0, lambda: self._loading_overlay.update_status("Preparando indexador..."))
                 indexer = FacturaIndexer()
 
-                # Cargar XMLs + PDFs EN PARALELO
-                self.after(0, lambda: self._loading_overlay.update_status("Escaneando XMLs y PDFs..."))
+                # Fase 2: Load (XML + PDF)
+                self.after(0, lambda: self._loading_overlay.update_status("📄 Leyendo XMLs..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(20, 100))
+
+                # La fase larga: XML + PDF
+                self.after(0, lambda: self._loading_overlay.update_status("🔍 Escaneando PDFs (esto toma ~40s)..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(30, 100))
+
                 start_load = time.perf_counter()
                 records = indexer.load_period(
                     session.folder,
@@ -573,6 +577,10 @@ class App3Window(ctk.CTk):
                 )
                 load_time = time.perf_counter() - start_load
                 logger.info(f"load_period() tardó {load_time:.2f}s para {len(records)} registros")
+
+                # Casi listo
+                self.after(0, lambda: self._loading_overlay.update_status("✅ Finalizando..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(90, 100))
 
                 total_time = time.perf_counter() - start_total
                 logger.info(f"Worker total: {total_time:.2f}s")
