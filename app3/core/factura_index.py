@@ -285,8 +285,8 @@ class FacturaIndexer:
         pdf_root: Path,
         records: dict[str, FacturaRecord],
         allow_pdf_content_fallback: bool = True,
-        timeout_seconds: int = 2,  # Reducido de 5s → 2s (descartar PDFs lentos)
-        max_workers: int = 16,      # Aumentado de 8 → 16 (más parallelismo)
+        timeout_seconds: int = 3,  # Balance: 3s (captura facturas legítimas sin ser muy lento)
+        max_workers: int = 16,      # 16 workers = buen paralelismo
     ) -> dict[str, Any]:
         """
         Vincula PDFs a registros de factura con paralelismo y auditoría.
@@ -340,8 +340,15 @@ class FacturaIndexer:
                 ): pdf_file
                 for pdf_file in pdf_files
             }
+            processed_count = 0
             for future in as_completed(future_map):
                 pdf_file = future_map[future]
+                processed_count += 1
+
+                # Log de progreso cada 50 PDFs
+                if processed_count % 50 == 0:
+                    logger.debug(f"PDF scan progreso: {processed_count}/{total_files}")
+
                 try:
                     result = future.result()
                 except Exception as exc:  # pragma: no cover
