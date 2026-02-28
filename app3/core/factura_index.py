@@ -548,13 +548,12 @@ class FacturaIndexer:
 
         # ── ACTUALIZAR CACHÉ ──
         if self.pdf_cache:
+            # Agregar solo PDFs recién escaneados al caché (cached ya están en caché)
             for pdf_file in pdfs_to_scan:
-                if pdf_file.name in linked:
-                    # PDF fue exitosamente procesado
-                    self.pdf_cache.add_to_cache(pdf_file)
-                # Si fue omitido, no agregar al caché (re-escanear la próxima vez)
+                self.pdf_cache.add_to_cache(pdf_file)
 
             self.pdf_cache.save_cache()
+            logger.info(f"Caché actualizado: {len(self.pdf_cache.cache.get('pdfs', {}))} PDFs cacheados")
 
         return {
             "linked": linked,
