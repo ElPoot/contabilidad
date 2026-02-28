@@ -43,24 +43,64 @@ def _extract_numeric_tokens(filename: str, min_len: int = 10) -> list[str]:
 
 
 def _is_invoice_candidate(filename: str) -> bool:
-    """Heurística para distinguir comprobantes de PDFs administrativos."""
+    """Heurística para distinguir comprobantes de PDFs administrativos.
+
+    Un candidato a factura típicamente tiene:
+    - Secuencias numéricas largas (clave, consecutivo)
+    - Palabras clave de comprobantes electrónicos
+    """
     name = (filename or "").lower()
-    if re.search(r"\d{10,}", name):
+
+    # Secuencias numéricas (clave 50 dígitos, consecutivo 15-20, etc)
+    if re.search(r"\d{15,}", name):
         return True
-    keywords = ("factura", "fe", "nc", "nd", "credito", "debito", "electr")
-    return any(k in name for k in keywords)
+
+    # Palabras clave de comprobantes electrónicos
+    invoice_keywords = (
+        "factura", "fe", "nc", "nd", "credito", "debito",
+        "tiquete", "tq", "remision", "rm", "comprobante",
+        "electr", "electro",
+    )
+    return any(k in name for k in invoice_keywords)
 
 
 def _is_clearly_non_invoice_filename(filename: str) -> bool:
-    """Detecta adjuntos administrativos que no vale la pena extraer en profundidad."""
+    """Detecta adjuntos administrativos que no vale la pena extraer en profundidad.
+
+    Excluye documentos que claramente NO son comprobantes fiscales.
+    Palabras clave expandidas para descartar: marketing, administrativos, órdenes, etc.
+    """
     name = (filename or "").lower()
+
+    # Palabras clave que indican NO-comprobante
     non_invoice_keywords = (
-        "brochure",
-        "comunicado",
-        "cambio de comercializador",
-        "detallepedido",
-        "pedido",
+        # Marketing/Promocionales
+        "brochure", "catalogo", "promocion", "oferta", "descuento",
+
+        # Comunicados/Administrativos
+        "comunicado", "aviso", "noticia", "boletin", "circular",
+
+        # Ordenes/Solicitudes (NO facturas)
+        "orden de compra", "order", "pedido", "detallepedido",
+        "requisicion", "solicitud", "request",
+
+        # Cambios de operador/proveedor
+        "cambio de comercializador", "cambio operador", "cambio de proveedor",
+
+        # Documentos administrativos
+        "manual", "guia", "instructivo", "politica", "terminosy", "resolucion",
+        "reglamento", "contrato",
+
+        # Recibos de otro tipo (NO electrónicos)
+        "recibo manual", "ticket manual", "recibo deposito", "constancia",
+
+        # Reportes/Informes (NO comprobantes)
+        "reporte", "informe", "resumen", "estado de cuenta", "extracto",
+
+        # Otros
+        "carta", "oficio", "memo", "memorandum", "junk", "basura", "spam",
     )
+
     return any(k in name for k in non_invoice_keywords)
 
 

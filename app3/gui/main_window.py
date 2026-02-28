@@ -16,6 +16,7 @@ from app3.core.classifier import ClassificationDB, build_dest_folder, classify_r
 from app3.core.factura_index import FacturaIndexer
 from app3.core.models import FacturaRecord
 from app3.core.session import ClientSession
+from app3.gui.loading_modal import LoadingModal
 from app3.gui.pdf_viewer import PDFViewer
 from app3.gui.session_view import SessionView
 
@@ -530,7 +531,9 @@ class App3Window(ctk.CTk):
     def _load_session(self, session: ClientSession):
         self._load_generation += 1
         generation = self._load_generation
-        self._set_status("Cargando facturas (rápido)...")
+
+        # Mostrar modal de carga
+        self._loading_modal = LoadingModal(self, title="Cargando facturas")
         self._load_queue = Queue()
 
         def worker():
@@ -539,12 +542,19 @@ class App3Window(ctk.CTk):
                 catalog = CatalogManager(mdir).load()
                 db = ClassificationDB(mdir)
                 indexer = FacturaIndexer()
+
+                # Actualizar modal: XML
+                self.after(0, lambda: self._loading_modal.update_status("Escaneando XMLs..."))
+
+                # Cargar XMLs + PDFs EN PARALELO desde inicio (include_pdf_scan=True)
                 records = indexer.load_period(
                     session.folder,
                     from_date="",
                     to_date="",
-                    include_pdf_scan=False,
+                    include_pdf_scan=True,
+                    allow_pdf_content_fallback=True,
                 )
+
                 self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors)))
             except Exception as exc:
                 self._load_queue.put(("error", (generation, str(exc))))
@@ -558,6 +568,13 @@ class App3Window(ctk.CTk):
             return
 
         status, payload = self._load_queue.get()
+
+        # Cerrar modal de carga
+        if hasattr(self, '_loading_modal') and self._loading_modal:
+            try:
+                self._loading_modal.close()
+            except:
+                pass
 
         if status == "error":
             generation, message = payload
@@ -592,9 +609,7 @@ class App3Window(ctk.CTk):
         self.pdf_viewer.clear()
         self._refresh_tree()
         self._update_progress()
-        self._set_status("Listo (escaneando PDFs en segundo plano...)")
-
-        self._start_pdf_enrichment(generation, session, records)
+        self._set_status("Listo")
 
         if parse_errors:
             self._show_warning(
@@ -604,25 +619,8 @@ class App3Window(ctk.CTk):
                 + "\n".join(parse_errors[:5])
             )
 
-    def _start_pdf_enrichment(self, generation: int, session: ClientSession, base_records: list[FacturaRecord]):
-        """Completa asociación de PDFs en segundo plano para acelerar carga inicial."""
-
-        def worker():
-            try:
-                indexer = FacturaIndexer()
-                enriched_records = indexer.link_pdfs_for_records(
-                    session.folder,
-                    list(base_records),
-                    # Importante: habilitar fallback de contenido para PDFs sin clave en nombre.
-                    allow_pdf_content_fallback=True,
-                )
-                self.after(0, lambda: self._apply_pdf_enrichment(generation, enriched_records, indexer.parse_errors))
-            except Exception as exc:
-                self.after(0, lambda e=exc: self._set_status(f"Carga parcial (PDF): {e}"))
-
-        threading.Thread(target=worker, daemon=True).start()
-
     def _apply_pdf_enrichment(self, generation: int, enriched_records: list[FacturaRecord], parse_errors: list[str]):
+        """Ya no se usa (PDFs cargados en _load_session). Mantenido por compatibilidad."""
         if generation != self._load_generation:
             return
 
@@ -997,32 +995,45 @@ class App3Window(ctk.CTk):
 
     # ── TABLA ─────────────────────────────────────────────────────────────────
     def _refresh_tree(self):
+        """Refresca el Treeview con registros actuales (optimizado)."""
         self.tree.delete(*self.tree.get_children())
+
+        # Pre-computar formatos para evitar operaciones en el loop
+        if not self.records:
+            return
+
+        # Mapear tipo_documento → abreviatura (una sola vez)
+        tipo_map = {
+            "Factura Electrónica": "FE",
+            "Factura electronica": "FE",
+            "Nota de Crédito": "NC",
+            "Nota de Debito": "ND",
+            "Tiquete": "TQ",
+        }
+
+        # Preparar todos los datos para insertarlos de una vez
+        items_to_insert = []
         for idx, r in enumerate(self.records):
             estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
             icon  = ESTADO_ICON.get(estado, "·")
             label = ESTADO_LABEL.get(estado, estado)
             tag   = estado if estado in ("clasificado", "pendiente_pdf", "sin_xml") else ""
-            # Abreviar tipo de documento
+
+            # Abreviar tipo (usando map en lugar de múltiples replace)
             tipo_raw = str(r.tipo_documento or "")
-            tipo_short = (tipo_raw
-                .replace("Factura Electrónica", "FE")
-                .replace("Factura electronica", "FE")
-                .replace("Nota de Crédito", "NC")
-                .replace("Nota de Debito", "ND")
-                .replace("Tiquete", "TQ")
-                [:4])
+            tipo_short = tipo_map.get(tipo_raw, tipo_raw[:4])
+
             moneda = str(r.moneda or "")[:3]
-            self.tree.insert("", "end", iid=str(idx),
-                              values=(
-                                  icon + " " + label,
-                                  r.fecha_emision,
-                                  tipo_short,
-                                  _short_name(r.emisor_nombre),
-                                  moneda,
-                                  _fmt_amount(r.total_comprobante),
-                              ),
-                              tags=(tag,))
+
+            items_to_insert.append((
+                str(idx),
+                (icon + " " + label, r.fecha_emision, tipo_short, _short_name(r.emisor_nombre), moneda, _fmt_amount(r.total_comprobante)),
+                tag,
+            ))
+
+        # Insertar todos de una vez (batch)
+        for iid, values, tag in items_to_insert:
+            self.tree.insert("", "end", iid=iid, values=values, tags=(tag,))
 
     def _update_progress(self):
         if not self.records:
