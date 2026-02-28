@@ -1068,8 +1068,8 @@ class App3Window(ctk.CTk):
                 tag,
             ))
 
-        # Insertar en batches para que la UI responda
-        batch_size = 500  # Inserta 500 a la vez, luego actualiza UI
+        # Insertar en batches pequeños para que la UI responda sin congelarse
+        batch_size = 200  # Inserta 200 a la vez, luego actualiza UI (menos bloqueos)
         for batch_start in range(0, len(items_to_insert), batch_size):
             batch_end = min(batch_start + batch_size, len(items_to_insert))
             for iid, values, tag in items_to_insert[batch_start:batch_end]:

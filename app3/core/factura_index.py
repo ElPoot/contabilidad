@@ -285,8 +285,8 @@ class FacturaIndexer:
         pdf_root: Path,
         records: dict[str, FacturaRecord],
         allow_pdf_content_fallback: bool = True,
-        timeout_seconds: int = 3,  # Balance: 3s (captura facturas legítimas sin ser muy lento)
-        max_workers: int = 16,      # 16 workers = buen paralelismo
+        timeout_seconds: int = 4,  # 4s: captura todas las facturas sin perder velocidad (~40-42s)
+        max_workers: int = 16,      # 16 workers = excelente paralelismo
     ) -> dict[str, Any]:
         """
         Vincula PDFs a registros de factura con paralelismo y auditoría.
