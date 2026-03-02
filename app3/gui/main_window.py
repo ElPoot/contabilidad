@@ -577,7 +577,8 @@ def _write_gasto_grouped(
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     tipo_col_idx   = (display_cols.index("tipo_documento") + 1) if "tipo_documento" in display_cols else None
-    numeric_display = [c for c in display_cols if c in numeric_columns]  # subtotal … total_comprobante
+    # CRÍTICO: numeric_display solo contiene columnas que existen en display_cols
+    numeric_display = [c for c in display_cols if c in numeric_columns and c in display_cols]
 
     subtotal_fill = PatternFill(fill_type="solid", fgColor="BDD7EE")
     subtotal_font = Font(bold=True)
@@ -604,12 +605,14 @@ def _write_gasto_grouped(
                 subtipo_val = ""
                 cuenta_val  = str(group_keys).strip()
 
+            # CRÍTICO: group_sums solo para columnas numéricas que existen en display_cols
             group_sums: dict[str, Decimal] = {c: Decimal("0") for c in numeric_display}
 
             # Filas de datos (sin color)
             for _, row_data in group_df.iterrows():
                 for col_idx, col_name in enumerate(display_cols, start=1):
-                    val  = _safe(row_data[col_name])
+                    # CRÍTICO: Verificar que col_name existe en row_data
+                    val = _safe(row_data.get(col_name)) if col_name in row_data.index else None
                     cell = ws.cell(row=current_row, column=col_idx)
                     cell.value = val
                     if col_name in text_columns:
@@ -627,7 +630,7 @@ def _write_gasto_grouped(
                         ws.cell(row=current_row, column=c).fill = credit_fill
 
                 for col_name in numeric_display:
-                    tv = _safe(row_data[col_name]) if col_name in row_data.index else None
+                    tv = _safe(row_data.get(col_name)) if col_name in row_data.index else None
                     try:
                         if tv is not None:
                             group_sums[col_name] += Decimal(str(tv))
@@ -708,6 +711,7 @@ class App3Window(ctk.CTk):
         self.all_records: list[FacturaRecord] = []
         self._db_records: dict[str, dict] = {}
         self.selected: FacturaRecord | None = None
+        self.selected_records: list[FacturaRecord] = []  # Multi-selección
         self._load_queue: Queue = Queue()
         self._active_calendar: DatePickerDropdown | None = None
         self._load_generation: int = 0
@@ -745,6 +749,32 @@ class App3Window(ctk.CTk):
         self._body_container.grid()
         self.focus_force()
         self._load_session(session)
+
+    def _clear_cache_and_reload(self):
+        """Limpia el cache de PDFs y recarga todos los datos.
+
+        Útil cuando los XMLs quedan desvinculados de sus PDFs tras clasificación.
+        """
+        if not self.session:
+            return
+
+        if not self._ask("Limpiar cache",
+                        "Se eliminará el cache de PDFs y se recalcularán todas las vinculaciones.\n\n"
+                        "Esto toma ~40-50 segundos. ¿Deseas continuar?"):
+            return
+
+        try:
+            # Limpiar cache de PDFs
+            mdir = metadata_dir(self.session.folder)
+            cache_file = mdir / "pdf_cache.json"
+            if cache_file.exists():
+                cache_file.unlink()
+                logger.info(f"Cache limpiado: {cache_file}")
+
+            # Recalcular registros (fuerza rescan de PDFs)
+            self._load_session(self.session)
+        except Exception as e:
+            self._show_error("Error al limpiar cache", str(e))
 
     def _load_session(self, session: ClientSession):
         import time
@@ -796,6 +826,20 @@ class App3Window(ctk.CTk):
                 load_time = time.perf_counter() - start_load
                 logger.info(f"load_period() tardó {load_time:.2f}s para {len(records)} registros")
 
+                # Escanear PDFs huérfanos
+                from app3.core.classification_utils import find_orphaned_pdfs, create_orphaned_record
+                pf_root = session.folder.parent.parent
+                contabilidades_root = pf_root / "Contabilidades"
+                orphaned_list = find_orphaned_pdfs(contabilidades_root, self._db_records)
+
+                # Agregar registros dummy para PDFs huérfanos
+                for orphaned_info in orphaned_list:
+                    orphaned_record = create_orphaned_record(orphaned_info)
+                    records.append(orphaned_record)
+
+                if orphaned_list:
+                    logger.info(f"Agregados {len(orphaned_list)} registros huérfanos")
+
                 # Casi listo
                 self.after(0, lambda: self._loading_overlay.update_status("✅ Finalizando..."))
                 self.after(0, lambda: self._loading_overlay.update_progress(90, 100))
@@ -841,6 +885,7 @@ class App3Window(ctk.CTk):
         self._db_records = db.get_records_map()
         self.records = self._apply_filters()
         self.selected = None
+        self.selected_records = []
 
         # Actualizar header
         self._lbl_cliente.configure(text=session.folder.name)
@@ -979,6 +1024,13 @@ class App3Window(ctk.CTk):
                        font=F_SMALL(), corner_radius=8,
                        command=self._on_filter).pack(side="left", padx=(8,0))
 
+        # Botón limpiar cache y recargar
+        ctk.CTkButton(date_frame, text="🔄  Limpiar cache", width=130, height=32,
+                       fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
+                       border_color=WARNING, border_width=1,
+                       font=F_SMALL(), corner_radius=8,
+                       command=self._clear_cache_and_reload).pack(side="left", padx=(8,0))
+
         # Botón cambiar cliente
         ctk.CTkButton(hdr, text="⇄  Cambiar cliente", width=150, height=32,
                        fg_color=CARD, hover_color=SURFACE, text_color=MUTED,
@@ -1006,6 +1058,7 @@ class App3Window(ctk.CTk):
             ("pendiente", "Pendientes"),
             ("sin_clave", "📄 Sin clave"),
             ("omitidos", "⊘ Omitidos"),
+            ("huerfanos", "🔍 Huérfanos"),
         ]
 
         for tab_id, tab_label in tab_configs:
@@ -1082,7 +1135,7 @@ class App3Window(ctk.CTk):
         # Columnas: Emisor, Fecha, Tipo, IVA 13%, Impuesto, Total (sin Estado)
         cols = ("emisor", "fecha", "tipo", "iva_13", "impuesto", "total")
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
-                                  selectmode="browse", style="Dark.Treeview")
+                                  selectmode="extended", style="Dark.Treeview")
         self.tree.heading("emisor",    text="Emisor")
         self.tree.heading("fecha",     text="Fecha")
         self.tree.heading("tipo",      text="Tipo")
@@ -1269,7 +1322,27 @@ class App3Window(ctk.CTk):
         )
         self._preview_lbl.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 4))
 
-        # row 7 — Botón Clasificar
+        # row 7 — Botón Recuperar (para PDFs huérfanos)
+        self._btn_recover = ctk.CTkButton(
+            clf, text="🔧  Recuperar PDF",
+            font=F_BTN(), fg_color=WARNING, hover_color="#e8a61c",
+            text_color="#0d1a18", corner_radius=10, height=40,
+            state="disabled",
+            command=self._recover_selected,
+        )
+        self._btn_recover.grid_remove()  # Ocultar por defecto, mostrar solo con huérfanos
+
+        # row 7 — Botón Vincular (para PDFs omitidos)
+        self._btn_link = ctk.CTkButton(
+            clf, text="🔗  Vincular a XML",
+            font=F_BTN(), fg_color="#8b5cf6", hover_color="#7c3aed",
+            text_color="#0d1a18", corner_radius=10, height=40,
+            state="disabled",
+            command=self._link_omitted_to_xml,
+        )
+        self._btn_link.grid_remove()  # Ocultar por defecto, mostrar solo con omitidos
+
+        # row 8 — Botón Clasificar
         self._btn_classify = ctk.CTkButton(
             clf, text="✔  Clasificar",
             font=F_BTN(), fg_color=TEAL, hover_color=TEAL_DIM,
@@ -1277,7 +1350,7 @@ class App3Window(ctk.CTk):
             state="disabled",
             command=self._classify_selected,
         )
-        self._btn_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
+        self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
 
         # ── Clasificación anterior ────────────────────────────────────────────
         self._prev_frame = ctk.CTkFrame(scroll, fg_color=CARD, corner_radius=10)
@@ -1390,7 +1463,7 @@ class App3Window(ctk.CTk):
             "Factura Electrónica": "FE",
             "Factura electronica": "FE",
             "Nota de Crédito": "NC",
-            "Nota de Debito": "ND",
+            "Nota de Débito": "ND",
             "Tiquete": "TQ",
         }
 
@@ -1405,12 +1478,12 @@ class App3Window(ctk.CTk):
 
         # Preparar items + mapeo de clave → record
         items_to_insert = []
-        self._tree_clave_map = {}  # Mapeo visual: clave → record (para _on_select)
+        self._tree_clave_map = {}  # Mapeo visual: iid → record (para _on_select)
 
-        for r in sorted_records:
+        for idx, r in enumerate(sorted_records):
             # Estado para etiqueta de color
             estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
-            tag = estado if estado in ("clasificado", "pendiente", "pendiente_pdf", "sin_xml") else "pendiente"
+            tag = estado if estado in ("clasificado", "pendiente", "pendiente_pdf", "sin_xml", "huerfano") else "pendiente"
 
             # Formatear campos
             tipo_raw = str(r.tipo_documento or "")
@@ -1432,9 +1505,10 @@ class App3Window(ctk.CTk):
                 total_fmt,
             )
 
-            # Usar clave como iid (no índice) para evitar problemas de orden
-            items_to_insert.append((r.clave, row_values, tag))
-            self._tree_clave_map[r.clave] = r
+            # Generar IID único: usar índice para evitar duplicados (ej: "506040..._{0}")
+            iid = f"{r.clave}_{idx}" if r.clave else f"UNKNOWN_{idx}"
+            items_to_insert.append((iid, row_values, tag))
+            self._tree_clave_map[iid] = r  # Mapeo IID → record
 
         # Insertar en batches para que UI responda
         batch_size = 200
@@ -1466,19 +1540,36 @@ class App3Window(ctk.CTk):
     # ── SELECCIÓN ─────────────────────────────────────────────────────────────
     def _on_select(self, _event=None):
         sel = self.tree.selection()
+
+        # Si no hay selección, limpiar estado
         if not sel:
+            self.selected = None
+            self.selected_records = []
             return
-        # Usar clave (iid) para obtener record del mapeo (mantiene orden)
-        clave = sel[0]
-        if hasattr(self, '_tree_clave_map') and clave in self._tree_clave_map:
-            self.selected = self._tree_clave_map[clave]
-        else:
-            # Fallback: búsqueda por clave en records
-            matches = [r for r in self.records if r.clave == clave]
-            if not matches:
-                return
-            self.selected = matches[0]
-        r = self.selected
+
+        # Resolver todos los records seleccionados
+        records = []
+        for iid in sel:
+            if hasattr(self, '_tree_clave_map') and iid in self._tree_clave_map:
+                records.append(self._tree_clave_map[iid])
+            else:
+                # Fallback: búsqueda por clave en records
+                matches = [r for r in self.records if r.clave == iid]
+                if matches:
+                    records.append(matches[0])
+
+        self.selected_records = records
+
+        if len(records) == 1:
+            # FLUJO EXISTENTE: una sola factura, sin cambios al comportamiento
+            self._on_select_single(records[0])
+        elif len(records) > 1:
+            # MODO LOTE: múltiples facturas del mismo emisor
+            self._on_multi_select(records)
+
+    def _on_select_single(self, r: FacturaRecord):
+        """Maneja selección de una sola factura (flujo original)."""
+        self.selected = r
 
         # Estado Hacienda — pill superior
         if r.estado_hacienda:
@@ -1528,10 +1619,26 @@ class App3Window(ctk.CTk):
         if r.emisor_nombre:
             self._prov_var.set(r.emisor_nombre)
 
-        # Habilitar botón clasificar (excepto para registros omitidos)
-        if r.razon_omisión:
+        # Habilitar botones según tipo de registro
+        if r.estado == "huerfano":
+            # Es un PDF huérfano - permitir recuperación
+            self._btn_recover.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
+            self._btn_recover.configure(state="normal")
+            self._btn_link.grid_remove()
+            self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
+            self._btn_classify.configure(state="disabled", text="⊘ No clasificable")
+        elif r.razon_omisión:
+            # Registro omitido - permitir vincular a XML
+            self._btn_recover.grid_remove()
+            self._btn_link.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
+            self._btn_link.configure(state="normal")
+            self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
             self._btn_classify.configure(state="disabled", text="⊘ No clasificable")
         else:
+            # Registro normal - permitir clasificación
+            self._btn_recover.grid_remove()
+            self._btn_link.grid_remove()
+            self._btn_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
             self._btn_classify.configure(state="normal", text="✔  Clasificar")
 
         # Clasificación previa
@@ -1549,6 +1656,55 @@ class App3Window(ctk.CTk):
                 self._prev_var.set(f"{crumbs}\n{prev.get('fecha_clasificacion', '')}")
             else:
                 self._prev_var.set("—")
+
+    def _on_multi_select(self, records: list[FacturaRecord]):
+        """Maneja selección de múltiples facturas (modo lote)."""
+        # Verificar que todos pertenecen al mismo emisor
+        cedulas = {r.emisor_cedula for r in records}
+
+        if len(cedulas) > 1:
+            # Emisores diferentes -> bloquear con aviso
+            self.pdf_viewer.show_message(
+                f"Advertencia: {len(records)} facturas de {len(cedulas)} emisores distintos.\n"
+                "Solo se puede clasificar en lote facturas del MISMO EMISOR."
+            )
+            self._btn_classify.configure(
+                state="disabled",
+                text=f"Advertencia: Emisores distintos ({len(cedulas)})"
+            )
+            # Ocultar pill Hacienda
+            self._hacienda_lbl.configure(text="", fg_color="transparent")
+            # Ocultar panel de clasificación anterior
+            self._prev_frame.grid_remove()
+            return
+
+        # Mismo emisor -> mostrar modo lote
+        self.selected = records[0]  # Mantener referencia al primero
+        emisor_nombre = records[0].emisor_nombre or "Emisor desconocido"
+
+        # Mostrar mensaje de modo lote en lugar del PDF
+        self.pdf_viewer.show_message(
+            f"Lote de clasificación\n"
+            f"{len(records)} facturas seleccionadas\n\n"
+            f"Emisor: {emisor_nombre}\n\n"
+            "Complete la clasificacion y haga click\n"
+            "en 'Clasificar N facturas'."
+        )
+
+        # Pre-llenar proveedor automaticamente con el nombre del emisor
+        self._prov_var.set(emisor_nombre)
+
+        # Cambiar texto del botón clasificar
+        self._btn_classify.configure(
+            state="normal",
+            text=f"Clasificar {len(records)} facturas"
+        )
+
+        # Ocultar pill Hacienda
+        self._hacienda_lbl.configure(text="", fg_color="transparent")
+
+        # Ocultar panel de clasificación anterior
+        self._prev_frame.grid_remove()
 
     # ── CATÁLOGO ──────────────────────────────────────────────────────────────
     def _on_categoria_change(self, _value=None):
@@ -1681,6 +1837,7 @@ class App3Window(ctk.CTk):
             return
         self.records = self._apply_filters()
         self.selected = None
+        self.selected_records = []
         self.pdf_viewer.clear()
         self._refresh_tree()
         self._update_progress()
@@ -1799,9 +1956,11 @@ class App3Window(ctk.CTk):
             "iva_4",
             "iva_8",
             "iva_13",
+            "iva_otros",
             "impuesto_total",
             "total_comprobante",
             "estado_hacienda",
+            "detalle_estado_hacienda",
             "categoria",
             "subtipo",
             "nombre_cuenta",
@@ -1814,7 +1973,7 @@ class App3Window(ctk.CTk):
 
         numeric_columns = {
             "subtotal", "tipo_cambio",
-            "iva_1", "iva_2", "iva_4", "iva_8", "iva_13",
+            "iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros",
             "impuesto_total", "total_comprobante",
         }
         text_columns = {"clave_numerica", "consecutivo", "emisor_cedula", "receptor_cedula"}
@@ -1840,6 +1999,7 @@ class App3Window(ctk.CTk):
             "impuesto_total": "Impuesto total",
             "total_comprobante": "Total comprobante",
             "estado_hacienda": "Estado Hacienda",
+            "detalle_estado_hacienda": "Detalle Estado Hacienda",
             "categoria": "Categoría",
             "subtipo": "Subtipo",
             "nombre_cuenta": "Cuenta",
@@ -1928,8 +2088,10 @@ class App3Window(ctk.CTk):
                         if sheet_name == "Gasto":
                             ws = writer.book.create_sheet(title=sheet_name)
                             writer.sheets[sheet_name] = ws
+                            # Usar solo columnas que existen en sheet_df (CRÍTICO para catálogo de cuentas)
+                            gasto_cols = [c for c in display_columns if c in sheet_df.columns]
                             _write_gasto_grouped(
-                                ws, sheet_df, display_columns,
+                                ws, sheet_df, gasto_cols,
                                 numeric_columns, text_columns, date_column,
                                 pretty_headers, owner_name, sheet_name,
                                 date_from_label, date_to_label,
@@ -1939,10 +2101,25 @@ class App3Window(ctk.CTk):
                             )
                             continue
 
-                        # Hojas normales: solo columnas visibles
+                        # Hojas normales: solo columnas visibles (filtrar IVA todo-cero)
                         visible_cols = [c for c in display_columns if c in sheet_df.columns]
-                        display_df = sheet_df[visible_cols].rename(
-                            columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in visible_cols}
+
+                        # Filtrar columnas IVA con todos ceros (como App 2)
+                        IVA_COLS = {"iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros"}
+                        ZERO_VALUES = {"", "0", "0,00", "0.00", "nan", "none", "null"}
+                        visible_cols_filtered = []
+                        for col in visible_cols:
+                            if col not in IVA_COLS:
+                                visible_cols_filtered.append(col)
+                            else:
+                                # Verificar si columna IVA tiene algún valor no-cero
+                                col_values = sheet_df[col].astype(str).str.strip().str.lower()
+                                has_nonzero = col_values.loc[~col_values.isin(ZERO_VALUES)].any()
+                                if has_nonzero:
+                                    visible_cols_filtered.append(col)
+
+                        display_df = sheet_df[visible_cols_filtered].rename(
+                            columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in visible_cols_filtered}
                         )
                         display_df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=4)
                         ws = writer.sheets[sheet_name]
@@ -2043,6 +2220,212 @@ class App3Window(ctk.CTk):
         except Exception as exc:
             self._show_error("Error al exportar", str(exc))
 
+    # ── RECUPERACIÓN DE PDFs HUÉRFANOS ────────────────────────────────────────
+    def _recover_selected(self):
+        """Recupera el PDF huérfano seleccionado."""
+        if not self.selected or not self.db:
+            return
+
+        # Obtener metadata del PDF huérfano
+        orphaned_info = getattr(self.selected, "_orphaned_info", None)
+        if not orphaned_info:
+            self._show_warning("Error", "Este PDF no tiene información de recuperación")
+            return
+
+        ruta_actual = orphaned_info.get("ruta_actual")
+        ruta_esperada = orphaned_info.get("ruta_esperada")
+        clave = orphaned_info.get("clave")
+
+        if not ruta_esperada:
+            self._show_warning("Error", "No se pudo determinar la ruta de destino")
+            return
+
+        # Confirmar
+        motivo = orphaned_info.get("motivo", "desconocido")
+        if not self._ask(
+            "Recuperar PDF",
+            f"¿Recuperar este PDF?\n\n"
+            f"Clave: {clave}\n"
+            f"Motivo: {motivo}\n"
+            f"De: {Path(ruta_actual).name}\n"
+            f"A: {Path(ruta_esperada).name}"
+        ):
+            return
+
+        # Ejecutar recuperación
+        def worker():
+            try:
+                from app3.core.classifier import recover_orphaned_pdf
+                if recover_orphaned_pdf(orphaned_info, self.db):
+                    self.after(0, lambda: self._show_info("✓ Recuperado", "PDF movido exitosamente"))
+                    self.after(0, self._load_session, self.session)
+                else:
+                    self.after(0, lambda: self._show_error("Error", "No se pudo recuperar el PDF"))
+            except Exception as e:
+                self.after(0, lambda: self._show_error("Error", str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _link_omitted_to_xml(self):
+        """Vincula un PDF omitido a un XML sin PDF disponible."""
+        if not self.selected or not self.db:
+            return
+
+        # Obtener XMLs sin PDF que puedan ser vinculados a este PDF
+        xmls_without_pdf = [
+            r for r in self.all_records
+            if r.xml_path and not r.pdf_path and r.estado == "pendiente_pdf"
+        ]
+
+        if not xmls_without_pdf:
+            self._show_warning(
+                "Sin XMLs disponibles",
+                "No hay XMLs sin PDF disponibles para vincular.\n\n"
+                "Asegúrate de que haya archivos XML en la carpeta que aún no tengan PDF."
+            )
+            return
+
+        # Crear diálogo de selección con Toplevel para mejor UX
+        selection_window = ctk.CTkToplevel(self)
+        selection_window.title("Vincular PDF a XML")
+        selection_window.geometry("600x400")
+        selection_window.configure(fg_color=BG)
+
+        # Header
+        header = ctk.CTkFrame(selection_window, fg_color=SURFACE, corner_radius=0)
+        header.pack(fill="x")
+        ctk.CTkLabel(
+            header,
+            text="🔗 Seleccionar XML para vincular",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=TEXT,
+        ).pack(side="left", padx=16, pady=12)
+
+        # Body con Treeview
+        body = ctk.CTkFrame(selection_window, fg_color=BG)
+        body.pack(fill="both", expand=True, padx=12, pady=12)
+
+        # Treeview
+        from tkinter import ttk
+        tree_frame = ctk.CTkFrame(body, fg_color=CARD, corner_radius=8)
+        tree_frame.pack(fill="both", expand=True, pady=(0, 12))
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        scrollbar = ttk.Scrollbar(tree_frame)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview", background=CARD, foreground=TEXT, fieldbackground=CARD)
+        style.configure("Treeview.Heading", background=SURFACE, foreground=TEXT)
+
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=("emisor", "fecha", "tipo", "clave"),
+            height=12,
+            yscrollcommand=scrollbar.set,
+            selectmode="browse",
+        )
+        scrollbar.configure(command=tree.yview)
+
+        tree.column("#0", width=0, stretch=False)
+        tree.column("emisor", anchor="w", width=200)
+        tree.column("fecha", anchor="w", width=80)
+        tree.column("tipo", anchor="w", width=60)
+        tree.column("clave", anchor="w", width=150)
+
+        tree.heading("#0", text="")
+        tree.heading("emisor", text="Emisor")
+        tree.heading("fecha", text="Fecha")
+        tree.heading("tipo", text="Tipo")
+        tree.heading("clave", text="Clave")
+
+        # Llenar árbol con XMLs disponibles
+        for idx, r in enumerate(xmls_without_pdf):
+            tree.insert(
+                "", "end",
+                iid=str(idx),
+                values=(
+                    r.emisor_nombre[:30],
+                    r.fecha_emision,
+                    (r.tipo_documento or "")[:10],
+                    r.clave,
+                )
+            )
+
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        # Botones
+        button_frame = ctk.CTkFrame(body, fg_color="transparent")
+        button_frame.pack(fill="x")
+
+        def on_cancel():
+            selection_window.destroy()
+
+        def on_select():
+            selection = tree.selection()
+            if not selection:
+                self._show_warning("Selección", "Selecciona un XML para vincular")
+                return
+
+            idx = int(selection[0])
+            selected_xml = xmls_without_pdf[idx]
+
+            selection_window.destroy()
+
+            # Confirmar vinculación
+            if not self._ask(
+                "Confirmar vinculación",
+                f"¿Vincular el PDF a este XML?\n\n"
+                f"Emisor: {selected_xml.emisor_nombre}\n"
+                f"Fecha: {selected_xml.fecha_emision}\n"
+                f"Tipo: {selected_xml.tipo_documento}\n"
+                f"Clave: {selected_xml.clave}"
+            ):
+                return
+
+            # Ejecutar vinculación
+            def worker():
+                try:
+                    # Actualizar el PDF omitido para que tenga la misma clave que el XML
+                    self.selected.clave = selected_xml.clave
+                    self.selected.estado = "pendiente"
+                    self.selected.razon_omisión = None
+
+                    # Actualizar DB
+                    if self.db:
+                        self.db.upsert(
+                            clave_numerica=selected_xml.clave,
+                            estado="pendiente",
+                            ruta_origen=str(selected_xml.xml_path or ""),
+                            ruta_destino="",
+                        )
+
+                    self.after(0, lambda: self._show_info(
+                        "✓ Vinculación completada",
+                        f"PDF vinculado al XML de {selected_xml.emisor_nombre}"
+                    ))
+                    self.after(0, self._load_session, self.session)
+                except Exception as e:
+                    self.after(0, lambda: self._show_error("Error en vinculación", str(e)))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        ctk.CTkButton(
+            button_frame, text="Cancelar", fg_color=SURFACE, hover_color=BORDER,
+            text_color=TEXT, command=on_cancel, width=100, corner_radius=8,
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
+            button_frame, text="Vincular", fg_color="#8b5cf6", hover_color="#7c3aed",
+            text_color="#0d1a18", command=on_select, width=100, corner_radius=8,
+        ).pack(side="right")
+
+    def _show_info(self, title: str, message: str):
+        """Muestra un mensaje de información."""
+        messagebox.showinfo(title, message)
+
     # ── CLASIFICACIÓN ─────────────────────────────────────────────────────────
     def _classify_selected(self):
         if not self.session or not self.selected or not self.db:
@@ -2069,28 +2452,67 @@ class App3Window(ctk.CTk):
             self._show_warning("Atención", "Selecciona el tipo OGND.")
             return
 
-        if self._db_records.get(self.selected.clave, {}).get("estado") == "clasificado":
-            if not self._ask("Reclasificar",
-                              "Esta factura ya fue clasificada.\n¿Deseas reclasificarla?"):
-                return
+        if len(self.selected_records) <= 1:
+            # FLUJO EXISTENTE: clasificar una sola factura
+            if self._db_records.get(self.selected.clave, {}).get("estado") == "clasificado":
+                if not self._ask("Reclasificar",
+                                  "Esta factura ya fue clasificada.\n¿Deseas reclasificarla?"):
+                    return
 
-        self._btn_classify.configure(state="disabled", text="Clasificando...")
+            self._btn_classify.configure(state="disabled", text="Clasificando...")
 
-        # Liberar lock del PDF mostrado antes de mover/eliminar en Windows.
-        self.pdf_viewer.release_file_handles("Procesando clasificación...")
+            # Liberar lock del PDF mostrado antes de mover/eliminar en Windows.
+            self.pdf_viewer.release_file_handles("Procesando clasificación...")
 
-        record  = self.selected
-        session = self.session
-        db      = self.db
+            record  = self.selected
+            session = self.session
+            db      = self.db
 
-        def worker():
-            try:
-                classify_record(record, session.folder, db, cat, subtipo, cuenta, prov)
-                self.after(0, self._on_classify_ok)
-            except Exception as exc:
-                self.after(0, lambda e=exc: self._on_classify_error(str(e)))
+            def worker():
+                try:
+                    classify_record(record, session.folder, db, cat, subtipo, cuenta, prov)
+                    self.after(0, self._on_classify_ok)
+                except Exception as exc:
+                    self.after(0, lambda e=exc: self._on_classify_error(str(e)))
 
-        threading.Thread(target=worker, daemon=True).start()
+            threading.Thread(target=worker, daemon=True).start()
+        else:
+            # MODO LOTE: clasificar múltiples facturas
+            records_to_classify = list(self.selected_records)
+            n = len(records_to_classify)
+
+            # Pedir confirmación si alguno ya estaba clasificado
+            ya_clasificados = [
+                r for r in records_to_classify
+                if self._db_records.get(r.clave, {}).get("estado") == "clasificado"
+            ]
+            if ya_clasificados:
+                if not self._ask("Reclasificar en lote",
+                                  f"{len(ya_clasificados)} de {n} facturas ya estan clasificadas.\n"
+                                  f"¿Deseas reclasificarlas?"):
+                    return
+
+            self._btn_classify.configure(state="disabled", text=f"Clasificando 0/{n}...")
+            self.pdf_viewer.release_file_handles("Clasificando en lote...")
+
+            record_list = records_to_classify
+            session = self.session
+            db = self.db
+
+            def worker():
+                errores = []
+                for i, record in enumerate(record_list):
+                    self.after(0, lambda i=i: self._btn_classify.configure(
+                        text=f"Clasificando {i+1}/{n}..."
+                    ))
+                    try:
+                        classify_record(record, session.folder, db, cat, subtipo, cuenta, prov)
+                    except Exception as exc:
+                        errores.append((record, str(exc)))
+
+                self.after(0, lambda: self._on_batch_classify_done(n, errores))
+
+            threading.Thread(target=worker, daemon=True).start()
 
     def _on_classify_ok(self):
         if self.db and self.selected:
@@ -2107,6 +2529,45 @@ class App3Window(ctk.CTk):
             self.tree.focus(saved_clave)
             self.tree.see(saved_clave)
         self._on_select()
+
+    def _on_batch_classify_done(self, total: int, errores: list[tuple]):
+        """Maneja finalización de clasificación en lote."""
+        exitosos = total - len(errores)
+
+        # Actualizar BD local en memoria con los nuevos estados
+        for r in self.selected_records:
+            db_rec = self.db.get_record(r.clave) if self.db else None
+            if db_rec:
+                self._db_records[r.clave] = db_rec
+
+        # Refrescar árbol para actualizar estado visual de las filas
+        self._refresh_tree()
+        self._update_progress()
+
+        # Restaurar botón y mostrar resultado
+        if errores:
+            self._btn_classify.configure(
+                state="normal",
+                text=f"Clasificacion: {exitosos}/{total} OK"
+            )
+            # Mostrar primeros errores (máximo 5)
+            msgs = "\n".join(
+                f"• {r.emisor_nombre}: {e}"
+                for r, e in errores[:5]
+            )
+            if len(errores) > 5:
+                msgs += f"\n... y {len(errores) - 5} errores mas"
+            self._show_error("Errores en clasificacion en lote", msgs)
+        else:
+            self._btn_classify.configure(
+                state="normal",
+                text=f"Clasificacion completada: {total} OK"
+            )
+            self._show_info("Exito", f"{total} facturas clasificadas correctamente.")
+
+        # Limpiar selección multi
+        self.selected_records = []
+        self.tree.selection_remove(self.tree.selection())
 
     @staticmethod
     def _parse_ui_date(value: str):
