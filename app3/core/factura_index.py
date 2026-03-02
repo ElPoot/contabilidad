@@ -505,6 +505,20 @@ class FacturaIndexer:
                     "error": "Veredicto cacheado",
                     "intento": 0,
                 }
+                # Log cached negatives for visibility in diagnostics
+                filename_tokens = _extract_numeric_tokens(pdf_file.name)
+                diagnostics_sin_clave.append(
+                    {
+                        "archivo": str(pdf_file),
+                        "razon": neg_status,
+                        "error": "Veredicto cacheado (no reattempt)",
+                        "intento": 0,
+                        "tokens_nombre": filename_tokens[:10],
+                        "tokens_texto": [],
+                        "claves_50_detectadas": [],
+                        "tiempo_ms": 0,
+                    }
+                )
 
         # Procesar PDFs del caché: vincular con sus claves asociadas
         for pdf_file, pdf_path in cached_pdfs.items():
@@ -815,10 +829,12 @@ class FacturaIndexer:
             }
 
         # ── EARLY DISCARD: bancario/institutional folders ──
-        # PDFs inside known bank folders (BN Email Comercios, etc.) are never
-        # fiscal invoices.  Skip them before reading bytes over the network.
+        # PDFs inside known bank folders (BN Email Comercios, etc.) are normally not
+        # fiscal invoices. But before discarding, try raw bytes scan: if the filename
+        # suggests a valid invoice (e.g. "3101172696_..."), it might be real and we
+        # should link it, not discard permanently to cache.
         if _is_bancario_path(pdf_file):
-            # Last chance: if filename tokens match a known consecutivo, link it
+            # Last chance 1: if filename tokens match a known consecutivo, link it
             if consecutivo_index:
                 pre_clave = self._resolve_clave_from_filename_tokens(
                     pdf_file.name, consecutivo_index,
@@ -831,10 +847,27 @@ class FacturaIndexer:
                         "tiempo_ms": int((time.perf_counter() - started) * 1000),
                         "size_mb": size_mb,
                     }
+            # Last chance 2: raw bytes clave scan (fast ~1-2ms, vs ~200ms fitz)
+            # Only read if file size is reasonable and filename looks invoice-like
+            try:
+                pdf_data = self._read_pdf_bytes_streaming(pdf_file)
+                raw_clave = self._try_raw_bytes_clave(pdf_data)
+                if raw_clave:
+                    return {
+                        "clave": raw_clave,
+                        "metodo": "raw_bytes_bancario",
+                        "intento": 1,
+                        "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                        "size_mb": size_mb,
+                        "checksum": hashlib.md5(pdf_data).hexdigest()[:8],
+                    }
+            except Exception:
+                pass  # Si falla la lectura de raw bytes, descartar normalmente
+            # Confirmed: no clave found in raw bytes. Discard as bancario/non-invoice.
             return {
                 "clave": None,
                 "razon": "non_invoice",
-                "error": "Descartado por ruta bancaria/institucional.",
+                "error": "Descartado por ruta bancaria/institucional (raw_bytes sin clave).",
                 "intento": 1,
                 "tiempo_ms": int((time.perf_counter() - started) * 1000),
                 "size_mb": size_mb,
