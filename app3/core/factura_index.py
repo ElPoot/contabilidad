@@ -1147,9 +1147,21 @@ class FacturaIndexer:
 
     @staticmethod
     def _resolve_clave_from_filename_tokens(filename: str, consecutivo_index: dict[str, str]) -> str | None:
-        """Intenta resolver una clave de 50 dígitos usando tokens numéricos del nombre."""
-        tokens = sorted(_extract_numeric_tokens(filename, min_len=10), key=len, reverse=True)
-        return FacturaIndexer._resolve_clave_from_tokens(tokens, consecutivo_index)
+        """Intenta resolver una clave de 50 dígitos usando tokens numéricos del nombre.
+
+        Busca en dos pasadas:
+        1. Tokens de 10+ caracteres (alta precisión)
+        2. Tokens de 6+ caracteres (captura consecutivos más cortos)
+        """
+        # Primer pase: tokens largos (10+) para máxima precisión
+        tokens_long = sorted(_extract_numeric_tokens(filename, min_len=10), key=len, reverse=True)
+        result = FacturaIndexer._resolve_clave_from_tokens(tokens_long, consecutivo_index)
+        if result:
+            return result
+
+        # Segundo pase: tokens medianos (6+) para nombres con consecutivos cortos
+        tokens_medium = sorted(_extract_numeric_tokens(filename, min_len=6), key=len, reverse=True)
+        return FacturaIndexer._resolve_clave_from_tokens(tokens_medium, consecutivo_index)
 
     @staticmethod
     def _resolve_clave_from_tokens(tokens: list[str], consecutivo_index: dict[str, str]) -> str | None:
