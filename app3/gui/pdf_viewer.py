@@ -204,9 +204,20 @@ class PDFViewer(ctk.CTkFrame):
         self._close_doc()
         self._show_placeholder("Sin documento cargado")
 
+    def show_message(self, message: str) -> None:
+        """Muestra un mensaje de texto centrado en el canvas (sin PDF)."""
+        self._show_placeholder(message)
+
     def release_file_handles(self, message: str = "") -> None:
-        """Cierra el documento actual para liberar locks en Windows."""
+        """Cierra el documento actual para liberar locks en Windows.
+
+        IMPORTANTE: En Windows, los archivos mapeados en memoria pueden tomar
+        tiempo para liberarse después de close(). Se agrega delay para asegurar.
+        """
+        import time
         self._close_doc()
+        # Dar tiempo al SO para liberar el archivo en Windows
+        time.sleep(0.1)
         if message:
             self._show_placeholder(message)
 
