@@ -35,13 +35,23 @@ class PDFViewer(ctk.CTkFrame):
       - Botones ◀ ▶              -> navegar páginas
       - Botones − +              -> zoom manual
       - Botón ↺                  -> fit-to-width (ajuste automático al ancho)
-      - Clic derecho sobre texto -> copia la palabra al portapapeles (modo texto)
+      - Click izquierdo + arrastrar -> seleccionar texto (highlight azul)
+      - Soltar selección         -> auto-copia al portapapeles
+      - Ctrl+C                   -> copia la selección actual
+      - Clic derecho sobre texto -> copia la línea completa al portapapeles
     """
 
     # Zoom libre en pasos de 10% entre 30% y 300%
     ZOOM_MIN   = 0.30
     ZOOM_MAX   = 3.00
     ZOOM_STEP  = 0.10
+
+    # Padding del canvas (debe coincidir con valores en _render_page)
+    _HPAD = 16   # padding horizontal
+    _VPAD = 0    # padding vertical
+
+    # Tamaño de celda para índice espacial (PDF points)
+    _CELL_SIZE = 50
 
     def __init__(self, parent, **kwargs):
         kwargs.pop("bg", None)
@@ -56,6 +66,14 @@ class PDFViewer(ctk.CTkFrame):
         self._fit_zoom:    float = 1.0      # zoom calculado por fit-to-width
         self._tk_image            = None    # referencia anti-GC
         self._text_blocks: list   = []      # bloques de texto de la página actual
+        self._spatial_grid: dict  = {}      # índice espacial: (col, row) → list[int]
+
+        # Variables para selección de texto con drag
+        self._sel_start:  Optional[tuple] = None  # (cx, cy) canvas — inicio del drag
+        self._sel_end:    Optional[tuple] = None  # (cx, cy) canvas — posición actual drag
+        self._sel_ids:    list = []               # IDs de canvas.create_rectangle() del highlight
+        self._sel_text:   str  = ""              # texto seleccionado actual (para Ctrl+C)
+        self._drag_pending: bool = False          # throttle para drag (~60fps)
 
         self._build_toolbar()
         self._build_canvas()
@@ -136,7 +154,7 @@ class PDFViewer(ctk.CTkFrame):
             bg=CANVAS_BG,
             highlightthickness=0,
             bd=0,
-            cursor="crosshair",
+            cursor="xterm",
         )
         self._canvas.pack(side="left", fill="both", expand=True)
 
@@ -168,6 +186,13 @@ class PDFViewer(ctk.CTkFrame):
 
         # Clic derecho = copiar texto bajo el cursor
         self._canvas.bind("<Button-3>", self._on_right_click)
+
+        # Selección de texto con drag
+        self._canvas.bind("<Button-1>",         self._on_sel_start)
+        self._canvas.bind("<B1-Motion>",        self._on_sel_drag)
+        self._canvas.bind("<ButtonRelease-1>",  self._on_sel_end)
+        self._canvas.bind("<Control-c>",        self._on_copy)
+        self._canvas.bind("<Control-C>",        self._on_copy)
 
         # Resize -> recalcular fit-to-width
         self._canvas.bind("<Configure>", self._on_canvas_resize)
@@ -276,7 +301,6 @@ class PDFViewer(ctk.CTkFrame):
             return
         cx = self._canvas.canvasx(event.x)
         cy = self._canvas.canvasy(event.y)
-        pad = 20
         zoom = self._zoom
 
         # Encontrar la palabra bajo el cursor
@@ -286,10 +310,10 @@ class PDFViewer(ctk.CTkFrame):
 
         for word in self._text_blocks:
             x0, y0, x1, y1, text, block_no, line_no, *_ = word
-            bx0 = x0 * zoom + pad
-            by0 = y0 * zoom + pad
-            bx1 = x1 * zoom + pad
-            by1 = y1 * zoom + pad
+            bx0 = x0 * zoom + self._HPAD
+            by0 = y0 * zoom + self._VPAD
+            bx1 = x1 * zoom + self._HPAD
+            by1 = y1 * zoom + self._VPAD
             # Hit exacto dentro del bbox de la palabra
             if bx0 <= cx <= bx1 and by0 <= cy <= by1:
                 hit_block = block_no
@@ -318,6 +342,170 @@ class PDFViewer(ctk.CTkFrame):
         if line_text:
             self.clipboard_clear()
             self.clipboard_append(line_text)
+
+    # ── SELECCIÓN DE TEXTO CON DRAG ────────────────────────────────────────────
+    def _on_sel_start(self, event: tk.Event):
+        """Inicia selección al hacer click izquierdo."""
+        if not self._text_blocks:
+            return
+        cx = self._canvas.canvasx(event.x)
+        cy = self._canvas.canvasy(event.y)
+        self._sel_start = (cx, cy)
+        self._sel_end   = (cx, cy)
+        self._clear_sel_rects()   # limpiar selección previa visual
+        self._sel_text = ""
+
+    def _on_sel_drag(self, event: tk.Event):
+        """Extiende selección al arrastrar (throttled ~60fps)."""
+        if self._sel_start is None or not self._text_blocks:
+            return
+        cx = self._canvas.canvasx(event.x)
+        cy = self._canvas.canvasy(event.y)
+        self._sel_end = (cx, cy)
+        if not self._drag_pending:
+            self._drag_pending = True
+            self._canvas.after(16, self._flush_drag)   # máx ~60 fps
+
+    def _flush_drag(self):
+        """Procesa el drag y redibuja los highlights (llamado desde after)."""
+        self._drag_pending = False
+        if self._sel_start is not None:
+            self._draw_selection()
+
+    def _on_sel_end(self, event: tk.Event):
+        """Finaliza selección y captura texto."""
+        if self._sel_start is None:
+            return
+        cx = self._canvas.canvasx(event.x)
+        cy = self._canvas.canvasy(event.y)
+        self._sel_end = (cx, cy)
+        words = self._get_words_in_selection()
+        self._sel_text = self._words_to_text(words)
+        # Auto-copy al portapapeles al soltar (como selección en terminal)
+        if self._sel_text:
+            self.clipboard_clear()
+            self.clipboard_append(self._sel_text)
+
+    def _on_copy(self, event=None):
+        """Ctrl+C — copia la selección actual al portapapeles."""
+        if self._sel_text:
+            self.clipboard_clear()
+            self.clipboard_append(self._sel_text)
+
+    def _build_spatial_grid(self, words: list) -> dict:
+        """Construye índice espacial: divide el PDF en celdas de _CELL_SIZE puntos.
+
+        Retorna: dict((col, row) → list[int] indices en words)
+        """
+        grid: dict = {}
+        cs = self._CELL_SIZE
+        for i, w in enumerate(words):
+            x0, y0, x1, y1 = w[0], w[1], w[2], w[3]
+            c0 = int(x0 / cs)
+            c1 = int(x1 / cs)
+            r0 = int(y0 / cs)
+            r1 = int(y1 / cs)
+            for c in range(c0, c1 + 1):
+                for r in range(r0, r1 + 1):
+                    key = (c, r)
+                    if key not in grid:
+                        grid[key] = []
+                    grid[key].append(i)
+        return grid
+
+    def _draw_selection(self):
+        """Dibuja rectángulos highlight sobre palabras en el rango seleccionado."""
+        self._clear_sel_rects()
+        if self._sel_start is None or self._sel_end is None:
+            return
+        words = self._get_words_in_selection()
+        zoom = self._zoom
+        for word in words:
+            x0, y0, x1, y1 = word[0], word[1], word[2], word[3]
+            bx0 = x0 * zoom + self._HPAD
+            by0 = y0 * zoom + self._VPAD
+            bx1 = x1 * zoom + self._HPAD
+            by1 = y1 * zoom + self._VPAD
+            rid = self._canvas.create_rectangle(
+                bx0, by0, bx1, by1,
+                fill="#2563eb", outline="",
+                stipple="gray25",    # simula semitransparencia en Tkinter
+            )
+            self._sel_ids.append(rid)
+
+    def _clear_sel_rects(self):
+        """Elimina del canvas los rectángulos de selección."""
+        for rid in self._sel_ids:
+            self._canvas.delete(rid)
+        self._sel_ids = []
+
+    def _get_words_in_selection(self) -> list:
+        """Retorna palabras cuyo bbox intersecta con el rect de selección actual.
+
+        Usa índice espacial para evitar iteración lineal de todas las palabras.
+        """
+        if self._sel_start is None or self._sel_end is None or not self._spatial_grid:
+            return []
+        zoom = self._zoom
+        cx0, cy0 = self._sel_start
+        cx1, cy1 = self._sel_end
+        sel_x0, sel_x1 = min(cx0, cx1), max(cx0, cx1)
+        sel_y0, sel_y1 = min(cy0, cy1), max(cy0, cy1)
+
+        # Convertir canvas coords → PDF coords (invertir la transformación)
+        pdf_x0 = (sel_x0 - self._HPAD) / zoom
+        pdf_x1 = (sel_x1 - self._HPAD) / zoom
+        pdf_y0 = (sel_y0 - self._VPAD) / zoom
+        pdf_y1 = (sel_y1 - self._VPAD) / zoom
+
+        # Determinar qué celdas del grid intersectan la selección
+        cs = self._CELL_SIZE
+        c0 = max(0, int(pdf_x0 / cs))
+        c1 = int(pdf_x1 / cs)
+        r0 = max(0, int(pdf_y0 / cs))
+        r1 = int(pdf_y1 / cs)
+
+        # Candidatos (deduplicados por índice)
+        candidates: set = set()
+        for c in range(c0, c1 + 1):
+            for r in range(r0, r1 + 1):
+                indices = self._spatial_grid.get((c, r))
+                if indices:
+                    candidates.update(indices)
+
+        # Filtro exacto con AABB en PDF coords + overlap threshold 30%
+        selected = []
+        for i in candidates:
+            w = self._text_blocks[i]
+            x0, y0, x1, y1 = w[0], w[1], w[2], w[3]
+            # Overlap exacto en PDF coords
+            ox = max(0.0, min(x1, pdf_x1) - max(x0, pdf_x0))
+            oy = max(0.0, min(y1, pdf_y1) - max(y0, pdf_y0))
+            word_area = (x1 - x0) * (y1 - y0)
+            if word_area > 0 and (ox * oy) / word_area >= 0.30:
+                selected.append(w)
+
+        return selected
+
+    def _words_to_text(self, words):
+        """Reconstruye texto ordenado: bloque → línea → x, con saltos entre líneas."""
+        if not words:
+            return ""
+        words_sorted = sorted(words, key=lambda w: (w[5], w[6], w[0]))
+        lines = []
+        cur_block, cur_line, buf = None, None, []
+        for w in words_sorted:
+            bn, ln = w[5], w[6]
+            if cur_block is None:
+                cur_block, cur_line = bn, ln
+            if bn != cur_block or ln != cur_line:
+                lines.append(" ".join(x[4] for x in buf))
+                buf = []
+                cur_block, cur_line = bn, ln
+            buf.append(w)
+        if buf:
+            lines.append(" ".join(x[4] for x in buf))
+        return "\n".join(lines)
 
     def _on_canvas_resize(self, event: tk.Event):
         """Al redimensionar, recalcular fit si seguimos en modo fit."""
@@ -357,6 +545,13 @@ class PDFViewer(ctk.CTkFrame):
         if not self._doc:
             return
 
+        # Limpiar selección previa (cambio de página/zoom)
+        self._clear_sel_rects()
+        self._sel_start = None
+        self._sel_end   = None
+        self._sel_text  = ""
+        self._drag_pending = False
+
         zoom = self._zoom
         page = self._doc[self._page_index]
         mat  = fitz.Matrix(zoom, zoom)
@@ -365,22 +560,23 @@ class PDFViewer(ctk.CTkFrame):
         # Guardar bloques de texto para copia con clic derecho
         self._text_blocks = page.get_text("words")  # (x0,y0,x1,y1,word,block,line,word_idx)
 
+        # Construir índice espacial para selección eficiente
+        self._spatial_grid = self._build_spatial_grid(self._text_blocks)
+
         # PPM -> PhotoImage
         self._tk_image = tk.PhotoImage(data=pix.tobytes("ppm"))
 
-        hpad = 16   # solo padding horizontal
-        vpad = 0    # evitar hueco superior perceptible
         w, h = pix.width, pix.height
-        self._canvas.configure(scrollregion=(0, 0, w + hpad * 2, h + vpad * 2))
+        self._canvas.configure(scrollregion=(0, 0, w + self._HPAD * 2, h + self._VPAD * 2))
         self._canvas.delete("all")
 
         # Sombra sutil
         self._canvas.create_rectangle(
-            hpad + 3, vpad + 3, w + hpad + 3, h + vpad + 3,
+            self._HPAD + 3, self._VPAD + 3, w + self._HPAD + 3, h + self._VPAD + 3,
             fill="#060809", outline="",
         )
         # Página -- empieza casi en y=0
-        self._canvas.create_image(hpad, vpad, anchor="nw", image=self._tk_image)
+        self._canvas.create_image(self._HPAD, self._VPAD, anchor="nw", image=self._tk_image)
         # Forzar scroll al inicio cada vez que se carga una página
         self._canvas.xview_moveto(0)
         self._canvas.yview_moveto(0)
@@ -420,6 +616,14 @@ class PDFViewer(ctk.CTkFrame):
             self._doc = None
         self._tk_image   = None
         self._text_blocks = []
+        self._spatial_grid = {}
+        self._drag_pending = False
+        # Limpiar selección
+        self._clear_sel_rects()
+        self._sel_start = None
+        self._sel_end   = None
+        self._sel_text  = ""
+        self._sel_ids   = []
 
 
 # ── Estilos TTK para scrollbars (se aplica una sola vez) ─────────────────────
