@@ -1014,18 +1014,17 @@ class FacturaIndexer:
     def _try_raw_bytes_clave(pdf_data: bytes) -> str | None:
         """Search raw PDF bytes for a valid Costa Rican clave (506 + 47 digits).
 
-        Validates structural segments of the clave to reject false positives
-        from compressed streams or binary noise:
-          - Positions 0:3   → "506" (country code, already matched by regex)
+        Handles two cases:
+        1. Continuous clave: 506 followed by 47 digits
+        2. Partitioned clave: 506...49 digits, then byte/newline, then final digit
+
+        Validates structural segments:
+          - Positions 0:3   → "506" (country code)
           - Positions 3:5   → day (01-31)
           - Positions 5:7   → month (01-12)
           - Positions 19:21 → situación comprobante (01-04)
-
-        Clave structure (50 digits):
-          0-2: 506 (country), 3-8: DDMMYY (date), 9-16: cedula (8),
-          17-18: doc_type (2), 19-20: situacion (2), 21-27: consecutivo (7),
-          28-49: other segments (22)
         """
+        # Case 1: Standard continuous clave
         for raw_match in _RE_CLAVE_RAW_BYTES.finditer(pdf_data):
             candidate = raw_match.group(0).decode("ascii")
             if len(candidate) != 50:
@@ -1038,7 +1037,6 @@ class FacturaIndexer:
                 continue
 
             # Validate situación comprobante (positions 19:21, must be 01-04)
-            # This field indicates the state of the document (01=con contingencia, 02=sin contingencia, etc)
             try:
                 situacion = int(candidate[19:21])
                 if situacion < 1 or situacion > 4:
@@ -1047,6 +1045,34 @@ class FacturaIndexer:
                 continue
 
             return candidate
+
+        # Case 2: Partitioned clave (49 digits + separate digit on next line/field)
+        # Pattern: 506\d{47} followed by newline/whitespace, then 1 more digit
+        partitioned_pattern = rb"506\d{47}\s+\d"
+        for part_match in re.finditer(partitioned_pattern, pdf_data):
+            segment = part_match.group(0)
+            try:
+                # Extract only digits, should give us 50
+                digits_only = b"".join(re.findall(rb"\d", segment))
+                if len(digits_only) != 50:
+                    continue
+
+                candidate = digits_only.decode("ascii")
+
+                # Validate date and situación
+                day = int(candidate[3:5])
+                month = int(candidate[5:7])
+                if not (1 <= day <= 31 and 1 <= month <= 12):
+                    continue
+
+                situacion = int(candidate[19:21])
+                if situacion < 1 or situacion > 4:
+                    continue
+
+                return candidate
+            except (ValueError, IndexError, UnicodeDecodeError):
+                continue
+
         return None
 
     @staticmethod
