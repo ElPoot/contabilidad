@@ -3,7 +3,11 @@
 Clasifica cada factura según la perspectiva del cliente actual.
 """
 
+import logging
+from pathlib import Path
 from app3.core.models import FacturaRecord
+
+logger = logging.getLogger(__name__)
 
 
 def classify_transaction(record: FacturaRecord, client_cedula: str) -> str:
@@ -16,6 +20,7 @@ def classify_transaction(record: FacturaRecord, client_cedula: str) -> str:
     Returns:
         "ingreso" - Yo soy emisor (venta)
         "egreso" - Yo soy receptor (compra)
+        "sin_receptor" - Egreso sin receptor identificado
         "ors" - Terceros (ni emisor ni receptor soy yo)
     """
     client_ced = (client_cedula or "").strip()
@@ -33,6 +38,12 @@ def classify_transaction(record: FacturaRecord, client_cedula: str) -> str:
     if receptor_ced == client_ced:
         return "egreso"
 
+    # Egreso sin receptor identificado (otros gastos, sin receptor cedula)
+    receptor_ced_str = str(getattr(record, "receptor_cedula", "") or "").strip().lower()
+    receptor_empty = receptor_ced_str in {"", "null", "none", "nan"}
+    if not emisor_ced == client_ced and receptor_empty:
+        return "sin_receptor"
+
     # Terceros
     return "ors"
 
@@ -42,6 +53,7 @@ def get_classification_label(classification: str) -> str:
     labels = {
         "ingreso": "Ingresos",
         "egreso": "Egresos",
+        "sin_receptor": "Sin Receptor",
         "ors": "ORS",
         "pendiente": "Pendientes",
         "sin_clave": "PDFs sin clave",
@@ -61,7 +73,7 @@ def filter_records_by_tab(
 
     Args:
         records: Lista de FacturaRecord
-        tab: Pestaña activa ("todas", "ingreso", "egreso", "ors", "pendiente", "sin_clave", "omitidos")
+        tab: Pestaña activa ("todas", "ingreso", "egreso", "sin_receptor", "ors", "pendiente", "sin_clave", "omitidos")
         client_cedula: Cédula del cliente actual
         db_records: Mapeo de clave → datos de clasificación (BD)
 
@@ -96,12 +108,19 @@ def filter_records_by_tab(
             r for r in records
             if r.razon_omisión in ("non_invoice", "timeout", "extract_failed")
         ]
-        import logging
-        logger = logging.getLogger(__name__)
         logger.debug(f"Filter omitidos: {len(omitted)} de {len(records)} registros (razon_omisión != None)")
         for r in omitted[:3]:  # Log first 3
             logger.debug(f"  - {r.clave}: razon={r.razon_omisión}")
         return omitted
+
+    if tab == "huerfanos":
+        # PDFs huérfanos: inconsistentes que pueden ser recuperados
+        huerfanos = [
+            r for r in records
+            if r.razon_omisión and r.razon_omisión.startswith("orphaned_")
+        ]
+        logger.debug(f"Filter huérfanos: {len(huerfanos)} de {len(records)} registros huérfanos")
+        return huerfanos
 
     # Clasificar por tipo de transacción (excluir omitidos)
     filtered = []
@@ -125,13 +144,14 @@ def get_tab_statistics(
             "todas": {"count": int, "clasificados": int, "porcentaje": int},
             "ingreso": {...},
             "egreso": {...},
+            "sin_receptor": {...},
             "ors": {...},
             "pendiente": {...},
             "sin_clave": {...},
             "omitidos": {...},
         }
     """
-    tabs = ["todas", "ingreso", "egreso", "ors", "pendiente", "sin_clave", "omitidos"]
+    tabs = ["todas", "ingreso", "egreso", "sin_receptor", "ors", "pendiente", "sin_clave", "omitidos"]
     stats = {}
 
     for tab in tabs:
@@ -152,3 +172,117 @@ def get_tab_statistics(
         }
 
     return stats
+
+
+def create_orphaned_record(orphaned_info: dict) -> FacturaRecord:
+    """Convierte un diccionario de PDF huérfano en FacturaRecord dummy.
+
+    Los registros dummy se muestran en la pestaña "huérfanos" para recuperación.
+    """
+    clave = orphaned_info.get("clave", "DESCONOCIDA")
+    ruta_actual = orphaned_info.get("ruta_actual", "")
+    motivo = orphaned_info.get("motivo", "desconocido")
+
+    motivo_labels = {
+        "not_in_db": "Sin registro en BD",
+        "wrong_location": "Ubicación incorrecta",
+        "duplicado": "Duplicado",
+        "huerfano_sin_destino": "Reclasificación falló",
+    }
+
+    # Crear record con clave requerida
+    record = FacturaRecord(clave=clave)
+    record.estado = "huerfano"  # Estado especial
+    record.razon_omisión = f"orphaned_{motivo}"  # Marcar como huérfano
+    record.pdf_path = Path(ruta_actual) if ruta_actual else None
+    record.emisor_nombre = "PDF HUÉRFANO ⚠️"
+    record.receptor_nombre = motivo_labels.get(motivo, motivo)
+    record.fecha_emision = motivo_labels.get(motivo, motivo)  # Mostrar motivo en fecha
+    record._orphaned_info = orphaned_info  # Guardar metadata para recuperación
+
+    return record
+
+
+def find_orphaned_pdfs(
+    contabilidades_root: Path,
+    db_records: dict[str, dict],
+) -> list[dict]:
+    """Escanea PDFs en Contabilidades que no están en BD o están en estado inconsistente.
+
+    Returns:
+        Lista de diccionarios con:
+        {
+            "clave": str,
+            "archivo": Path,
+            "ruta_actual": str,
+            "ruta_esperada": str | None,  # Si hay en BD
+            "motivo": str,  # "not_in_db" | "wrong_location" | "estado_inconsistente"
+        }
+    """
+    orphaned = []
+
+    if not contabilidades_root.exists():
+        return orphaned
+
+    # Crear mapa inverso: archivo → clave (desde BD)
+    db_by_destino = {v.get("ruta_destino"): k for k, v in db_records.items() if v.get("ruta_destino")}
+
+    # Escanear todos los PDFs en Contabilidades
+    for pdf_path in contabilidades_root.rglob("*.pdf"):
+        nombre = pdf_path.name
+        # Extraer clave del nombre (si es un archivo nombrado por clave)
+        clave_from_name = nombre.replace(".pdf", "").strip()
+
+        # Buscar en BD por ruta_destino
+        clave = db_by_destino.get(str(pdf_path))
+
+        # Si no encontramos por ruta, intentar por nombre de archivo (50 dígitos)
+        if not clave and len(clave_from_name) == 50 and clave_from_name.isdigit():
+            clave = clave_from_name
+
+        if not clave:
+            # PDF sin registro en BD
+            orphaned.append({
+                "clave": clave_from_name if len(clave_from_name) == 50 else "DESCONOCIDA",
+                "archivo": pdf_path,
+                "ruta_actual": str(pdf_path),
+                "ruta_esperada": None,
+                "motivo": "not_in_db",
+            })
+            continue
+
+        # Verificar consistencia
+        db_record = db_records.get(clave, {})
+        ruta_esperada = db_record.get("ruta_destino")
+        ruta_origen = db_record.get("ruta_origen")
+
+        # Caso 1: PDF en ubicación antigua, copia también en ubicación nueva (duplicado)
+        if ruta_esperada and str(pdf_path) != ruta_esperada and Path(ruta_esperada).exists():
+            orphaned.append({
+                "clave": clave,
+                "archivo": pdf_path,
+                "ruta_actual": str(pdf_path),
+                "ruta_esperada": ruta_esperada,
+                "motivo": "duplicado",
+            })
+        # Caso 2: PDF en ubicación incorrecta (tiene ruta esperada pero no está ahí)
+        elif ruta_esperada and str(pdf_path) != ruta_esperada:
+            orphaned.append({
+                "clave": clave,
+                "archivo": pdf_path,
+                "ruta_actual": str(pdf_path),
+                "ruta_esperada": ruta_esperada,
+                "motivo": "wrong_location",
+            })
+        # Caso 3: PDF huérfano sin ruta esperada (reclasificación falló a mitad)
+        elif not ruta_esperada and ruta_origen:
+            orphaned.append({
+                "clave": clave,
+                "archivo": pdf_path,
+                "ruta_actual": str(pdf_path),
+                "ruta_esperada": ruta_origen,  # Usar ruta_origen como fallback
+                "motivo": "huerfano_sin_destino",
+            })
+
+    logger.info(f"Encontrados {len(orphaned)} PDFs huérfanos u inconsistentes")
+    return orphaned

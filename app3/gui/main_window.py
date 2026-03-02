@@ -1054,6 +1054,7 @@ class App3Window(ctk.CTk):
             ("todas", "Todas"),
             ("ingreso", "Ingresos"),
             ("egreso", "Egresos"),
+            ("sin_receptor", "Sin Receptor"),
             ("ors", "ORS"),
             ("pendiente", "Pendientes"),
             ("sin_clave", "📄 Sin clave"),
@@ -1343,7 +1344,27 @@ class App3Window(ctk.CTk):
         )
         self._btn_link.grid_remove()  # Ocultar por defecto, mostrar solo con omitidos
 
-        # row 8 — Botón Clasificar
+        # row 7 — Botón Borrar PDF (para PDFs omitidos)
+        self._btn_delete = ctk.CTkButton(
+            clf, text="🗑️  Borrar PDF",
+            font=F_BTN(), fg_color=DANGER, hover_color="#dc2626",
+            text_color="#0d1a18", corner_radius=10, height=40,
+            state="disabled",
+            command=self._delete_omitido,
+        )
+        self._btn_delete.grid_remove()  # Ocultar por defecto, mostrar solo con omitidos
+
+        # row 8 — Botón Auto-clasificar (para Ingresos y Sin Receptor)
+        self._btn_auto_classify = ctk.CTkButton(
+            clf, text="⚡  Clasificar todos",
+            font=F_BTN(), fg_color="#10b981", hover_color="#059669",
+            text_color="#0d1a18", corner_radius=10, height=40,
+            state="disabled",
+            command=self._auto_classify_current_tab,
+        )
+        self._btn_auto_classify.grid_remove()  # Ocultar por defecto
+
+        # row 9 — Botón Clasificar
         self._btn_classify = ctk.CTkButton(
             clf, text="✔  Clasificar",
             font=F_BTN(), fg_color=TEAL, hover_color=TEAL_DIM,
@@ -1351,7 +1372,7 @@ class App3Window(ctk.CTk):
             state="disabled",
             command=self._classify_selected,
         )
-        self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
+        self._btn_classify.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 12))
 
         # ── Clasificación anterior ────────────────────────────────────────────
         self._prev_frame = ctk.CTkFrame(scroll, fg_color=CARD, corner_radius=10)
@@ -1626,20 +1647,33 @@ class App3Window(ctk.CTk):
             self._btn_recover.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
             self._btn_recover.configure(state="normal")
             self._btn_link.grid_remove()
-            self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
+            self._btn_delete.grid_remove()
+            self._btn_auto_classify.grid_remove()
+            self._btn_classify.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 12))
             self._btn_classify.configure(state="disabled", text="⊘ No clasificable")
         elif r.razon_omisión:
-            # Registro omitido - permitir vincular a XML
+            # Registro omitido - permitir vincular a XML o borrar
             self._btn_recover.grid_remove()
             self._btn_link.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
             self._btn_link.configure(state="normal")
-            self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
+            self._btn_delete.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 6))
+            self._btn_delete.configure(state="normal")
+            self._btn_auto_classify.grid_remove()
+            self._btn_classify.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 12))
             self._btn_classify.configure(state="disabled", text="⊘ No clasificable")
         else:
             # Registro normal - permitir clasificación
             self._btn_recover.grid_remove()
             self._btn_link.grid_remove()
-            self._btn_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
+            self._btn_delete.grid_remove()
+            # Mostrar botón auto-clasificar solo en Ingresos o Sin Receptor
+            if self._active_tab in ("ingreso", "sin_receptor"):
+                self._btn_auto_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
+                self._btn_auto_classify.configure(state="normal")
+                self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
+            else:
+                self._btn_auto_classify.grid_remove()
+                self._btn_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
             self._btn_classify.configure(state="normal", text="✔  Clasificar")
 
         # Clasificación previa
@@ -1673,6 +1707,7 @@ class App3Window(ctk.CTk):
                 state="disabled",
                 text=f"Advertencia: Emisores distintos ({len(cedulas)})"
             )
+            self._btn_auto_classify.grid_remove()
             # Ocultar pill Hacienda
             self._hacienda_lbl.configure(text="", fg_color="transparent")
             # Ocultar panel de clasificación anterior
@@ -1700,6 +1735,9 @@ class App3Window(ctk.CTk):
             state="normal",
             text=f"Clasificar {len(records)} facturas"
         )
+
+        # Ocultar botón auto-clasificar en modo lote
+        self._btn_auto_classify.grid_remove()
 
         # Ocultar pill Hacienda
         self._hacienda_lbl.configure(text="", fg_color="transparent")
@@ -1732,6 +1770,12 @@ class App3Window(ctk.CTk):
             self._tipo_cb.configure(values=tipos)
             self._tipo_var.set(tipos[0] if tipos else "")
             self._tipo_frame.grid()
+            self._cuenta_frame.grid_remove()
+            self._prov_frame.grid_remove()
+
+        elif cat == "INGRESOS" or cat == "SIN_RECEPTOR":
+            # Ingresos y Sin Receptor: sin subtipo, cuenta, ni proveedor
+            self._tipo_frame.grid_remove()
             self._cuenta_frame.grid_remove()
             self._prov_frame.grid_remove()
 
@@ -1824,6 +1868,7 @@ class App3Window(ctk.CTk):
         if cat == "OGND" and not subtipo:
             self._preview_lbl.configure(text="")
             return
+        # INGRESOS y SIN_RECEPTOR no necesitan validación (sin subtipo/cuenta/prov)
 
         try:
             dest  = build_dest_folder(self.session.folder, fecha, cat, subtipo, cuenta, prov)
@@ -2584,6 +2629,39 @@ class App3Window(ctk.CTk):
             text_color="#0d1a18", command=on_select, width=100, corner_radius=8,
         ).pack(side="right")
 
+    def _delete_omitido(self):
+        """Borra un PDF omitido del disco."""
+        if not self.selected or not self.selected.razon_omisión:
+            return
+
+        # Confirmar eliminación
+        if not self._ask(
+            "Borrar PDF",
+            f"¿Borrar este PDF omitido?\n\n"
+            f"Archivo: {self.selected.pdf_path.name if self.selected.pdf_path else 'desconocido'}\n"
+            f"Razón: {self.selected.razon_omisión}\n\n"
+            "Esta acción no se puede deshacer."
+        ):
+            return
+
+        # Ejecutar borrado
+        def worker():
+            try:
+                if self.selected.pdf_path:
+                    Path(self.selected.pdf_path).unlink(missing_ok=True)
+                    self.after(0, lambda: self._show_info("✓ PDF borrado", "Archivo eliminado exitosamente"))
+                    # Eliminar del registro en memoria y refrescar
+                    self.all_records = [r for r in self.all_records if r.clave != self.selected.clave]
+                    self.selected = None
+                    self.selected_records = []
+                    self.after(0, self._load_session, self.session)
+                else:
+                    self.after(0, lambda: self._show_warning("Advertencia", "No se encontró la ruta del PDF"))
+            except Exception as e:
+                self.after(0, lambda: self._show_error("Error", f"No se pudo borrar el PDF: {str(e)}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _show_info(self, title: str, message: str):
         """Muestra un mensaje de información."""
         messagebox.showinfo(title, message)
@@ -2625,6 +2703,7 @@ class App3Window(ctk.CTk):
         if cat == "OGND" and not subtipo:
             self._show_warning("Atención", "Selecciona el tipo OGND.")
             return
+        # INGRESOS y SIN_RECEPTOR no necesitan validación adicional
 
         if len(self.selected_records) <= 1:
             # FLUJO EXISTENTE: clasificar una sola factura
@@ -2752,6 +2831,64 @@ class App3Window(ctk.CTk):
         # Limpiar selección multi
         self.selected_records = []
         self.tree.selection_remove(self.tree.selection())
+
+    def _auto_classify_current_tab(self):
+        """Auto-clasifica todos los registros en la pestaña actual (Ingresos o Sin Receptor)."""
+        if not self.session or not self.db or self._active_tab not in ("ingreso", "sin_receptor"):
+            return
+
+        # Determinar categoría según tab activo
+        if self._active_tab == "ingreso":
+            categoria = "INGRESOS"
+        elif self._active_tab == "sin_receptor":
+            categoria = "SIN_RECEPTOR"
+        else:
+            return
+
+        # Obtener registros de la pestaña actual que no estén clasificados
+        registros_a_clasificar = [
+            r for r in self.records
+            if not r.razon_omisión
+            and self._db_records.get(r.clave, {}).get("estado") != "clasificado"
+        ]
+
+        if not registros_a_clasificar:
+            self._show_info("Sin registros", f"No hay registros pendientes en {self._active_tab}")
+            return
+
+        # Pedir confirmación
+        if not self._ask(
+            f"Auto-clasificar {categoria}",
+            f"¿Clasificar {len(registros_a_clasificar)} registros como {categoria}?\n\n"
+            f"Se moverán automáticamente a:\n"
+            f"Contabilidades/[mes]/[cliente]/{categoria}/"
+        ):
+            return
+
+        # Ejecutar clasificación en worker thread
+        self._btn_auto_classify.configure(state="disabled", text=f"Clasificando 0/{len(registros_a_clasificar)}...")
+        self.pdf_viewer.release_file_handles("Clasificando en lote...")
+
+        records_list = registros_a_clasificar
+        session = self.session
+        db = self.db
+        n = len(records_list)
+
+        def worker():
+            errores = []
+            for i, record in enumerate(records_list):
+                self.after(0, lambda i=i: self._btn_auto_classify.configure(
+                    text=f"Clasificando {i+1}/{n}..."
+                ))
+                try:
+                    # Para INGRESOS y SIN_RECEPTOR, no se necesitan subtipo, cuenta, proveedor
+                    classify_record(record, session.folder, db, categoria, "", "", "")
+                except Exception as exc:
+                    errores.append((record, str(exc)))
+
+            self.after(0, lambda: self._on_batch_classify_done(n, errores))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     @staticmethod
     def _parse_ui_date(value: str):

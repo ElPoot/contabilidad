@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 import sqlite3
 import threading
@@ -9,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 from .models import FacturaRecord
+
+logger = logging.getLogger(__name__)
 
 _MESES = {
     1: "ENERO",    2: "FEBRERO",  3: "MARZO",     4: "ABRIL",
@@ -49,6 +52,8 @@ def build_dest_folder(
       COMPRAS/{proveedor}/
       GASTOS/{subtipo}/{nombre_cuenta}/{proveedor}/
       OGND/{subtipo}/
+      INGRESOS/
+      SIN_RECEPTOR/
     """
     try:
         dt = datetime.strptime(fecha_emision.strip(), "%d/%m/%Y")
@@ -74,6 +79,10 @@ def build_dest_folder(
         )
     if cat == "OGND":
         return base / "OGND" / _sanitize_folder(subtipo)
+    if cat == "INGRESOS":
+        return base / "INGRESOS"
+    if cat == "SIN_RECEPTOR":
+        return base / "SIN_RECEPTOR"
 
     # Categoría genérica — fallback
     parts = [_sanitize_folder(x) for x in [categoria, subtipo, nombre_cuenta, proveedor] if x]
@@ -173,6 +182,76 @@ class ClassificationDB:
             )
 
 
+def recover_orphaned_pdf(
+    orphaned_info: dict,
+    db: ClassificationDB,
+) -> bool:
+    """
+    Recupera un PDF huérfano moviéndolo a su ubicación correcta.
+
+    Args:
+        orphaned_info: Diccionario con keys: clave, archivo, ruta_esperada, motivo
+        db: ClassificationDB para actualizar registros
+
+    Returns:
+        True si se recuperó exitosamente, False si falló
+    """
+    try:
+        clave = orphaned_info.get("clave")
+        archivo_actual = Path(orphaned_info.get("archivo"))
+        ruta_esperada = orphaned_info.get("ruta_esperada")
+        motivo = orphaned_info.get("motivo")
+
+        if not archivo_actual.exists():
+            raise FileNotFoundError(f"Archivo no existe: {archivo_actual}")
+
+        if motivo == "not_in_db":
+            # PDF sin registro en BD — simplemente eliminar
+            archivo_actual.unlink()
+            logging.info(f"Eliminado PDF huérfano sin registro: {archivo_actual}")
+            return True
+
+        if not ruta_esperada:
+            raise ValueError("No hay ruta esperada para este PDF")
+
+        ruta_esperada = Path(ruta_esperada)
+
+        # Crear carpeta destino si no existe
+        ruta_esperada.parent.mkdir(parents=True, exist_ok=True)
+
+        # Si ya existe en destino, no hacer nada (ya está correcto)
+        if archivo_actual == ruta_esperada and ruta_esperada.exists():
+            logging.info(f"PDF ya está en ubicación correcta: {ruta_esperada}")
+            return True
+
+        # Mover archivo con retry loop (como en classify_record)
+        for attempt in range(12):
+            try:
+                shutil.move(str(archivo_actual), str(ruta_esperada))
+                logging.info(
+                    f"Recuperado PDF: {archivo_actual.name}\n"
+                    f"  De: {archivo_actual}\n"
+                    f"  A:  {ruta_esperada}"
+                )
+
+                # Actualizar BD
+                db.upsert(
+                    clave_numerica=clave,
+                    ruta_destino=str(ruta_esperada),
+                )
+                return True
+            except PermissionError:
+                time.sleep(0.2 * (attempt + 1))
+            except OSError:
+                break
+
+        raise RuntimeError(f"No se pudo mover PDF después de 12 intentos")
+
+    except Exception as e:
+        logging.error(f"Error recuperando PDF {orphaned_info.get('clave')}: {e}")
+        return False
+
+
 def classify_record(
     record: FacturaRecord,
     session_folder: Path,
@@ -218,42 +297,39 @@ def classify_record(
     original       = record.pdf_path
     ruta_origen_str = str(original)
 
+    # Calcular hash ANTES de mover (para integridad)
+    source_hash = sha256_file(original)
+
     target = dest_folder / original.name
     if target.exists():
-        suffix = sha256_file(original)[:8]
+        suffix = source_hash[:8]
         target = dest_folder / f"{original.stem}__{suffix}{original.suffix}"
 
-    # Movimiento atómico: copiar → verificar SHA256 → borrar
-    source_hash = sha256_file(original)
-    shutil.copy2(original, target)
-
-    copy_hash = sha256_file(target)
-    if source_hash != copy_hash:
-        target.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"Fallo validación SHA256 al copiar '{original.name}'.\n"
-            "El archivo original no fue modificado."
-        )
-
-    removed   = False
+    # Movimiento: usar shutil.move() con retry loop en Windows
+    # shutil.move() es más eficiente que copy+delete en el mismo volumen
+    moved = False
     last_err: Exception | None = None
-    for attempt in range(6):
+
+    # Retry loop para mover el archivo (maneja locks de Windows)
+    for attempt in range(12):
         try:
-            original.unlink()
-            removed = True
+            shutil.move(str(original), str(target))
+            moved = True
             break
         except PermissionError as err:
             last_err = err
-            time.sleep(0.15 * (attempt + 1))
+            # Espera progresiva: 0.2s, 0.4s, 0.6s... hasta 2.4s
+            time.sleep(0.2 * (attempt + 1))
         except OSError as err:
             last_err = err
+            # Otros errores del SO (no reintentar)
             break
 
-    if not removed:
+    if not moved:
         target.unlink(missing_ok=True)
         raise RuntimeError(
             "No se pudo mover el PDF porque está en uso por otra aplicación (ej: visor PDF abierto).\n"
-            "Cierra el archivo e intenta nuevamente."
+            f"Intenta reclasificar en unos segundos. [Intentos: {attempt + 1}/12]"
         ) from last_err
 
     db.upsert(
