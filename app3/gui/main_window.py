@@ -2343,11 +2343,11 @@ class App3Window(ctk.CTk):
                             cell.alignment = Alignment(horizontal="center", vertical="center")
 
                         tipo_idx = (
-                            visible_cols.index("tipo_documento") + 1
-                            if "tipo_documento" in visible_cols else None
+                            visible_cols_filtered.index("tipo_documento") + 1
+                            if "tipo_documento" in visible_cols_filtered else None
                         )
 
-                        for col_idx, col_name in enumerate(visible_cols, start=1):
+                        for col_idx, col_name in enumerate(visible_cols_filtered, start=1):
                             for row_idx in range(header_row + 1, len(sheet_df) + header_row + 1):
                                 cell = ws.cell(row=row_idx, column=col_idx)
                                 if col_name in text_columns:
