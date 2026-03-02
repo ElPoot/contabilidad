@@ -86,7 +86,7 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
     # === TÍTULO ===
     doc_type = record.tipo_documento or "Documento"
     page.insert_text((margin_left, y_pos), doc_type.upper(),
-                     fontsize=20, color=text_color, fontname="helv-bold")
+                     fontsize=20, color=text_color, fontname="helv")
     y_pos += 35
 
     # === INFORMACIÓN BÁSICA ===
@@ -99,7 +99,7 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
     # Clave de 50 dígitos (MUY IMPORTANTE para re-indexación)
     clave_text = f"Clave: {record.clave}"
     page.insert_text((margin_left, y_pos), clave_text,
-                     fontsize=9, color=teal_color, fontname="helv-bold")
+                     fontsize=9, color=teal_color, fontname="helv")
     y_pos += 20
 
     # Estado Hacienda
@@ -113,7 +113,7 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
 
     # === SECCIÓN EMISOR ===
     page.insert_text((margin_left, y_pos), "EMISOR",
-                     fontsize=10, color=muted_color, fontname="helv-bold")
+                     fontsize=10, color=muted_color, fontname="helv")
     y_pos += 15
 
     if record.emisor_nombre:
@@ -130,7 +130,7 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
 
     # === SECCIÓN RECEPTOR ===
     page.insert_text((margin_left, y_pos), "RECEPTOR",
-                     fontsize=10, color=muted_color, fontname="helv-bold")
+                     fontsize=10, color=muted_color, fontname="helv")
     y_pos += 15
 
     if record.receptor_nombre:
