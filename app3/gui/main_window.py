@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar
 import csv
 import threading
+import time
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -2630,35 +2631,75 @@ class App3Window(ctk.CTk):
         ).pack(side="right")
 
     def _delete_omitido(self):
-        """Borra un PDF omitido del disco."""
-        if not self.selected or not self.selected.razon_omisión:
+        """Borra uno o más PDFs omitidos del disco."""
+        # Determinar qué registros borrar
+        records_to_delete = []
+        if self.selected_records:
+            # Multi-selección: verificar que todos sean omitidos
+            records_to_delete = [r for r in self.selected_records if r.razon_omisión]
+        elif self.selected and self.selected.razon_omisión:
+            # Selección simple
+            records_to_delete = [self.selected]
+
+        if not records_to_delete:
+            self._show_warning("Advertencia", "Selecciona PDFs omitidos para borrar")
             return
 
-        # Confirmar eliminación
-        if not self._ask(
-            "Borrar PDF",
-            f"¿Borrar este PDF omitido?\n\n"
-            f"Archivo: {self.selected.pdf_path.name if self.selected.pdf_path else 'desconocido'}\n"
-            f"Razón: {self.selected.razon_omisión}\n\n"
-            "Esta acción no se puede deshacer."
-        ):
+        # Preparar mensaje de confirmación
+        if len(records_to_delete) == 1:
+            msg = (
+                f"¿Borrar este PDF omitido?\n\n"
+                f"Archivo: {records_to_delete[0].pdf_path.name if records_to_delete[0].pdf_path else 'desconocido'}\n"
+                f"Razón: {records_to_delete[0].razon_omisión}\n\n"
+                "Esta acción no se puede deshacer."
+            )
+        else:
+            msg = (
+                f"¿Borrar {len(records_to_delete)} PDFs omitidos?\n\n"
+                f"Se eliminarán {len(records_to_delete)} archivos de forma permanente.\n"
+                "Esta acción no se puede deshacer."
+            )
+
+        if not self._ask("Borrar PDFs", msg):
             return
 
-        # Ejecutar borrado
+        # Ejecutar borrado en worker
         def worker():
-            try:
-                if self.selected.pdf_path:
-                    Path(self.selected.pdf_path).unlink(missing_ok=True)
-                    self.after(0, lambda: self._show_info("✓ PDF borrado", "Archivo eliminado exitosamente"))
-                    # Eliminar del registro en memoria y refrescar
-                    self.all_records = [r for r in self.all_records if r.clave != self.selected.clave]
-                    self.selected = None
-                    self.selected_records = []
-                    self.after(0, self._load_session, self.session)
+            deleted = 0
+            errors = []
+
+            for record in records_to_delete:
+                try:
+                    if record.pdf_path:
+                        # Cerrar el documento PDF en el viewer para liberar el archivo
+                        if self.selected and self.selected.clave == record.clave:
+                            self.after(0, self.pdf_viewer._close_doc)
+                            time.sleep(0.1)
+
+                        Path(record.pdf_path).unlink(missing_ok=True)
+                        # Eliminar del registro en memoria
+                        self.all_records = [r for r in self.all_records if r.clave != record.clave]
+                        deleted += 1
+                except Exception as e:
+                    errors.append(f"{record.pdf_path.name if record.pdf_path else 'desconocido'}: {str(e)}")
+
+            # Actualizar UI
+            if deleted > 0:
+                self.selected = None
+                self.selected_records = []
+                self.after(0, self._refresh_tree)
+                self.after(0, self.pdf_viewer._close_doc)
+
+                if deleted == 1:
+                    self.after(0, lambda: self._show_info("✓ PDF borrado", f"Archivo eliminado exitosamente"))
                 else:
-                    self.after(0, lambda: self._show_warning("Advertencia", "No se encontró la ruta del PDF"))
-            except Exception as e:
-                self.after(0, lambda: self._show_error("Error", f"No se pudo borrar el PDF: {str(e)}"))
+                    self.after(0, lambda: self._show_info("✓ PDFs borrados", f"{deleted} archivos eliminados exitosamente"))
+
+            if errors:
+                msg_error = "Errores en el borrado:\n\n" + "\n".join(errors[:5])
+                if len(errors) > 5:
+                    msg_error += f"\n... y {len(errors) - 5} errores más"
+                self.after(0, lambda: self._show_error("Error", msg_error))
 
         threading.Thread(target=worker, daemon=True).start()
 
