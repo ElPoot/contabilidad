@@ -1931,9 +1931,11 @@ class App3Window(ctk.CTk):
                     "iva_4": r.iva_4,
                     "iva_8": r.iva_8,
                     "iva_13": r.iva_13,
+                    "iva_otros": r.iva_otros,
                     "impuesto_total": r.impuesto_total,
                     "total_comprobante": r.total_comprobante,
                     "estado_hacienda": r.estado_hacienda,
+                    "detalle_estado_hacienda": r.detalle_estado_hacienda,
                     "categoria": str(meta.get("categoria") or ""),
                     "subtipo": str(meta.get("subtipo") or ""),
                     "nombre_cuenta": str(meta.get("nombre_cuenta") or ""),
@@ -2042,21 +2044,25 @@ class App3Window(ctk.CTk):
                 mask_ventas = emisor_raw.eq(client_cedula)
                 mask_egreso = ~mask_ventas & receptor_raw.eq(client_cedula)
                 mask_sin_receptor = ~mask_ventas & ~mask_egreso & receptor_is_empty
-                mask_ors = ~mask_ventas & ~mask_egreso & ~mask_sin_receptor
 
-                # Egresos: GASTOS → hoja "Gasto"; resto (COMPRAS + sin clasificar) → "Compras"
+                # Egresos: GASTOS → hoja "Gastos"; COMPRAS → hoja "Compras"; OGND → hoja "OGND"
                 categoria_upper = df_all["categoria"].fillna("").astype(str).str.strip().str.upper()
+                estado_export = df_all["estado"].fillna("").astype(str).str.strip().str.lower()
+
                 mask_gasto = mask_egreso & categoria_upper.eq("GASTOS")
-                mask_compras = mask_egreso & ~mask_gasto
+                mask_ognd = mask_egreso & categoria_upper.eq("OGND")
+                mask_compras = mask_egreso & categoria_upper.eq("COMPRAS")
+                mask_pendiente = mask_egreso & estado_export.eq("pendiente")
 
                 used_names: set[str] = set()
                 sheet_map: dict[str, pd.DataFrame] = {}
                 for label, mask in [
-                    ("Ventas", mask_ventas),
+                    ("Ingresos", mask_ventas),
                     ("Compras", mask_compras),
-                    ("Gasto", mask_gasto),
+                    ("Gastos", mask_gasto),
+                    ("OGND", mask_ognd),
+                    ("Pendientes", mask_pendiente),
                     ("Sin Receptor", mask_sin_receptor),
-                    ("ORS", mask_ors),
                 ]:
                     chunk = df.loc[mask]
                     if not chunk.empty:
@@ -2085,14 +2091,30 @@ class App3Window(ctk.CTk):
                         del writer.book["Sheet"]
 
                     for sheet_name, sheet_df in sheet_map.items():
-                        # ── Hoja Gasto: layout agrupado especial ──────────────
-                        if sheet_name == "Gasto":
+                        # ── Hoja Gastos: layout agrupado especial ──────────────
+                        if sheet_name == "Gastos":
                             ws = writer.book.create_sheet(title=sheet_name)
                             writer.sheets[sheet_name] = ws
                             # Usar solo columnas que existen en sheet_df (CRÍTICO para catálogo de cuentas)
                             gasto_cols = [c for c in display_columns if c in sheet_df.columns]
                             _write_gasto_grouped(
                                 ws, sheet_df, gasto_cols,
+                                numeric_columns, text_columns, date_column,
+                                pretty_headers, owner_name, sheet_name,
+                                date_from_label, date_to_label,
+                                title_fill, subtitle_fill, summary_fill,
+                                header_fill, credit_fill,
+                                title_font, subtitle_font, summary_font, header_font,
+                            )
+                            continue
+
+                        # ── Hoja OGND: layout agrupado especial ──────────────
+                        if sheet_name == "OGND":
+                            ws = writer.book.create_sheet(title=sheet_name)
+                            writer.sheets[sheet_name] = ws
+                            ognd_cols = [c for c in display_columns if c in sheet_df.columns]
+                            _write_gasto_grouped(
+                                ws, sheet_df, ognd_cols,
                                 numeric_columns, text_columns, date_column,
                                 pretty_headers, owner_name, sheet_name,
                                 date_from_label, date_to_label,
