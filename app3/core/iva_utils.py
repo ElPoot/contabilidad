@@ -24,11 +24,11 @@ def parse_decimal_value(raw_value: Any) -> Decimal | None:
     """Convierte valor raw a Decimal preservando precisión.
 
     Maneja formatos:
-    - "1000.50" → Decimal("1000.50")
-    - "1000,50" → Decimal("1000.50")
-    - "1.000,50" → Decimal("1000.50")
-    - "1,000.50" → Decimal("1000.50")
-    - None, "" → None
+    - "1000.50" -> Decimal("1000.50")
+    - "1000,50" -> Decimal("1000.50")
+    - "1.000,50" -> Decimal("1000.50")
+    - "1,000.50" -> Decimal("1000.50")
+    - None, "" -> None
     """
     if raw_value is None:
         return None
@@ -47,13 +47,13 @@ def parse_decimal_value(raw_value: Any) -> Decimal | None:
     if has_comma and has_dot:
         # "1.234,56" o "1,234.56"
         if text.rfind(",") > text.rfind("."):
-            # 1.234,56 → 1234.56 (coma es decimal)
+            # 1.234,56 -> 1234.56 (coma es decimal)
             text = text.replace(".", "").replace(",", ".")
         else:
-            # 1,234.56 → 1234.56 (punto es decimal)
+            # 1,234.56 -> 1234.56 (punto es decimal)
             text = text.replace(",", "")
     elif has_comma:
-        # "1000,50" → "1000.50" (coma es decimal)
+        # "1000,50" -> "1000.50" (coma es decimal)
         text = text.replace(",", ".")
     # Si solo hay punto: ya está en formato estándar
 
@@ -104,9 +104,9 @@ def sum_decimal_strings(values: list[str]) -> str:
 def normalize_tax_rate(raw_rate: Any) -> str:
     """Normaliza tasa de impuesto a string sin decimales innecesarios.
 
-    "13.0" → "13"
-    "13.50" → "13,5"
-    None → ""
+    "13.0" -> "13"
+    "13.50" -> "13,5"
+    None -> ""
     """
     text = str(raw_rate or "").strip().replace(",", ".")
 

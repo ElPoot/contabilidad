@@ -30,9 +30,11 @@ class FacturaRecord:
     iva_4:  str = ""
     iva_8:  str = ""
     iva_13: str = ""
+    iva_otros: str = ""  # IVA de tasas no estándar (0% exento, 10%, tasas desconocidas)
 
     # Estado Hacienda (App 2 - asociacion MensajeHacienda)
     estado_hacienda: str = ""
+    detalle_estado_hacienda: str = ""  # Mensaje descriptivo del estado Hacienda (ej: "Error en firma digital")
 
     # Rutas
     xml_path: Path | None = None
@@ -51,3 +53,6 @@ class FacturaRecord:
     # "non_invoice" -> detectado como no-factura (borrador, catálogo, etc.)
     # "timeout"    -> timeout durante extracción
     # "extract_failed" -> error en extracción
+
+    # Metadatos para PDFs huérfanos (si estado == "huerfano")
+    _orphaned_info: dict | None = None

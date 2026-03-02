@@ -12,6 +12,7 @@ from typing import Any
 from .models import FacturaRecord
 from .xml_manager import CRXMLManager
 from .pdf_cache import PDFCacheManager
+from .iva_utils import validate_iva_sum, validate_total_comprobante
 
 try:
     import fitz
@@ -57,7 +58,7 @@ def _is_invoice_candidate(filename: str, pdf_file: Path | None = None) -> bool:
     """
     name = (filename or "").lower()
 
-    # Clave completa de 50 dígitos → definitivamente factura
+    # Clave completa de 50 dígitos -> definitivamente factura
     if _RE_CLAVE_50.search(name):
         return True
 
@@ -136,7 +137,7 @@ def _is_clearly_non_invoice_filename(filename: str) -> bool:
 
 # ── Bancario / institutional path patterns ──
 # Folders that contain bank notifications, SINPE receipts, etc.
-# These PDFs are never fiscal invoices — skip them entirely.
+# These PDFs are never fiscal invoices -- skip them entirely.
 _BANCARIO_FOLDER_PATTERNS = (
     "bn email comercios",
     "notificacionescajerovirtual",
@@ -217,6 +218,8 @@ class FacturaIndexer:
         self.parse_errors: list[str] = []
         self.audit_report: dict = {}
         self.pdf_cache: PDFCacheManager | None = None  # Se inicializa en load_period()
+        self.duplicate_xml_count: int = 0
+        self.duplicate_xml_files: list[dict] = []  # [{archivo, original, hash}, ...]
 
     def load_period(
         self,
@@ -251,6 +254,16 @@ class FacturaIndexer:
                 df, audit = self.xml_manager.load_xml_folder(xml_root)
                 self.audit_report = audit
 
+                # Capturar duplicados XML
+                duplicate_list = audit.get("duplicates", [])
+                if duplicate_list:
+                    self.duplicate_xml_count = len(duplicate_list)
+                    self.duplicate_xml_files = duplicate_list
+                    archivo_names = ", ".join([d.get("archivo", "?") for d in duplicate_list])
+                    self.parse_errors.append(
+                        f"Se detectaron {self.duplicate_xml_count} XML(s) duplicados descartados: {archivo_names}"
+                    )
+
                 for failed in audit.get("failed_files", []):
                     self.parse_errors.append(
                         f"{failed.get('archivo', '?')}: {failed.get('error', 'error desconocido')}"
@@ -269,7 +282,7 @@ class FacturaIndexer:
                         ruta_raw = row.get("ruta")
                         xml_path = Path(str(ruta_raw)) if ruta_raw else None
 
-                        records[clave] = FacturaRecord(
+                        record = FacturaRecord(
                             clave=clave,
                             fecha_emision=fecha,
                             emisor_nombre=str(row.get("emisor_nombre") or ""),
@@ -284,18 +297,168 @@ class FacturaIndexer:
                             iva_4=str(row.get("iva_4") or ""),
                             iva_8=str(row.get("iva_8") or ""),
                             iva_13=str(row.get("iva_13") or ""),
+                            iva_otros=str(row.get("iva_otros") or ""),
                             impuesto_total=str(row.get("impuesto_total") or ""),
                             total_comprobante=str(row.get("total_comprobante") or ""),
                             moneda=str(row.get("moneda") or ""),
                             tipo_cambio=str(row.get("tipo_cambio") or ""),
                             estado_hacienda=str(row.get("estado_hacienda") or ""),
+                            detalle_estado_hacienda=str(row.get("detalle_estado_hacienda") or ""),
                             xml_path=xml_path,
                             estado="pendiente",
                         )
+
+                        # ── Validaciones de IVA (no bloquean la carga, solo reportan) ──
+                        iva_otros_val = record.iva_otros.strip()
+                        has_iva_otros = iva_otros_val and iva_otros_val not in ("0", "0,00", "0.00", "")
+
+                        # Validar suma de IVAs (solo si no hay iva_otros, que puede hacer que no cuadre legítimamente)
+                        if not has_iva_otros:
+                            iva_dict = {
+                                "iva_1": record.iva_1,
+                                "iva_2": record.iva_2,
+                                "iva_4": record.iva_4,
+                                "iva_8": record.iva_8,
+                                "iva_13": record.iva_13,
+                                "impuesto_total": record.impuesto_total,
+                            }
+                            if not validate_iva_sum(iva_dict):
+                                self.parse_errors.append(
+                                    f"Factura {clave[:12]}... suma de IVAs no cuadra con impuesto_total"
+                                )
+
+                        # Validar total = subtotal + impuesto
+                        if not validate_total_comprobante(record.subtotal, record.impuesto_total, record.total_comprobante):
+                            self.parse_errors.append(
+                                f"Factura {clave[:12]}... total_comprobante no cuadra (subtotal + impuesto ≠ total)"
+                            )
+
+                        records[clave] = record
             except Exception as exc:
                 self.parse_errors.append(f"Error cargando carpeta XML: {exc}")
         xml_time = time.perf_counter() - start_xml
-        logger.info(f"XML parsing: {xml_time:.2f}s → {len(records)} registros")
+        logger.info(f"XML parsing: {xml_time:.2f}s -> {len(records)} registros")
+
+        # ── PASO 1.5: Vincular PDFs desde BD de clasificaciones ──
+        logger.info(f"PASO 1.5: Iniciando vinculación desde BD de clasificaciones")
+
+        # ─ Paso 1.5.1: Cargar BD de clasificaciones ─
+        try:
+            from app3.core.classifier import ClassificationDB, sha256_file
+            db = ClassificationDB(metadata_dir)
+            db_records = db.get_records_map()
+            logger.info(f"PASO 1.5.1: BD cargada con {len(db_records)} registros clasificados")
+        except Exception as e:
+            logger.error(f"PASO 1.5.1: NO se pudo cargar BD de clasificaciones: {e}", exc_info=True)
+            db_records = {}  # Continuar sin BD, pero reportar error
+
+        # ─ Paso 1.5.2: Crear índice SHA256 para búsqueda rápida ─
+        # Buscar PDFs en CLIENTES/PDF y en Contabilidades/ (para PDFs ya clasificados)
+        sha256_index: dict[str, Path] = {}
+        pdf_files_found = []
+
+        # Búsqueda 1: PDFs en CLIENTES/PDF
+        if pdf_root.exists():
+            pdf_files_found.extend(list(pdf_root.rglob("*.pdf")))
+            logger.info(f"PASO 1.5.2: Encontrados {len(pdf_files_found)} PDFs en CLIENTES/PDF")
+        else:
+            logger.warning(f"PASO 1.5.2: pdf_root no existe: {pdf_root}")
+
+        # Búsqueda 2: PDFs en Contabilidades/ (para PDFs ya clasificados/reclasificados)
+        pf_root = client_folder.parent.parent  # Z:/DATA/PF-2026/
+        contabilidades_root = pf_root / "Contabilidades"
+        if contabilidades_root.exists():
+            contab_pdfs = list(contabilidades_root.rglob("*.pdf"))
+            pdf_files_found.extend(contab_pdfs)
+            logger.info(f"PASO 1.5.2: Encontrados {len(contab_pdfs)} PDFs en Contabilidades/")
+        else:
+            logger.debug(f"PASO 1.5.2: Contabilidades no existe: {contabilidades_root}")
+
+        logger.info(f"PASO 1.5.2: Escaneando {len(pdf_files_found)} PDFs totales en disco")
+
+        for i, pdf_file in enumerate(pdf_files_found, 1):
+            try:
+                file_sha = sha256_file(pdf_file)
+                if file_sha:
+                    # Si el SHA256 ya existe, preferir el más reciente o el de Contabilidades
+                    if file_sha in sha256_index:
+                        existing_path = sha256_index[file_sha]
+                        # Preferir PDF en Contabilidades (está clasificado) sobre CLIENTES/PDF
+                        if "Contabilidades" in str(pdf_file):
+                            sha256_index[file_sha] = pdf_file
+                    else:
+                        sha256_index[file_sha] = pdf_file
+            except Exception as e:
+                logger.warning(f"PASO 1.5.2: No se pudo leer {pdf_file.name}: {type(e).__name__}: {e}")
+
+        logger.info(f"PASO 1.5.2: Índice SHA256 creado con {len(sha256_index)} entradas "
+                    f"({len(sha256_index)}/{len(pdf_files_found)} PDFs)")
+
+        # ─ Paso 1.5.3: Vincular PDFs clasificados ─
+        linked_count = 0
+        skipped_no_clave = 0  # Clave no en records XML
+        skipped_no_sha = 0    # SHA256 vacío
+        skipped_not_found = 0 # PDF no encontrado
+
+        logger.info(f"PASO 1.5.3: Intentando vincular {len(db_records)} registros...")
+
+        for clave, db_record in db_records.items():
+            # Validación 1: ¿Clave está en records XML?
+            if clave not in records:
+                skipped_no_clave += 1
+                logger.debug(f"PASO 1.5.3: Saltando {clave[:12]}... (clave en BD pero NO en records XML)")
+                continue
+
+            # Validación 2: ¿Hay SHA256?
+            sha256_val = db_record.get("sha256", "").strip()
+            if not sha256_val:
+                skipped_no_sha += 1
+                logger.debug(f"PASO 1.5.3: Saltando {clave[:12]}... (SHA256 vacío en BD, estado={db_record.get('estado')})")
+                continue
+
+            # Búsqueda 1: ¿PDF en ruta_destino (donde se movió originalmente)?
+            pdf_path = None
+            pdf_path_str = db_record.get("ruta_destino", "").strip()
+
+            if pdf_path_str:
+                candidate = Path(pdf_path_str)
+                if candidate.exists():
+                    pdf_path = candidate
+                    logger.debug(f"PASO 1.5.3: {clave[:12]}... encontrado en ruta_destino: {candidate.name}")
+
+            # Búsqueda 2: ¿PDF por SHA256 (si se movió o borró de destino)?
+            if not pdf_path and sha256_val in sha256_index:
+                pdf_path = sha256_index[sha256_val]
+                logger.debug(f"PASO 1.5.3: {clave[:12]}... encontrado por SHA256: {pdf_path.name}")
+
+            # Vincular si se encontró
+            if pdf_path:
+                try:
+                    records[clave].pdf_path = pdf_path
+                    records[clave].estado = db_record.get("estado", "clasificado")
+                    linked_count += 1
+                    logger.debug(f"PASO 1.5.3: {clave[:12]}... vinculado -> {pdf_path.name}")
+                except (KeyError, AttributeError) as e:
+                    logger.error(f"PASO 1.5.3: Error vinculando {clave[:12]}...: {e}")
+            else:
+                skipped_not_found += 1
+                logger.debug(f"PASO 1.5.3: {clave[:12]}... NO ENCONTRADO (SHA256 no en índice, ruta_destino inaccesible)")
+
+        # ─ Resumen de PASO 1.5 ─
+        total_vinculaciones = linked_count + skipped_no_clave + skipped_no_sha + skipped_not_found
+        logger.info(f"PASO 1.5: RESUMEN")
+        logger.info(f"  - Registros procesados: {total_vinculaciones}")
+        logger.info(f"  - Vinculados exitosamente: {linked_count}")
+        logger.info(f"  - Omitidos (clave no en records): {skipped_no_clave}")
+        logger.info(f"  - Omitidos (SHA256 vacío): {skipped_no_sha}")
+        logger.info(f"  - Omitidos (PDF no encontrado): {skipped_not_found}")
+
+        if linked_count == 0 and len(db_records) > 0:
+            logger.warning(f"PASO 1.5: Advertencia - No se vinculó NINGÚN registro. Verificar:")
+            logger.warning(f"  1. ¿pdf_root existe? {pdf_root.exists()}")
+            logger.warning(f"  2. ¿Hay PDFs en disco? {len(sha256_index)} en índice")
+            logger.warning(f"  3. ¿SHA256 en BD coinciden? Revisar si valores están vacíos")
+            logger.warning(f"  4. ¿Claves coinciden entre XML y BD?")
 
         # ── PASO 2: PDFs ──
         if include_pdf_scan:
@@ -417,11 +580,11 @@ class FacturaIndexer:
         # ── FILTRAR POR CACHÉ ──
         # PDFs que están en caché y no cambiaron: no necesitan escaneo
         # Keys use pdf_file (Path) to avoid filename collisions across subfolders.
-        cached_pdfs: dict[Path, Path] = {}  # {pdf_file → cached_path}
-        cached_pdf_claves: dict[Path, str] = {}  # {pdf_file → clave}
+        cached_pdfs: dict[Path, Path] = {}  # {pdf_file -> cached_path}
+        cached_pdf_claves: dict[Path, str] = {}  # {pdf_file -> clave}
         pdfs_to_scan: list[Path] = []
 
-        cached_negative_verdicts: dict[Path, str] = {}  # {pdf_file → status}
+        cached_negative_verdicts: dict[Path, str] = {}  # {pdf_file -> status}
 
         if self.pdf_cache:
             for pdf_file in all_pdf_files:
@@ -430,19 +593,19 @@ class FacturaIndexer:
                     # PDF está en caché y no cambió - verificar si tiene clave asociada
                     cached_clave = self.pdf_cache.get_cached_clave(pdf_file)
                     if cached_clave:
-                        # Tiene clave → fue vinculado exitosamente, usar del caché
+                        # Tiene clave -> fue vinculado exitosamente, usar del caché
                         cached_pdfs[pdf_file] = cached_path
                         cached_pdf_claves[pdf_file] = cached_clave
                         continue
 
-                    # Check for cached negative verdict — ONLY non_invoice is permanent.
+                    # Check for cached negative verdict -- ONLY non_invoice is permanent.
                     # empty/timeout/extract_failed are transient and get re-scanned.
                     cached_status = self.pdf_cache.get_cached_status(pdf_file)
                     if cached_status == "non_invoice":
                         cached_negative_verdicts[pdf_file] = cached_status
                         continue
 
-                    # No clave, no permanent negative verdict → re-process
+                    # No clave, no permanent negative verdict -> re-process
                     pdfs_to_scan.append(pdf_file)
                 else:
                     # PDF es nuevo o cambió
@@ -499,7 +662,7 @@ class FacturaIndexer:
                 if self.pdf_cache:
                     # Re-cache with clave, remove negative status
                     self.pdf_cache.add_to_cache(pdf_file, clave=rescued_clave)
-                logger.info("PDF rescatado del caché negativo: %s → %s", pdf_file.name, rescued_clave)
+                logger.info("PDF rescatado del caché negativo: %s -> %s", pdf_file.name, rescued_clave)
             else:
                 omitidos[pdf_file.name] = {
                     "razon": neg_status,
@@ -525,10 +688,20 @@ class FacturaIndexer:
         for pdf_file, pdf_path in cached_pdfs.items():
             clave = cached_pdf_claves.get(pdf_file)
             if clave and clave in records:
-                # Vincular a registro existente usando clave guardada
-                linked[clave] = pdf_path
-                records[clave].pdf_path = pdf_path
-                logger.debug(f"PDF cacheado: {pdf_file.name} → {clave} (VINCULADO)")
+                # ── Detectar PDF duplicado (misma clave, dos PDFs) ──
+                if records[clave].pdf_path and records[clave].pdf_path != pdf_path:
+                    existing_name = records[clave].pdf_path.name
+                    self.parse_errors.append(
+                        f"PDF duplicado para clave {clave[:12]}...: '{existing_name}' y '{pdf_file.name}'. Se usa el primero."
+                    )
+                elif records[clave].pdf_path == pdf_path:
+                    # Mismo PDF, idempotente - no hace nada
+                    pass
+                else:
+                    # Vincular a registro existente usando clave guardada
+                    linked[clave] = pdf_path
+                    records[clave].pdf_path = pdf_path
+                    logger.debug(f"PDF cacheado: {pdf_file.name} -> {clave} (VINCULADO)")
             else:
                 # Sin clave guardada - usar para reconciliación posterior
                 pass  # Se procesará en _reconcile_missing_with_filename_consecutivo
@@ -586,7 +759,7 @@ class FacturaIndexer:
                         resolved = _resolve_record_key_from_extracted_clave(clave, consecutivo_index)
                         if not resolved:
                             logger.debug(
-                                "PDF: %s → raw_bytes clave %s not in records, discarding",
+                                "PDF: %s -> raw_bytes clave %s not in records, discarding",
                                 pdf_file.name, clave,
                             )
                             clave = None
@@ -627,10 +800,17 @@ class FacturaIndexer:
                 if clave:
                     linked[clave] = pdf_file
                     if clave in records:
-                        records[clave].pdf_path = pdf_file
+                        # ── Detectar PDF duplicado (misma clave, dos PDFs) ──
+                        if records[clave].pdf_path and records[clave].pdf_path != pdf_file:
+                            existing_name = records[clave].pdf_path.name
+                            self.parse_errors.append(
+                                f"PDF duplicado para clave {clave[:12]}...: '{existing_name}' y '{pdf_file.name}'. Se usa el primero."
+                            )
+                        elif records[clave].pdf_path != pdf_file:
+                            records[clave].pdf_path = pdf_file
                     else:
                         records[clave] = FacturaRecord(clave=clave, pdf_path=pdf_file, estado="sin_xml")
-                    logger.debug("PDF: %s → FOUND EN %s (%sms)", pdf_file.name, metodo.upper(), elapsed_ms)
+                    logger.debug("PDF: %s -> FOUND EN %s (%sms)", pdf_file.name, metodo.upper(), elapsed_ms)
                     continue
 
                 reason = str(result.get("razon", "extract_failed"))
@@ -650,18 +830,18 @@ class FacturaIndexer:
                     is_candidate = _is_invoice_candidate(pdf_file.name, pdf_file)
                     if not can_map_by_name and not is_candidate:
                         reason = "non_invoice"
-                    # Bancario path → always reclassify if can't map by name
+                    # Bancario path -> always reclassify if can't map by name
                     elif not can_map_by_name and _is_bancario_path(pdf_file):
                         reason = "non_invoice"
 
                 if reason == "timeout":
-                    logger.warning("PDF: %s → timeout (%sms) - omitido", pdf_file.name, elapsed_ms)
+                    logger.warning("PDF: %s -> timeout (%sms) - omitido", pdf_file.name, elapsed_ms)
                 elif reason == "corrupted":
-                    logger.error("PDF: %s → corrupted (%s)", pdf_file.name, message)
+                    logger.error("PDF: %s -> corrupted (%s)", pdf_file.name, message)
                 elif reason == "non_invoice":
-                    logger.debug("PDF: %s → ignorado (no comprobante)", pdf_file.name)
+                    logger.debug("PDF: %s -> ignorado (no comprobante)", pdf_file.name)
                 else:
-                    logger.debug("PDF: %s → omitido (%s)", pdf_file.name, reason)
+                    logger.debug("PDF: %s -> omitido (%s)", pdf_file.name, reason)
                 text_tokens = result.get("text_tokens") or []
                 claves_detectadas = result.get("claves_detectadas") or []
                 diagnostics_sin_clave.append(
@@ -727,16 +907,16 @@ class FacturaIndexer:
 
         # ── ACTUALIZAR CACHÉ ──
         if self.pdf_cache:
-            # Build reverse index path→clave for O(1) lookup instead of O(n) scan
+            # Build reverse index path->clave for O(1) lookup instead of O(n) scan
             path_to_clave: dict[Path, str] = {
                 pdf_path: clave_candidate
                 for clave_candidate, pdf_path in linked.items()
                 if len(clave_candidate) == 50 and clave_candidate.isdigit()
             }
 
-            # Build omitidos index: filename → reason for PERMANENT negative verdict caching.
+            # Build omitidos index: filename -> reason for PERMANENT negative verdict caching.
             # Only "non_invoice" is permanent.  Transient failures (empty, timeout,
-            # extract_failed) are NOT cached — they get re-scanned next load.
+            # extract_failed) are NOT cached -- they get re-scanned next load.
             omitidos_by_name: dict[str, str] = {
                 fname: detail.get("razon", "")
                 for fname, detail in omitidos.items()
@@ -929,7 +1109,7 @@ class FacturaIndexer:
         # This avoids the cost of pdfplumber/fitz parsing entirely.
         # We validate structure (prefix 506 + valid date segment) to avoid
         # false positives from compressed streams or binary noise.
-        # NOTE: The result is returned as a *candidate* — the caller in
+        # NOTE: The result is returned as a *candidate* -- the caller in
         # _scan_and_link_pdfs_optimized verifies it against records/index
         # before final acceptance.  This eliminates false positives without
         # introducing false negatives.
@@ -1019,12 +1199,17 @@ class FacturaIndexer:
         1. Continuous clave: 506 followed by 47 digits
         2. Partitioned clave: 506...49 digits, then byte/newline, then final digit
 
+        For PDFs with multiple claves (e.g., NC with original + NC itself), returns the LAST
+        valid match found (the current document, not references).
+
         Validates structural segments:
-          - Positions 0:3   → "506" (country code)
-          - Positions 3:5   → day (01-31)
-          - Positions 5:7   → month (01-12)
-          - Positions 19:21 → situación comprobante (01-04)
+          - Positions 0:3   -> "506" (country code)
+          - Positions 3:5   -> day (01-31)
+          - Positions 5:7   -> month (01-12)
+          - Positions 19:21 -> situación comprobante (01-04)
         """
+        all_candidates = []
+
         # Case 1: Standard continuous clave
         for raw_match in _RE_CLAVE_RAW_BYTES.finditer(pdf_data):
             candidate = raw_match.group(0).decode("ascii")
@@ -1045,7 +1230,7 @@ class FacturaIndexer:
             except (ValueError, IndexError):
                 continue
 
-            return candidate
+            all_candidates.append(candidate)
 
         # Case 2: Partitioned clave (49 digits + separate digit on next line/field)
         # Pattern: 506\d{47} followed by newline/whitespace, then 1 more digit
@@ -1070,11 +1255,12 @@ class FacturaIndexer:
                 if situacion < 1 or situacion > 4:
                     continue
 
-                return candidate
+                all_candidates.append(candidate)
             except (ValueError, IndexError, UnicodeDecodeError):
                 continue
 
-        return None
+        # Return the last candidate (current document, not reference)
+        return all_candidates[-1] if all_candidates else None
 
     @staticmethod
     def _extract_clave_from_pdf_text(
@@ -1088,7 +1274,7 @@ class FacturaIndexer:
           3. If still not found and PDF has <= 10 pages, read remaining pages
              (small PDFs are likely real invoices worth a full scan).
           4. PDFs with > 10 pages that fail after 6 pages are almost certainly
-             not invoices — don't waste time reading 50+ pages of a catalog.
+             not invoices -- don't waste time reading 50+ pages of a catalog.
         """
         if fitz is None:
             return None, "extract_failed", [], []
@@ -1109,7 +1295,7 @@ class FacturaIndexer:
                 if _RE_DIGITS_50_TEXT.search(page_text):
                     break
             else:
-                # No early exit — check if we found anything so far
+                # No early exit -- check if we found anything so far
                 matches = _RE_DIGITS_50_TEXT.findall(text_content)
                 if not matches and total_pages > 3:
                     # ── Stage 2: pages 4-6 ──
@@ -1253,7 +1439,7 @@ class FacturaIndexer:
                 record.pdf_path = candidates[0]
                 linked[clave] = candidates[0]
                 assigned_paths.add(candidates[0])
-                logger.debug("PDF: %s → FOUND EN RECONCILIACION_CONSECUTIVO", candidates[0].name)
+                logger.debug("PDF: %s -> FOUND EN RECONCILIACION_CONSECUTIVO", candidates[0].name)
 
     @staticmethod
     def _recompute_states(records: dict[str, FacturaRecord]) -> None:

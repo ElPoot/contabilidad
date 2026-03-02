@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-# Archivo .dm del despacho — plantilla para nuevos clientes
+# Archivo .dm del despacho -- plantilla para nuevos clientes
 _DM_PATH = Path(__file__).parent.parent.parent / "catalogo_de_cuentas.dm"
 
-# Tipos fijos de OGND — no vienen del catálogo
+# Tipos fijos de OGND -- no vienen del catálogo
 _OGND_TIPOS = ["OGND", "DNR", "ORS", "CNR"]
 
 
@@ -25,7 +25,7 @@ def _parse_dm(dm_path: Path) -> dict:
     if not dm_path.exists():
         return _default_catalog()
 
-    rows: dict[str, tuple[str, str]] = {}  # codigo → (nombre, padre)
+    rows: dict[str, tuple[str, str]] = {}  # codigo -> (nombre, padre)
     for line in dm_path.read_text(encoding="utf-8").splitlines():
         parts = line.strip().split("|")
         if len(parts) < 2 or parts[0].strip() == "CODIGO":

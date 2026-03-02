@@ -44,7 +44,7 @@ DANGER  = "#f87171"
 SUCCESS = "#34d399"
 WARNING = "#fbbf24"
 
-# ── FUENTES (lazy — se crean solo despues de que existe la ventana raiz) ─────
+# ── FUENTES (lazy -- se crean solo despues de que existe la ventana raiz) ─────
 _fonts: dict = {}
 
 def _f(key: str, size: int, weight: str = "normal") -> ctk.CTkFont:
@@ -61,7 +61,7 @@ ESTADO_ICON = {
     "clasificado":   "✓",
     "pendiente":     "·",
     "pendiente_pdf": "!",
-    "sin_xml":       "—",
+    "sin_xml":       "--",
 }
 
 # Texto corto para la columna Estado
@@ -83,7 +83,7 @@ def _fmt_amount(value: str) -> str:
         result = f"{integer_part},{parts[1]}"
         return f"-{result}" if f < 0 else result
     except (ValueError, TypeError):
-        return str(value) if value else "—"
+        return str(value) if value else "--"
 
 def _short_name(name: str, max_len: int = 34) -> str:
     """Abrevia razones sociales como App 2."""
@@ -511,10 +511,10 @@ def _write_gasto_grouped(
     title_fill, subtitle_fill, summary_fill, header_fill, credit_fill,
     title_font, subtitle_font, summary_font, header_font,
 ):
-    """Hoja Gasto — agrupación por (subtipo, nombre_cuenta).
+    """Hoja Gasto -- agrupación por (subtipo, nombre_cuenta).
 
     Layout por grupo:
-        [filas de datos — sin color]
+        [filas de datos -- sin color]
         [fila subtotal: sumas numéricas + label "GG/GE / NOMBRE" en última col]  ← fill azul
         [fila vacía]
 
@@ -696,7 +696,7 @@ class App3Window(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
 
-        self.title("App 3 — Clasificador Contable")
+        self.title("App 3 -- Clasificador Contable")
         self.geometry("1440x860")
         self.minsize(1100, 680)
         self.configure(fg_color=BG)
@@ -717,13 +717,13 @@ class App3Window(ctk.CTk):
         self._load_generation: int = 0
         self._all_cuentas: list[str] = []  # Unfiltered account list
         self._loading_overlay: LoadingOverlay | None = None  # Overlay de carga
-        self._tree_clave_map: dict[str, FacturaRecord] = {}  # Mapeo: clave → record (para mantener orden)
+        self._tree_clave_map: dict[str, FacturaRecord] = {}  # Mapeo: clave -> record (para mantener orden)
         self._active_tab: str = "todas"  # Pestaña activa de facturas del período
         self._tab_buttons: dict[str, ctk.CTkButton] = {}  # Botones de pestañas
 
         _apply_tree_style()
 
-        # Crear body_container (para header y body) — inicialmente oculto
+        # Crear body_container (para header y body) -- inicialmente oculto
         self._body_container = ctk.CTkFrame(self, fg_color=BG)
         self._body_container.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self._body_container.grid_rowconfigure(0, weight=0)  # Header
@@ -732,7 +732,7 @@ class App3Window(ctk.CTk):
         self._build(self._body_container)
         self._body_container.grid_remove()  # Ocultar inicialmente
 
-        # Crear SessionView (visible al inicio) — llena toda la ventana
+        # Crear SessionView (visible al inicio) -- llena toda la ventana
         self._session_frame = SessionView(self, on_session_resolved=self._on_session_resolved)
         self._session_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
 
@@ -1100,7 +1100,7 @@ class App3Window(ctk.CTk):
         self._build_pdf_panel(body)
         self._build_classify_panel(body)
 
-    # ── PANEL IZQUIERDO — LISTA ───────────────────────────────────────────────
+    # ── PANEL IZQUIERDO -- LISTA ───────────────────────────────────────────────
     def _build_list_panel(self, parent):
         frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=10, border_width=1, border_color=BORDER)
         frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
@@ -1165,20 +1165,20 @@ class App3Window(ctk.CTk):
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Return>", lambda _e: self._classify_selected())
 
-    # ── PANEL CENTRAL — VISOR PDF ─────────────────────────────────────────────
+    # ── PANEL CENTRAL -- VISOR PDF ─────────────────────────────────────────────
     def _build_pdf_panel(self, parent):
         frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=10, border_width=1, border_color=BORDER)
         frame.grid(row=0, column=1, sticky="nsew", padx=6)
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
-        # NO usar grid_propagate(False) — colapsa el frame a tamaño 0
+        # NO usar grid_propagate(False) -- colapsa el frame a tamaño 0
         # El layout estable viene de minsize en las columnas del body (en _build_body)
 
-        # PDFViewer ocupa TODO el panel — incluye su propia toolbar internamente
+        # PDFViewer ocupa TODO el panel -- incluye su propia toolbar internamente
         self.pdf_viewer = PDFViewer(frame)
         self.pdf_viewer.grid(row=0, column=0, sticky="nsew")
 
-    # ── PANEL DERECHO — CLASIFICACIÓN ────────────────────────────────────────
+    # ── PANEL DERECHO -- CLASIFICACIÓN ────────────────────────────────────────
     def _build_classify_panel(self, parent):
         frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=10, border_width=1, border_color=BORDER)
         frame.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
@@ -1218,13 +1218,13 @@ class App3Window(ctk.CTk):
         clf.pack(fill="both", expand=True, padx=1, pady=1)
         clf.grid_columnconfigure(0, weight=1)
 
-        # row 0 — título sección
+        # row 0 -- título sección
         ctk.CTkLabel(clf, text="CLASIFICACIÓN CONTABLE",
                       font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
                       text_color=TEAL).grid(row=0, column=0, sticky="w",
                                              padx=12, pady=(12, 6))
 
-        # row 1-2 — Categoría (siempre visible)
+        # row 1-2 -- Categoría (siempre visible)
         ctk.CTkLabel(clf, text="Categoría", font=F_SMALL(),
                       text_color=MUTED).grid(row=1, column=0, sticky="w", padx=12)
         self._cat_var = ctk.StringVar()
@@ -1239,7 +1239,7 @@ class App3Window(ctk.CTk):
         )
         self._cat_cb.grid(row=2, column=0, sticky="ew", padx=12, pady=(2, 8))
 
-        # row 3 — Tipo (GASTOS: GENERALES/ESPECIFICOS | OGND: OGND/DNR/ORS/CNR)
+        # row 3 -- Tipo (GASTOS: GENERALES/ESPECIFICOS | OGND: OGND/DNR/ORS/CNR)
         self._tipo_frame = ctk.CTkFrame(clf, fg_color="transparent")
         self._tipo_frame.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(self._tipo_frame, text="Tipo", font=F_SMALL(),
@@ -1258,7 +1258,7 @@ class App3Window(ctk.CTk):
         self._tipo_frame.grid(row=3, column=0, sticky="ew")
         self._tipo_frame.grid_remove()  # oculto hasta que se seleccione GASTOS u OGND
 
-        # row 4 — Cuenta (solo para GASTOS)
+        # row 4 -- Cuenta (solo para GASTOS)
         self._cuenta_frame = ctk.CTkFrame(clf, fg_color="transparent")
         self._cuenta_frame.grid_columnconfigure(0, weight=1)
 
@@ -1301,7 +1301,7 @@ class App3Window(ctk.CTk):
         self._cuenta_frame.grid(row=4, column=0, sticky="ew")
         self._cuenta_frame.grid_remove()
 
-        # row 5 — Proveedor (COMPRAS y GASTOS)
+        # row 5 -- Proveedor (COMPRAS y GASTOS)
         self._prov_frame = ctk.CTkFrame(clf, fg_color="transparent")
         self._prov_frame.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(self._prov_frame, text="Proveedor", font=F_SMALL(),
@@ -1315,7 +1315,7 @@ class App3Window(ctk.CTk):
         ).grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
         self._prov_frame.grid(row=5, column=0, sticky="ew")
 
-        # row 6 — Preview de ruta destino
+        # row 6 -- Preview de ruta destino
         self._preview_lbl = ctk.CTkLabel(
             clf, text="",
             font=ctk.CTkFont(family="Segoe UI", size=10),
@@ -1324,7 +1324,7 @@ class App3Window(ctk.CTk):
         )
         self._preview_lbl.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 4))
 
-        # row 7 — Botón Recuperar (para PDFs huérfanos)
+        # row 7 -- Botón Recuperar (para PDFs huérfanos)
         self._btn_recover = ctk.CTkButton(
             clf, text="🔧  Recuperar PDF",
             font=F_BTN(), fg_color=WARNING, hover_color="#e8a61c",
@@ -1334,7 +1334,7 @@ class App3Window(ctk.CTk):
         )
         self._btn_recover.grid_remove()  # Ocultar por defecto, mostrar solo con huérfanos
 
-        # row 7 — Botón Vincular (para PDFs omitidos)
+        # row 7 -- Botón Vincular (para PDFs omitidos)
         self._btn_link = ctk.CTkButton(
             clf, text="🔗  Vincular a XML",
             font=F_BTN(), fg_color="#8b5cf6", hover_color="#7c3aed",
@@ -1344,7 +1344,7 @@ class App3Window(ctk.CTk):
         )
         self._btn_link.grid_remove()  # Ocultar por defecto, mostrar solo con omitidos
 
-        # row 7 — Botón Borrar PDF (para PDFs omitidos)
+        # row 7 -- Botón Borrar PDF (para PDFs omitidos)
         self._btn_delete = ctk.CTkButton(
             clf, text="🗑️  Borrar PDF",
             font=F_BTN(), fg_color=DANGER, hover_color="#dc2626",
@@ -1354,7 +1354,7 @@ class App3Window(ctk.CTk):
         )
         self._btn_delete.grid_remove()  # Ocultar por defecto, mostrar solo con omitidos
 
-        # row 8 — Botón Auto-clasificar (para Ingresos y Sin Receptor)
+        # row 8 -- Botón Auto-clasificar (para Ingresos y Sin Receptor)
         self._btn_auto_classify = ctk.CTkButton(
             clf, text="⚡  Clasificar todos",
             font=F_BTN(), fg_color="#10b981", hover_color="#059669",
@@ -1364,7 +1364,7 @@ class App3Window(ctk.CTk):
         )
         self._btn_auto_classify.grid_remove()  # Ocultar por defecto
 
-        # row 9 — Botón Clasificar
+        # row 9 -- Botón Clasificar
         self._btn_classify = ctk.CTkButton(
             clf, text="✔  Clasificar",
             font=F_BTN(), fg_color=TEAL, hover_color=TEAL_DIM,
@@ -1382,7 +1382,7 @@ class App3Window(ctk.CTk):
                       font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
                       text_color=MUTED).grid(row=0, column=0, sticky="w",
                                               padx=10, pady=(8, 2))
-        self._prev_var = ctk.StringVar(value="—")
+        self._prev_var = ctk.StringVar(value="--")
         ctk.CTkLabel(self._prev_frame, textvariable=self._prev_var,
                       font=F_SMALL(), text_color="#555e6e",
                       justify="left", wraplength=200, anchor="w").grid(
@@ -1411,7 +1411,7 @@ class App3Window(ctk.CTk):
     def _get_client_cedula(self) -> str:
         """Obtiene cédula confiable del cliente desde client_profiles.json.
 
-        Estructura: client_name → gmail_account → __email__:{gmail} → cedula
+        Estructura: client_name -> gmail_account -> __email__:{gmail} -> cedula
         Con fallback inteligente a cedula más frecuente en XMLs si no hay match.
         """
         if not self.session:
@@ -1474,13 +1474,13 @@ class App3Window(ctk.CTk):
 
     # ── TABLA ─────────────────────────────────────────────────────────────────
     def _refresh_tree(self):
-        """Refresca Treeview ordenado: Emisor → Tipo → Fecha (con colores por estado)."""
+        """Refresca Treeview ordenado: Emisor -> Tipo -> Fecha (con colores por estado)."""
         self.tree.delete(*self.tree.get_children())
 
         if not self.records:
             return
 
-        # Mapeo de tipo_documento → abreviatura
+        # Mapeo de tipo_documento -> abreviatura
         tipo_map = {
             "Factura Electrónica": "FE",
             "Factura electronica": "FE",
@@ -1489,7 +1489,7 @@ class App3Window(ctk.CTk):
             "Tiquete": "TQ",
         }
 
-        # Reordenar por: Emisor → Tipo de documento → Fecha
+        # Reordenar por: Emisor -> Tipo de documento -> Fecha
         def sort_key(r):
             emisor = (r.emisor_nombre or "").lower()
             tipo = (r.tipo_documento or "").lower()
@@ -1498,9 +1498,9 @@ class App3Window(ctk.CTk):
 
         sorted_records = sorted(self.records, key=sort_key)
 
-        # Preparar items + mapeo de clave → record
+        # Preparar items + mapeo de clave -> record
         items_to_insert = []
-        self._tree_clave_map = {}  # Mapeo visual: iid → record (para _on_select)
+        self._tree_clave_map = {}  # Mapeo visual: iid -> record (para _on_select)
 
         for idx, r in enumerate(sorted_records):
             # Estado para etiqueta de color
@@ -1530,7 +1530,7 @@ class App3Window(ctk.CTk):
             # Generar IID único: usar índice para evitar duplicados (ej: "506040..._{0}")
             iid = f"{r.clave}_{idx}" if r.clave else f"UNKNOWN_{idx}"
             items_to_insert.append((iid, row_values, tag))
-            self._tree_clave_map[iid] = r  # Mapeo IID → record
+            self._tree_clave_map[iid] = r  # Mapeo IID -> record
 
         # Insertar en batches para que UI responda
         batch_size = 200
@@ -1593,7 +1593,7 @@ class App3Window(ctk.CTk):
         """Maneja selección de una sola factura (flujo original)."""
         self.selected = r
 
-        # Estado Hacienda — pill superior
+        # Estado Hacienda -- pill superior
         if r.estado_hacienda:
             esh = r.estado_hacienda.strip()
             color = SUCCESS if "aceptado" in esh.lower() else WARNING
@@ -1690,7 +1690,7 @@ class App3Window(ctk.CTk):
                 )
                 self._prev_var.set(f"{crumbs}\n{prev.get('fecha_clasificacion', '')}")
             else:
-                self._prev_var.set("—")
+                self._prev_var.set("--")
 
     def _on_multi_select(self, records: list[FacturaRecord]):
         """Maneja selección de múltiples facturas (modo lote)."""
@@ -1873,7 +1873,7 @@ class App3Window(ctk.CTk):
         try:
             dest  = build_dest_folder(self.session.folder, fecha, cat, subtipo, cuenta, prov)
             parts = dest.parts
-            snippet = ("…/" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else str(dest) + "/"
+            snippet = (".../" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else str(dest) + "/"
             self._preview_lbl.configure(text=snippet)
         except Exception:
             self._preview_lbl.configure(text="")
@@ -2090,7 +2090,7 @@ class App3Window(ctk.CTk):
                 mask_egreso = ~mask_ventas & receptor_raw.eq(client_cedula)
                 mask_sin_receptor = ~mask_ventas & ~mask_egreso & receptor_is_empty
 
-                # Egresos: GASTOS → hoja "Gastos"; COMPRAS → hoja "Compras"; OGND → hoja "OGND"
+                # Egresos: GASTOS -> hoja "Gastos"; COMPRAS -> hoja "Compras"; OGND -> hoja "OGND"
                 categoria_upper = df_all["categoria"].fillna("").astype(str).str.strip().str.upper()
                 estado_export = df_all["estado"].fillna("").astype(str).str.strip().str.lower()
 

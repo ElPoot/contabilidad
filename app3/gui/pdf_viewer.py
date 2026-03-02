@@ -14,7 +14,7 @@ try:
 except ImportError:
     PYMUPDF_OK = False
 
-# Paleta — misma que el resto de la app
+# Paleta -- misma que el resto de la app
 BG      = "#0d0f14"
 SURFACE = "#13161e"
 CARD    = "#181c26"
@@ -30,12 +30,12 @@ class PDFViewer(ctk.CTkFrame):
     Visor de PDF completo integrado con la paleta oscura de App 3.
 
     Controles:
-      - Rueda del mouse          → scroll vertical
-      - Ctrl + rueda del mouse   → zoom in/out
-      - Botones ◀ ▶              → navegar páginas
-      - Botones − +              → zoom manual
-      - Botón ↺                  → fit-to-width (ajuste automático al ancho)
-      - Clic derecho sobre texto → copia la palabra al portapapeles (modo texto)
+      - Rueda del mouse          -> scroll vertical
+      - Ctrl + rueda del mouse   -> zoom in/out
+      - Botones ◀ ▶              -> navegar páginas
+      - Botones − +              -> zoom manual
+      - Botón ↺                  -> fit-to-width (ajuste automático al ancho)
+      - Clic derecho sobre texto -> copia la palabra al portapapeles (modo texto)
     """
 
     # Zoom libre en pasos de 10% entre 30% y 300%
@@ -92,7 +92,7 @@ class PDFViewer(ctk.CTkFrame):
                                         command=self._prev_page, **btn)
         self._btn_prev.pack(side="left", padx=(6, 2), pady=0)
 
-        self._lbl_page = ctk.CTkLabel(inner, text="—", width=78, anchor="center", **lbl)
+        self._lbl_page = ctk.CTkLabel(inner, text="--", width=78, anchor="center", **lbl)
         self._lbl_page.pack(side="left", padx=2)
 
         self._btn_next = ctk.CTkButton(inner, text="▶", state="disabled",
@@ -106,7 +106,7 @@ class PDFViewer(ctk.CTkFrame):
         ctk.CTkButton(inner, text="−", command=self._zoom_out, **btn).pack(
             side="left", padx=(6, 2), pady=0)
 
-        self._lbl_zoom = ctk.CTkLabel(inner, text="—", width=52, anchor="center", **lbl)
+        self._lbl_zoom = ctk.CTkLabel(inner, text="--", width=52, anchor="center", **lbl)
         self._lbl_zoom.pack(side="left", padx=2)
 
         ctk.CTkButton(inner, text="+", command=self._zoom_in, **btn).pack(
@@ -169,7 +169,7 @@ class PDFViewer(ctk.CTkFrame):
         # Clic derecho = copiar texto bajo el cursor
         self._canvas.bind("<Button-3>", self._on_right_click)
 
-        # Resize → recalcular fit-to-width
+        # Resize -> recalcular fit-to-width
         self._canvas.bind("<Configure>", self._on_canvas_resize)
 
     # ── API PÚBLICA ───────────────────────────────────────────────────────────
@@ -249,7 +249,7 @@ class PDFViewer(ctk.CTkFrame):
 
     # ── EVENTOS ───────────────────────────────────────────────────────────────
     def _on_mousewheel(self, event: tk.Event):
-        # Ctrl presionado → delegar a zoom
+        # Ctrl presionado -> delegar a zoom
         if event.state & 0x0004:
             self._on_ctrl_scroll(event)
             return
@@ -332,7 +332,7 @@ class PDFViewer(ctk.CTkFrame):
     # ── RENDERIZADO ───────────────────────────────────────────────────────────
     def _on_canvas_mapped(self, _event=None):
         """Se dispara cuando el canvas se hace visible.
-        El tamaño puede no ser definitivo aún — _on_canvas_resize lo manejará.
+        El tamaño puede no ser definitivo aún -- _on_canvas_resize lo manejará.
         """
         if self._doc:
             # Intentar renderizar; si el tamaño no está listo, Configure lo reintentará
@@ -365,7 +365,7 @@ class PDFViewer(ctk.CTkFrame):
         # Guardar bloques de texto para copia con clic derecho
         self._text_blocks = page.get_text("words")  # (x0,y0,x1,y1,word,block,line,word_idx)
 
-        # PPM → PhotoImage
+        # PPM -> PhotoImage
         self._tk_image = tk.PhotoImage(data=pix.tobytes("ppm"))
 
         hpad = 16   # solo padding horizontal
@@ -379,7 +379,7 @@ class PDFViewer(ctk.CTkFrame):
             hpad + 3, vpad + 3, w + hpad + 3, h + vpad + 3,
             fill="#060809", outline="",
         )
-        # Página — empieza casi en y=0
+        # Página -- empieza casi en y=0
         self._canvas.create_image(hpad, vpad, anchor="nw", image=self._tk_image)
         # Forzar scroll al inicio cada vez que se carga una página
         self._canvas.xview_moveto(0)
@@ -405,8 +405,8 @@ class PDFViewer(ctk.CTkFrame):
             cx, cy, text=message, fill=MUTED,
             font=("Segoe UI", 12), justify="center", anchor="center",
         )
-        self._lbl_page.configure(text="—")
-        self._lbl_zoom.configure(text="—")
+        self._lbl_page.configure(text="--")
+        self._lbl_zoom.configure(text="--")
         self._btn_prev.configure(state="disabled")
         self._btn_next.configure(state="disabled")
 

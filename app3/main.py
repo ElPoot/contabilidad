@@ -5,12 +5,20 @@ import sys
 from pathlib import Path
 
 # ── Configurar logging (para diagnóstico) ──────────────────────────────────────
+log_file = Path.home() / ".app3_logs" / "app3.log"
+log_file.parent.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # DEBUG para más detalles
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     datefmt='%H:%M:%S',
+    handlers=[
+        logging.FileHandler(log_file),  # A archivo
+        logging.StreamHandler(),  # También a consola si existe
+    ]
 )
 logger = logging.getLogger(__name__)
+logger.info(f"Logs se escriben en: {log_file}")
 
 # ── Asegurar que la raíz del repo esté en sys.path ───────────────────────────
 # Funciona tanto con:

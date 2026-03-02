@@ -24,7 +24,7 @@ DANGER   = "#f87171"
 SUCCESS  = "#34d399"
 WARNING  = "#fbbf24"
 
-# ── FUENTES (lazy — se crean solo después de que existe la ventana raíz) ──────
+# ── FUENTES (lazy -- se crean solo después de que existe la ventana raíz) ──────
 _fonts: dict = {}
 
 def _f(key: str, size: int, weight: str = "normal") -> ctk.CTkFont:
@@ -140,7 +140,7 @@ class ClientCard(ctk.CTkFrame):
                      text_color=TEAL).place(relx=.5, rely=.5, anchor="center")
 
         # Nombre
-        nombre_truncado = client["nombre"][:42] + "…" if len(client["nombre"]) > 42 else client["nombre"]
+        nombre_truncado = client["nombre"][:42] + "..." if len(client["nombre"]) > 42 else client["nombre"]
         ctk.CTkLabel(self._inner, text=nombre_truncado, font=F_NAME(),
                      text_color=TEXT, anchor="w").grid(
             row=0, column=1, sticky="sw", pady=(12, 1))
@@ -168,11 +168,11 @@ class ClientCard(ctk.CTkFrame):
                      corner_radius=20, padx=8, pady=2).pack(side="left")
 
         # Flecha
-        self._arrow = ctk.CTkLabel(self._inner, text="→", font=F_HEADING(),
+        self._arrow = ctk.CTkLabel(self._inner, text="->", font=F_HEADING(),
                                     text_color=MUTED)
         self._arrow.grid(row=0, column=2, rowspan=2, padx=(0, 14))
 
-        # Hover — bind en todos los widgets internos
+        # Hover -- bind en todos los widgets internos
         for w in [self, self._inner, avatar, self._arrow, pills_frame]:
             w.bind("<Enter>", self._on_enter)
             w.bind("<Leave>", self._on_leave)
@@ -318,7 +318,7 @@ class SessionView(ctk.CTkFrame):
         # Botón continuar
         self._btn_continuar = ctk.CTkButton(
             card,
-            text="Continuar  →",
+            text="Continuar  ->",
             font=F_BTN(),
             fg_color=TEAL,
             hover_color=TEAL_DIM,
@@ -462,7 +462,7 @@ class SessionView(ctk.CTkFrame):
         self._btn_continuar.configure(state="disabled")
 
     def _on_client_card_click(self, client: dict):
-        """Clic en acceso rápido — resuelve sesión directo desde la carpeta."""
+        """Clic en acceso rápido -- resuelve sesión directo desde la carpeta."""
         folder: Path = client["folder"]
         year: int = client["year"]
         nombre: str = client["nombre"]
@@ -521,14 +521,14 @@ class SessionView(ctk.CTkFrame):
         self._preview_status.configure(text="")
 
     def _set_preview_found(self, nombre: str):
-        truncado = nombre[:45] + "…" if len(nombre) > 45 else nombre
+        truncado = nombre[:45] + "..." if len(nombre) > 45 else nombre
         self._preview_frame.configure(fg_color="#0d2a1e")
         self._preview_dot.configure(text_color=TEAL)
         self._preview_name.configure(text=truncado, text_color=TEAL)
         self._preview_status.configure(text="✓", text_color=SUCCESS)
 
     def _set_preview_error(self, msg: str):
-        short = msg[:60] + "…" if len(msg) > 60 else msg
+        short = msg[:60] + "..." if len(msg) > 60 else msg
         self._preview_frame.configure(fg_color="#2a0d0d")
         self._preview_dot.configure(text_color=DANGER)
         self._preview_name.configure(text=short, text_color=DANGER)

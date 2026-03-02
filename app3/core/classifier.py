@@ -84,7 +84,7 @@ def build_dest_folder(
     if cat == "SIN_RECEPTOR":
         return base / "SIN_RECEPTOR"
 
-    # Categoría genérica — fallback
+    # Categoría genérica -- fallback
     parts = [_sanitize_folder(x) for x in [categoria, subtipo, nombre_cuenta, proveedor] if x]
     result = base
     for p in parts:
@@ -206,7 +206,7 @@ def recover_orphaned_pdf(
             raise FileNotFoundError(f"Archivo no existe: {archivo_actual}")
 
         if motivo == "not_in_db":
-            # PDF sin registro en BD — simplemente eliminar
+            # PDF sin registro en BD -- simplemente eliminar
             archivo_actual.unlink()
             logging.info(f"Eliminado PDF huérfano sin registro: {archivo_actual}")
             return True
@@ -266,7 +266,7 @@ def classify_record(
     Clasifica una factura moviéndola a la carpeta contable correspondiente.
 
     Si no hay PDF registra como 'pendiente_pdf' sin mover archivos.
-    Movimiento atómico: SHA256 → copiar → verificar SHA256 → borrar original.
+    Movimiento atómico: SHA256 -> copiar -> verificar SHA256 -> borrar original.
     """
     if record.pdf_path is None:
         db.upsert(

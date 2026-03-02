@@ -30,11 +30,11 @@ def classify_transaction(record: FacturaRecord, client_cedula: str) -> str:
     emisor_ced = (record.emisor_cedula or "").strip()
     receptor_ced = (record.receptor_cedula or "").strip()
 
-    # Yo soy emisor → Ingreso (venta)
+    # Yo soy emisor -> Ingreso (venta)
     if emisor_ced == client_ced:
         return "ingreso"
 
-    # Yo soy receptor → Egreso (compra)
+    # Yo soy receptor -> Egreso (compra)
     if receptor_ced == client_ced:
         return "egreso"
 
@@ -75,7 +75,7 @@ def filter_records_by_tab(
         records: Lista de FacturaRecord
         tab: Pestaña activa ("todas", "ingreso", "egreso", "sin_receptor", "ors", "pendiente", "sin_clave", "omitidos")
         client_cedula: Cédula del cliente actual
-        db_records: Mapeo de clave → datos de clasificación (BD)
+        db_records: Mapeo de clave -> datos de clasificación (BD)
 
     Returns:
         Lista filtrada de FacturaRecord
@@ -95,7 +95,7 @@ def filter_records_by_tab(
 
     if tab == "sin_clave":
         # PDFs sin clave: no tienen clave válida (50 dígitos) o falta vinculación.
-        # Excluir ya clasificados (PDF movido → pdf_path=None en recarga, no es error).
+        # Excluir ya clasificados (PDF movido -> pdf_path=None en recarga, no es error).
         return [
             r for r in non_omitted
             if not (db_records.get(r.clave, {}).get("estado") == "clasificado")
@@ -224,7 +224,7 @@ def find_orphaned_pdfs(
     if not contabilidades_root.exists():
         return orphaned
 
-    # Crear mapa inverso: archivo → clave (desde BD)
+    # Crear mapa inverso: archivo -> clave (desde BD)
     db_by_destino = {v.get("ruta_destino"): k for k, v in db_records.items() if v.get("ruta_destino")}
 
     # Escanear todos los PDFs en Contabilidades

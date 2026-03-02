@@ -53,7 +53,7 @@ class PDFCacheManager:
         whose stored ``path`` matches *this* pdf_file, we migrate it to the
         new relative-path key in-place (dict mutation, persisted on next
         save_cache).  If the stored path does NOT match, the legacy entry
-        belongs to a *different* file with the same name — we leave it alone
+        belongs to a *different* file with the same name -- we leave it alone
         and return None so this file gets re-scanned (correct behavior).
         """
         pdfs = self.cache.get("pdfs", {})
@@ -71,7 +71,7 @@ class PDFCacheManager:
             if stored_path and Path(stored_path) == pdf_file:
                 pdfs[key] = legacy_entry
                 del pdfs[legacy_key]
-                logger.debug("Cache migrado: %s → %s", legacy_key, key)
+                logger.debug("Cache migrado: %s -> %s", legacy_key, key)
                 return legacy_entry
         return None
 
@@ -139,23 +139,23 @@ class PDFCacheManager:
             if stat.st_size == stored_size and abs(stat.st_mtime - stored_mtime) < 0.01:
                 return cached_path
 
-            # Size changed → content definitely changed
+            # Size changed -> content definitely changed
             if stat.st_size != stored_size:
                 return None
 
-            # Size same but mtime differs (network drive quirk, copy, touch) →
+            # Size same but mtime differs (network drive quirk, copy, touch) ->
             # lazy MD5 recheck before invalidating
             stored_checksum = entry.get("checksum")
             if stored_checksum:
                 current_checksum = self._compute_checksum(pdf_file)
                 if current_checksum == stored_checksum:
-                    # Content unchanged — update mtime in cache to avoid
+                    # Content unchanged -- update mtime in cache to avoid
                     # future MD5 rechecks for this entry
                     entry["mtime"] = stat.st_mtime
                     return cached_path
                 return None  # Content actually changed
 
-            # No checksum stored and mtime differs → assume changed
+            # No checksum stored and mtime differs -> assume changed
             return None
 
         # Legacy entry without size/mtime: fall back to MD5 (one-time migration)
@@ -220,7 +220,7 @@ class PDFCacheManager:
                        network.  If empty, the checksum is computed from disk.
             status: Negative verdict to cache permanently (only "non_invoice"
                     should be used here).  Transient failures (empty, timeout)
-                    should NOT be cached — they get re-scanned next load.
+                    should NOT be cached -- they get re-scanned next load.
         """
         key = self._make_key(pdf_file)
 
