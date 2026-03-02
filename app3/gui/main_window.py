@@ -1971,7 +1971,7 @@ class App3Window(ctk.CTk):
         ]
 
         # Columnas ocultas: usadas internamente (agrupación Gasto) pero no visibles en ninguna hoja
-        _HIDDEN = {"subtipo", "nombre_cuenta", "estado", "categoria"}
+        _HIDDEN = {"subtipo", "nombre_cuenta", "estado", "categoria", "detalle_estado_hacienda"}
         display_columns = [c for c in export_columns if c not in _HIDDEN]
 
         numeric_columns = {
@@ -2050,9 +2050,13 @@ class App3Window(ctk.CTk):
                 estado_export = df_all["estado"].fillna("").astype(str).str.strip().str.lower()
 
                 mask_gasto = mask_egreso & categoria_upper.eq("GASTOS")
-                mask_ognd = mask_egreso & categoria_upper.eq("OGND")
+                mask_ognd = categoria_upper.eq("OGND")  # OGND: sin restricción de receptor (gastos propios de la empresa)
                 mask_compras = mask_egreso & categoria_upper.eq("COMPRAS")
                 mask_pendiente = mask_egreso & estado_export.eq("pendiente")
+
+                # Nueva máscara: Rechazados por Hacienda (todos los registros, no solo egresos)
+                estado_hacienda_col = df_all["estado_hacienda"].fillna("").astype(str).str.strip()
+                mask_rechazados = estado_hacienda_col.eq("Rechazada")
 
                 used_names: set[str] = set()
                 sheet_map: dict[str, pd.DataFrame] = {}
@@ -2063,6 +2067,7 @@ class App3Window(ctk.CTk):
                     ("OGND", mask_ognd),
                     ("Pendientes", mask_pendiente),
                     ("Sin Receptor", mask_sin_receptor),
+                    ("Rechazados", mask_rechazados),
                 ]:
                     chunk = df.loc[mask]
                     if not chunk.empty:
@@ -2085,6 +2090,21 @@ class App3Window(ctk.CTk):
                 summary_font = Font(bold=False, color="111111", size=12)
                 header_font = Font(bold=True)
 
+                # ── Función auxiliar: Filtrar columnas IVA con todos ceros ──────
+                def _filter_iva_cols(cols, sdf):
+                    """Elimina columnas IVA cuyo valor es todo-cero en el DataFrame dado."""
+                    IVA_COLS = {"iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros"}
+                    ZERO_VALUES = {"", "0", "0.0", "0,00", "0.00", "nan", "none", "null"}
+                    result = []
+                    for col in cols:
+                        if col not in IVA_COLS:
+                            result.append(col)
+                        else:
+                            col_values = sdf[col].astype(str).str.strip().str.lower()
+                            if col_values.loc[~col_values.isin(ZERO_VALUES)].any():
+                                result.append(col)
+                    return result
+
                 with pd.ExcelWriter(target, engine="openpyxl") as writer:
                     # Eliminar hoja vacía por defecto que crea openpyxl
                     if "Sheet" in writer.book.sheetnames:
@@ -2096,7 +2116,8 @@ class App3Window(ctk.CTk):
                             ws = writer.book.create_sheet(title=sheet_name)
                             writer.sheets[sheet_name] = ws
                             # Usar solo columnas que existen en sheet_df (CRÍTICO para catálogo de cuentas)
-                            gasto_cols = [c for c in display_columns if c in sheet_df.columns]
+                            # Aplicar filtro IVA-cero
+                            gasto_cols = _filter_iva_cols([c for c in display_columns if c in sheet_df.columns], sheet_df)
                             _write_gasto_grouped(
                                 ws, sheet_df, gasto_cols,
                                 numeric_columns, text_columns, date_column,
@@ -2112,7 +2133,8 @@ class App3Window(ctk.CTk):
                         if sheet_name == "OGND":
                             ws = writer.book.create_sheet(title=sheet_name)
                             writer.sheets[sheet_name] = ws
-                            ognd_cols = [c for c in display_columns if c in sheet_df.columns]
+                            # Aplicar filtro IVA-cero
+                            ognd_cols = _filter_iva_cols([c for c in display_columns if c in sheet_df.columns], sheet_df)
                             _write_gasto_grouped(
                                 ws, sheet_df, ognd_cols,
                                 numeric_columns, text_columns, date_column,
@@ -2124,22 +2146,131 @@ class App3Window(ctk.CTk):
                             )
                             continue
 
+                        # ── Hoja Rechazados: incluye detalle_estado_hacienda ──────────────
+                        if sheet_name == "Rechazados":
+                            # Usar _HIDDEN sin detalle_estado_hacienda para que la columna sea visible
+                            rechazados_hidden = {"subtipo", "nombre_cuenta", "estado", "categoria"}
+                            rechazados_cols = [c for c in export_columns
+                                               if c not in rechazados_hidden and c in sheet_df.columns]
+                            # Filtrar columnas IVA todo-cero (igual que hojas normales)
+                            IVA_COLS = {"iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros"}
+                            ZERO_VALUES = {"", "0", "0.0", "0,00", "0.00", "nan", "none", "null"}
+                            visible_rechazados = []
+                            for col in rechazados_cols:
+                                if col not in IVA_COLS:
+                                    visible_rechazados.append(col)
+                                else:
+                                    col_values = sheet_df[col].astype(str).str.strip().str.lower()
+                                    has_nonzero = col_values.loc[~col_values.isin(ZERO_VALUES)].any()
+                                    if has_nonzero:
+                                        visible_rechazados.append(col)
+                            display_df = sheet_df[visible_rechazados].rename(
+                                columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in visible_rechazados}
+                            )
+                            display_df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=4)
+                            ws = writer.sheets[sheet_name]
+
+                            max_col = ws.max_column if ws.max_column > 0 else 1
+                            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+                            ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+                            ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
+
+                            title_cell = ws.cell(row=1, column=1)
+                            title_cell.value = str(owner_name).upper()
+                            title_cell.font = title_font
+                            title_cell.alignment = Alignment(horizontal="center", vertical="center")
+                            title_cell.fill = title_fill
+
+                            subtitle_cell = ws.cell(row=2, column=1)
+                            subtitle_cell.value = f"REPORTE DE {sheet_name.upper()} - Período: {date_from_label} al {date_to_label}"
+                            subtitle_cell.font = subtitle_font
+                            subtitle_cell.alignment = Alignment(horizontal="center", vertical="center")
+                            subtitle_cell.fill = subtitle_fill
+
+                            monto_total = Decimal("0")
+                            if "total_comprobante" in sheet_df.columns:
+                                valid_amounts = []
+                                for value in sheet_df["total_comprobante"].dropna().tolist():
+                                    try:
+                                        valid_amounts.append(Decimal(str(value)))
+                                    except Exception:
+                                        continue
+                                if valid_amounts:
+                                    monto_total = sum(valid_amounts, Decimal("0"))
+
+                            monedas = (
+                                sorted({str(m).strip() for m in sheet_df["moneda"].dropna().tolist() if str(m).strip()})
+                                if "moneda" in sheet_df.columns else []
+                            )
+                            moneda_value = (
+                                "N/A" if not monedas
+                                else monedas[0] if len(monedas) == 1
+                                else "MIXTA: " + ", ".join(monedas)
+                            )
+                            generated = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+                            summary_cell = ws.cell(row=3, column=1)
+                            summary_cell.value = (
+                                f"Total filas: {len(sheet_df)}   |   Monto Total: {_format_amount_es(monto_total)}   |   "
+                                f"Moneda: {moneda_value}   |   Generado: {generated}"
+                            )
+                            summary_cell.font = summary_font
+                            summary_cell.alignment = Alignment(horizontal="center", vertical="center")
+                            summary_cell.fill = summary_fill
+
+                            # Centrar y negrear encabezados
+                            header_row = 5
+                            for col_idx in range(1, ws.max_column + 1):
+                                header_cell = ws.cell(row=header_row, column=col_idx)
+                                header_cell.font = header_font
+                                header_cell.alignment = Alignment(horizontal="center", vertical="center")
+                                header_cell.fill = header_fill
+
+                            # Loop de formato de celdas de datos
+                            for col_idx, col_name in enumerate(visible_rechazados, start=1):
+                                for row_idx in range(header_row + 1, len(sheet_df) + header_row + 1):
+                                    cell = ws.cell(row=row_idx, column=col_idx)
+                                    if col_name in text_columns:
+                                        cell.number_format = "@"
+                                        cell.value = "" if cell.value is None else str(cell.value)
+                                    elif col_name == date_column and cell.value is not None:
+                                        cell.number_format = "dd/mm/yyyy"
+                                    elif col_name in numeric_columns and cell.value is not None:
+                                        cell.number_format = "#,##0.00"
+                                        if isinstance(cell.value, Decimal):
+                                            cell.value = float(cell.value)
+
+                            # Resaltado de NC en verde
+                            tipo_idx = (
+                                visible_rechazados.index("tipo_documento") + 1
+                                if "tipo_documento" in visible_rechazados else None
+                            )
+                            if tipo_idx is not None:
+                                for row_idx in range(header_row + 1, len(sheet_df) + header_row + 1):
+                                    if ws.cell(row=row_idx, column=tipo_idx).value == "Nota de Crédito":
+                                        for col in range(1, ws.max_column + 1):
+                                            ws.cell(row=row_idx, column=col).fill = credit_fill
+
+                            # Auto-width de columnas
+                            for col_idx in range(1, ws.max_column + 1):
+                                max_len = 0
+                                for row_idx in range(header_row, ws.max_row + 1):
+                                    value = ws.cell(row=row_idx, column=col_idx).value
+                                    if value is None:
+                                        continue
+                                    max_len = max(max_len, len(str(value)))
+                                ws.column_dimensions[ws.cell(row=header_row, column=col_idx).column_letter].width = min(max(max_len + 3, 12), 65)
+
+                            # Freeze panes
+                            ws.freeze_panes = ws["A6"]
+
+                            continue
+
                         # Hojas normales: solo columnas visibles (filtrar IVA todo-cero)
                         visible_cols = [c for c in display_columns if c in sheet_df.columns]
 
-                        # Filtrar columnas IVA con todos ceros (como App 2)
-                        IVA_COLS = {"iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros"}
-                        ZERO_VALUES = {"", "0", "0,00", "0.00", "nan", "none", "null"}
-                        visible_cols_filtered = []
-                        for col in visible_cols:
-                            if col not in IVA_COLS:
-                                visible_cols_filtered.append(col)
-                            else:
-                                # Verificar si columna IVA tiene algún valor no-cero
-                                col_values = sheet_df[col].astype(str).str.strip().str.lower()
-                                has_nonzero = col_values.loc[~col_values.isin(ZERO_VALUES)].any()
-                                if has_nonzero:
-                                    visible_cols_filtered.append(col)
+                        # Aplicar filtro IVA-cero usando la función auxiliar
+                        visible_cols_filtered = _filter_iva_cols(visible_cols, sheet_df)
 
                         display_df = sheet_df[visible_cols_filtered].rename(
                             columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in visible_cols_filtered}
@@ -2452,6 +2583,18 @@ class App3Window(ctk.CTk):
     # ── CLASIFICACIÓN ─────────────────────────────────────────────────────────
     def _classify_selected(self):
         if not self.session or not self.selected or not self.db:
+            return
+
+        # Bloquear clasificación de facturas rechazadas por Hacienda
+        all_selected = self.selected_records if self.selected_records else ([self.selected] if self.selected else [])
+        rechazados = [r for r in all_selected if r.estado_hacienda == "Rechazada"]
+        if rechazados:
+            nombres = "\n".join(r.emisor_nombre[:50] for r in rechazados[:5])
+            suffix = f"\n... y {len(rechazados) - 5} más" if len(rechazados) > 5 else ""
+            self._show_warning(
+                "Factura rechazada",
+                f"Las siguientes facturas fueron rechazadas por Hacienda y no pueden clasificarse:\n{nombres}{suffix}"
+            )
             return
 
         cat    = self._cat_var.get().strip().upper()
