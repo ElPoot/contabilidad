@@ -718,18 +718,31 @@ class App3Window(ctk.CTk):
         self._tab_buttons: dict[str, ctk.CTkButton] = {}  # Botones de pestañas
 
         _apply_tree_style()
-        self._build()
 
-        # Abrir pantalla de sesión al inicio
-        self.withdraw()
-        self.after(100, self._open_session_view)
+        # Crear body_container (para header y body) — inicialmente oculto
+        self._body_container = ctk.CTkFrame(self, fg_color=BG)
+        self._body_container.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        self._body_container.grid_rowconfigure(0, weight=0)  # Header
+        self._body_container.grid_rowconfigure(1, weight=1)  # Body
+        self._body_container.grid_columnconfigure(0, weight=1)
+        self._build(self._body_container)
+        self._body_container.grid_remove()  # Ocultar inicialmente
+
+        # Crear SessionView (visible al inicio) — llena toda la ventana
+        self._session_frame = SessionView(self, on_session_resolved=self._on_session_resolved)
+        self._session_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
 
     # ── SESIÓN ────────────────────────────────────────────────────────────────
     def _open_session_view(self):
-        SessionView(self, on_session_resolved=self._on_session_resolved)
+        # Mostrar SessionView y ocultar body_container
+        self._body_container.grid_remove()
+        self._session_frame.grid()
+        self._session_frame.focus_force()
 
     def _on_session_resolved(self, session: ClientSession):
-        self.deiconify()
+        # Ocultar SessionView y mostrar body_container
+        self._session_frame.grid_remove()
+        self._body_container.grid()
         self.focus_force()
         self._load_session(session)
 
@@ -882,12 +895,16 @@ class App3Window(ctk.CTk):
             )
 
     # ── CONSTRUCCIÓN UI ───────────────────────────────────────────────────────
-    def _build(self):
-        self._build_header()
-        self._build_body()
+    def _build(self, parent=None):
+        if parent is None:
+            parent = self
+        self._build_header(parent)
+        self._build_body(parent)
 
-    def _build_header(self):
-        hdr = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0)
+    def _build_header(self, parent=None):
+        if parent is None:
+            parent = self
+        hdr = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=0)
         hdr.grid(row=0, column=0, sticky="ew")
         hdr.grid_columnconfigure(1, weight=1)
         hdr.grid_columnconfigure(2, weight=1)
@@ -1015,8 +1032,10 @@ class App3Window(ctk.CTk):
             row=0, column=0, columnspan=6, sticky="ew", pady=(0, 0)
         )
 
-    def _build_body(self):
-        body = ctk.CTkFrame(self, fg_color="transparent")
+    def _build_body(self, parent=None):
+        if parent is None:
+            parent = self
+        body = ctk.CTkFrame(parent, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(8, 8))
         body.grid_rowconfigure(0, weight=1)
         body.grid_columnconfigure(0, weight=33, minsize=360)  # lista

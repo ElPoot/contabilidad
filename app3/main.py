@@ -23,9 +23,6 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 # Ahora 'app3' es un paquete visible
-from app3.bootstrap import bootstrap_legacy_paths   # noqa: E402
-bootstrap_legacy_paths()
-
 from app3.gui.main_window import App3Window         # noqa: E402
 
 
