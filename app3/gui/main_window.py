@@ -2116,8 +2116,10 @@ class App3Window(ctk.CTk):
                             ws = writer.book.create_sheet(title=sheet_name)
                             writer.sheets[sheet_name] = ws
                             # Usar solo columnas que existen en sheet_df (CRÍTICO para catálogo de cuentas)
+                            # Excluir columnas de receptor (Gastos es egreso, receptor es el cliente)
+                            gasto_base = [c for c in display_columns if c not in {"receptor_nombre", "receptor_cedula"} and c in sheet_df.columns]
                             # Aplicar filtro IVA-cero
-                            gasto_cols = _filter_iva_cols([c for c in display_columns if c in sheet_df.columns], sheet_df)
+                            gasto_cols = _filter_iva_cols(gasto_base, sheet_df)
                             _write_gasto_grouped(
                                 ws, sheet_df, gasto_cols,
                                 numeric_columns, text_columns, date_column,
@@ -2149,7 +2151,8 @@ class App3Window(ctk.CTk):
                         # ── Hoja Rechazados: incluye detalle_estado_hacienda ──────────────
                         if sheet_name == "Rechazados":
                             # Usar _HIDDEN sin detalle_estado_hacienda para que la columna sea visible
-                            rechazados_hidden = {"subtipo", "nombre_cuenta", "estado", "categoria"}
+                            # Excluir también receptor (no aplica a Rechazados)
+                            rechazados_hidden = {"subtipo", "nombre_cuenta", "estado", "categoria", "receptor_nombre", "receptor_cedula"}
                             rechazados_cols = [c for c in export_columns
                                                if c not in rechazados_hidden and c in sheet_df.columns]
                             # Filtrar columnas IVA todo-cero (igual que hojas normales)
@@ -2267,10 +2270,15 @@ class App3Window(ctk.CTk):
                             continue
 
                         # Hojas normales: solo columnas visibles (filtrar IVA todo-cero)
-                        visible_cols = [c for c in display_columns if c in sheet_df.columns]
+                        # Excluir receptor excepto para "Sin Receptor"
+                        exclude_receptor = sheet_name != "Sin Receptor"
+                        visible_cols_base = [
+                            c for c in display_columns
+                            if c in sheet_df.columns and not (exclude_receptor and c in {"receptor_nombre", "receptor_cedula"})
+                        ]
 
                         # Aplicar filtro IVA-cero usando la función auxiliar
-                        visible_cols_filtered = _filter_iva_cols(visible_cols, sheet_df)
+                        visible_cols_filtered = _filter_iva_cols(visible_cols_base, sheet_df)
 
                         display_df = sheet_df[visible_cols_filtered].rename(
                             columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in visible_cols_filtered}
