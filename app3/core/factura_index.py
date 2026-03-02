@@ -910,7 +910,7 @@ class FacturaIndexer:
                 "checksum": pdf_checksum,
             }
 
-        attempts = 1
+        attempts = 2
         clave_retry, retry_error, text_tokens, claves_detectadas = self._extract_clave_from_pdf_text(pdf_data)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         if elapsed_ms > timeout_seconds * 1000:
@@ -938,6 +938,7 @@ class FacturaIndexer:
         return {
             "clave": None,
             "razon": retry_error,
+            "error": "Extractor de texto (fitz) no encontró clave de 50 digitos" if retry_error == "extract_failed" else "",
             "intento": attempts,
             "tiempo_ms": elapsed_ms,
             "size_mb": size_mb,
