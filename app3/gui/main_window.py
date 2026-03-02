@@ -2695,9 +2695,11 @@ class App3Window(ctk.CTk):
         self._btn_create_pdf.configure(state="disabled", text="Generando...")
 
         def _do_generate():
-            from app3.core.pdf_generator import generate_factura_pdf
+            from app3.core.pdf_generator import generate_factura_pdf, extract_items_from_xml
             try:
-                generate_factura_pdf(r, output_path)
+                # Intentar extraer items del XML
+                items = extract_items_from_xml(r.xml_path) if r.xml_path and r.xml_path.exists() else None
+                generate_factura_pdf(r, output_path, items=items)
                 self.after(0, lambda: _on_done())
             except Exception as exc:
                 err = str(exc)

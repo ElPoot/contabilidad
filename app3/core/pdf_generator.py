@@ -21,6 +21,77 @@ except ImportError:
 from app3.core.models import FacturaRecord
 
 
+def extract_items_from_xml(xml_path: Path | str) -> list[dict] | None:
+    """Extrae items/líneas de un archivo XML de Hacienda CR.
+
+    Args:
+        xml_path: Ruta al archivo XML
+
+    Returns:
+        Lista de dicts con items, o None si no se puede parsear.
+        Cada dict tiene: {"desc": "...", "qty": "...", "unit": "...", "monto": "..."}
+    """
+    try:
+        import xml.etree.ElementTree as ET
+
+        xml_path = Path(xml_path)
+        if not xml_path.exists():
+            return None
+
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+
+        # Buscar todas las LineaDetalle en el XML (pueden estar en diferentes rutas)
+        items = []
+
+        # Namespace de Hacienda CR
+        namespaces = {
+            '': 'https://www.hacienda.go.cr/fe/esquemas/2024/v4.2',
+            'ds': 'http://www.w3.org/2000/09/xmldsig#',
+        }
+
+        # Buscar todos los elementos que contengan Detalle
+        for linea in root.iter():
+            # Buscar elementos que terminen con "LineaDetalle"
+            if linea.tag.endswith('LineaDetalle'):
+                desc = ""
+                qty = ""
+                unit = ""
+                monto = ""
+
+                # Iterar sobre children para extraer datos
+                for child in linea:
+                    tag_name = child.tag.split('}')[-1]  # Remover namespace
+
+                    if tag_name == "Detalle":
+                        desc = child.text or ""
+                    elif tag_name == "Cantidad":
+                        qty = child.text or ""
+                    elif tag_name == "UnidadMedida":
+                        unit = child.text or ""
+                    elif tag_name == "MontoTotal":
+                        monto = child.text or ""
+                    elif tag_name == "PrecioUnitario" and not monto:
+                        # Fallback si no hay MontoTotal
+                        monto = child.text or ""
+
+                if desc.strip():
+                    items.append({
+                        "desc": desc.strip()[:45],
+                        "qty": qty.strip(),
+                        "unit": unit.strip()[:8],
+                        "monto": monto.strip(),
+                    })
+
+        return items if items else None
+
+    except Exception as e:
+        # Si falla el parsing, retornar None
+        import logging
+        logging.debug(f"No se pudieron extraer items del XML: {e}")
+        return None
+
+
 def _parse_decimal(value: str | None) -> Decimal:
     """Parsea string de decimal de forma segura."""
     if not value:
@@ -50,12 +121,17 @@ def _format_amount(value: str | None) -> str:
     return f"-{result}" if d < 0 else result
 
 
-def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
-    """Genera un PDF simple con datos de la factura desde XML.
+def generate_factura_pdf(
+    record: FacturaRecord,
+    output_path: Path,
+    items: list[dict] | None = None
+) -> None:
+    """Genera un PDF con datos de la factura desde XML.
 
     Args:
         record: FacturaRecord con datos del XML
         output_path: Path donde guardar el PDF
+        items: Lista opcional de dicts con items: [{"desc": "...", "qty": "...", "unit": "...", "monto": "..."}, ...]
 
     Raises:
         ImportError: Si pymupdf no está instalado
@@ -68,11 +144,15 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
     doc = fitz.open()
     page = doc.new_page(pno=-1, width=595, height=842)  # A4 en puntos
 
+    # Fondo oscuro (como la app)
+    bg_color = (0.05, 0.06, 0.08)  # #0d0f14
+    page.draw_rect(page.rect, color=None, fill=bg_color)
+
     # Colores y fuentes
     text_color = (0.93, 0.93, 0.94)  # #e8eaf0 en RGB (0-1)
     muted_color = (0.42, 0.45, 0.50)  # #6b7280 en RGB
     teal_color = (0.18, 0.83, 0.75)  # #2dd4bf en RGB
-    border_color = (0.14, 0.16, 0.22)  # #252a38 en RGB
+    border_color = (0.45, 0.52, 0.72)  # #7286b8 en RGB (más visible en fondo oscuro)
 
     # Márgenes
     margin_left = 30
@@ -148,8 +228,60 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
     # === LINEA SEPARADORA ===
     line_y = y_pos
     page.draw_line((margin_left, line_y), (595 - margin_right, line_y),
-                   color=border_color, width=0.5)
+                   color=border_color, width=1)
     y_pos += 15
+
+    # === DETALLES / ITEMS ===
+    if items:
+        page.insert_text((margin_left, y_pos), "DETALLES DE COMPRA",
+                         fontsize=10, color=muted_color, fontname="helv")
+        y_pos += 15
+
+        # Encabezados de tabla
+        col_desc = margin_left
+        col_qty = margin_left + 300
+        col_unit = col_qty + 60
+        col_monto = col_unit + 60
+
+        page.insert_text((col_desc, y_pos), "Descripcion",
+                         fontsize=8, color=teal_color, fontname="helv")
+        page.insert_text((col_qty, y_pos), "Cantidad",
+                         fontsize=8, color=teal_color, fontname="helv")
+        page.insert_text((col_unit, y_pos), "P.Unit",
+                         fontsize=8, color=teal_color, fontname="helv")
+        page.insert_text((col_monto, y_pos), "Monto",
+                         fontsize=8, color=teal_color, fontname="helv")
+        y_pos += 12
+
+        # Línea separadora de encabezados
+        page.draw_line((col_desc, y_pos), (595 - margin_right, y_pos),
+                       color=border_color, width=0.5)
+        y_pos += 8
+
+        # Items
+        for item in items:
+            desc = str(item.get("desc", "")).strip()[:40]
+            qty = str(item.get("qty", "")).strip()
+            unit = str(item.get("unit", "")).strip()[:8]
+            monto = _format_amount(item.get("monto", ""))
+
+            if desc:  # Solo mostrar si hay descripción
+                page.insert_text((col_desc, y_pos), desc,
+                                 fontsize=8, color=text_color, fontname="helv")
+                page.insert_text((col_qty, y_pos), qty,
+                                 fontsize=8, color=text_color, fontname="helv")
+                page.insert_text((col_unit, y_pos), unit,
+                                 fontsize=8, color=text_color, fontname="helv")
+                page.insert_text((col_monto, y_pos), monto,
+                                 fontsize=8, color=text_color, fontname="helv")
+                y_pos += 11
+
+        y_pos += 10
+
+        # Línea separadora antes de montos
+        page.draw_line((margin_left, y_pos), (595 - margin_right, y_pos),
+                       color=border_color, width=1)
+        y_pos += 15
 
     # === MONTOS ===
     def _draw_amount_row(label: str, value: str, is_bold: bool = False):
@@ -211,10 +343,11 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
     y_pos += 20
 
     # === FOOTER ===
-    footer_text = "* PDF generado automáticamente por App 3 — No es el documento original *"
+    footer_text = "* PDF generado automaticamente por App 3 — No es el documento original *"
     footer_y = 800
+    footer_color = (0.65, 0.68, 0.72)  # Color mas claro para footer
     page.insert_text((margin_left, footer_y), footer_text,
-                     fontsize=8, color=muted_color, fontname="helv")
+                     fontsize=8, color=footer_color, fontname="helv")
 
     # Crear carpeta si no existe
     output_path.parent.mkdir(parents=True, exist_ok=True)
