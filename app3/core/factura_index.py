@@ -1136,7 +1136,10 @@ class FacturaIndexer:
 
         matches_50 = list(dict.fromkeys(_RE_DIGITS_50_TEXT.findall(text_content)))
         if matches_50:
-            return matches_50[0], "ok", [], matches_50[:20]
+            # Si hay múltiples claves (ej: NC con referencia a factura original),
+            # preferir la última (la del documento actual, no la referencia)
+            primary_clave = matches_50[-1] if len(matches_50) > 1 else matches_50[0]
+            return primary_clave, "ok", [], matches_50[:20]
 
         # ── Búsqueda para claves particionadas (ej: 49 dígitos + salto línea + 1 dígito) ──
         # Estrategia: buscar líneas que comienzan con "506" (patrón de clave Costa Rica)
