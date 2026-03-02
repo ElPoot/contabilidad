@@ -5,19 +5,31 @@ import csv
 import threading
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from queue import Queue
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, ttk  # Treeview + diálogos
 
+import logging
+
 from app3.config import metadata_dir
 from app3.core.catalog import CatalogManager
+from app3.core.classification_utils import (
+    classify_transaction,
+    filter_records_by_tab,
+    get_classification_label,
+    get_tab_statistics,
+)
 from app3.core.classifier import ClassificationDB, build_dest_folder, classify_record
 from app3.core.factura_index import FacturaIndexer
 from app3.core.models import FacturaRecord
 from app3.core.session import ClientSession
+from app3.gui.loading_modal import LoadingOverlay
 from app3.gui.pdf_viewer import PDFViewer
 from app3.gui.session_view import SessionView
+
+logger = logging.getLogger(__name__)
 
 # ── PALETA (misma que session_view) ──────────────────────────────────────────
 BG      = "#0d0f14"
@@ -485,6 +497,196 @@ def _safe_excel_sheet_name(raw_name: str, used_names: set[str]) -> str:
     return candidate
 
 
+_GASTO_PREFIX = {
+    "GASTOS GENERALES": "GG",
+    "GASTOS ESPECÍFICOS": "GE",
+    "GASTOS ESPECIFICOS": "GE",
+}
+
+
+def _write_gasto_grouped(
+    ws, sheet_df, display_cols,
+    numeric_columns, text_columns, date_column,
+    pretty_headers, owner_name, sheet_name, date_from_label, date_to_label,
+    title_fill, subtitle_fill, summary_fill, header_fill, credit_fill,
+    title_font, subtitle_font, summary_font, header_font,
+):
+    """Hoja Gasto — agrupación por (subtipo, nombre_cuenta).
+
+    Layout por grupo:
+        [filas de datos — sin color]
+        [fila subtotal: sumas numéricas + label "GG/GE / NOMBRE" en última col]  ← fill azul
+        [fila vacía]
+
+    display_cols: columnas a mostrar.  subtipo/nombre_cuenta se leen del DataFrame
+    para agrupar aunque no aparezcan en display_cols.
+    """
+    import pandas as pd
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    n_cols = len(display_cols)
+
+    # ── Filas 1-3: título / subtítulo / resumen ───────────────────────────────
+    for row in (1, 2, 3):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_cols)
+
+    ws.cell(row=1, column=1).value = str(owner_name).upper()
+    ws.cell(row=1, column=1).font = title_font
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(row=1, column=1).fill = title_fill
+
+    ws.cell(row=2, column=1).value = (
+        f"REPORTE DE {sheet_name.upper()} - Período: {date_from_label} al {date_to_label}"
+    )
+    ws.cell(row=2, column=1).font = subtitle_font
+    ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(row=2, column=1).fill = subtitle_fill
+
+    monto_total = Decimal("0")
+    if "total_comprobante" in sheet_df.columns:
+        for v in sheet_df["total_comprobante"].dropna():
+            try:
+                monto_total += Decimal(str(v))
+            except Exception:
+                pass
+
+    monedas = (
+        sorted({str(m).strip() for m in sheet_df["moneda"].dropna() if str(m).strip()})
+        if "moneda" in sheet_df.columns else []
+    )
+    moneda_value = (
+        "N/A" if not monedas
+        else monedas[0] if len(monedas) == 1
+        else "MIXTA: " + ", ".join(monedas)
+    )
+
+    ws.cell(row=3, column=1).value = (
+        f"Total filas: {len(sheet_df)}   |   Monto Total: {_format_amount_es(monto_total)}   |   "
+        f"Moneda: {moneda_value}   |   Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    )
+    ws.cell(row=3, column=1).font = summary_font
+    ws.cell(row=3, column=1).alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(row=3, column=1).fill = summary_fill
+
+    # ── Fila 5: encabezados de columna ────────────────────────────────────────
+    for col_idx, col_name in enumerate(display_cols, start=1):
+        cell = ws.cell(row=5, column=col_idx)
+        cell.value = pretty_headers.get(col_name, col_name.replace("_", " ").title())
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    tipo_col_idx   = (display_cols.index("tipo_documento") + 1) if "tipo_documento" in display_cols else None
+    numeric_display = [c for c in display_cols if c in numeric_columns]  # subtotal … total_comprobante
+
+    subtotal_fill = PatternFill(fill_type="solid", fgColor="BDD7EE")
+    subtotal_font = Font(bold=True)
+
+    # ── Ordenar y agrupar (claves de agrupación vienen del df, no de display) ─
+    group_cols = [c for c in ("subtipo", "nombre_cuenta") if c in sheet_df.columns]
+    sort_cols  = group_cols + (["fecha_emision"] if "fecha_emision" in sheet_df.columns else [])
+    sorted_df  = sheet_df.sort_values(sort_cols) if sort_cols else sheet_df
+
+    def _safe(v):
+        try:
+            return None if pd.isna(v) else v
+        except (TypeError, ValueError):
+            return v
+
+    current_row = 6
+
+    if group_cols:
+        for group_keys, group_df in sorted_df.groupby(group_cols, sort=False):
+            if isinstance(group_keys, tuple) and len(group_keys) == 2:
+                subtipo_val = str(group_keys[0]).strip().upper()
+                cuenta_val  = str(group_keys[1]).strip()
+            else:
+                subtipo_val = ""
+                cuenta_val  = str(group_keys).strip()
+
+            group_sums: dict[str, Decimal] = {c: Decimal("0") for c in numeric_display}
+
+            # Filas de datos (sin color)
+            for _, row_data in group_df.iterrows():
+                for col_idx, col_name in enumerate(display_cols, start=1):
+                    val  = _safe(row_data[col_name])
+                    cell = ws.cell(row=current_row, column=col_idx)
+                    cell.value = val
+                    if col_name in text_columns:
+                        cell.number_format = "@"
+                        cell.value = "" if cell.value is None else str(cell.value)
+                    elif col_name == date_column and cell.value is not None:
+                        cell.number_format = "dd/mm/yyyy"
+                    elif col_name in numeric_columns and cell.value is not None:
+                        cell.number_format = "#,##0.00"
+                        if isinstance(cell.value, Decimal):
+                            cell.value = float(cell.value)
+
+                if tipo_col_idx and ws.cell(row=current_row, column=tipo_col_idx).value == "Nota de Crédito":
+                    for c in range(1, n_cols + 1):
+                        ws.cell(row=current_row, column=c).fill = credit_fill
+
+                for col_name in numeric_display:
+                    tv = _safe(row_data[col_name]) if col_name in row_data.index else None
+                    try:
+                        if tv is not None:
+                            group_sums[col_name] += Decimal(str(tv))
+                    except Exception:
+                        pass
+
+                current_row += 1
+
+            # ── Fila de subtotal: sumas + label en la ÚLTIMA columna ──────────
+            for col_idx in range(1, n_cols + 1):
+                ws.cell(row=current_row, column=col_idx).fill = subtotal_fill
+
+            for col_name in numeric_display:
+                ci = display_cols.index(col_name) + 1
+                tc = ws.cell(row=current_row, column=ci)
+                tc.value         = float(group_sums[col_name])
+                tc.number_format = "#,##0.00"
+                tc.font          = subtotal_font
+
+            prefix      = _GASTO_PREFIX.get(subtipo_val, "")
+            cuenta_label = cuenta_val.upper() if cuenta_val else subtipo_val
+            label        = f"{prefix} / {cuenta_label}" if prefix else cuenta_label
+            lbl = ws.cell(row=current_row, column=n_cols)
+            lbl.value     = label
+            lbl.font      = subtotal_font
+            lbl.alignment = Alignment(horizontal="right", vertical="center")
+
+            current_row += 2  # subtotal + fila vacía
+
+    else:
+        # Sin agrupación: filas directas
+        for _, row_data in sorted_df.iterrows():
+            for col_idx, col_name in enumerate(display_cols, start=1):
+                val  = _safe(row_data[col_name])
+                cell = ws.cell(row=current_row, column=col_idx)
+                cell.value = val
+                if col_name in text_columns:
+                    cell.number_format = "@"
+                    cell.value = "" if cell.value is None else str(cell.value)
+                elif col_name == date_column and cell.value is not None:
+                    cell.number_format = "dd/mm/yyyy"
+                elif col_name in numeric_columns and cell.value is not None:
+                    cell.number_format = "#,##0.00"
+            current_row += 1
+
+    # ── Ancho de columnas ─────────────────────────────────────────────────────
+    for col_idx in range(1, n_cols + 1):
+        max_len = 0
+        for row_idx in range(5, current_row):
+            v = ws.cell(row=row_idx, column=col_idx).value
+            if v is not None:
+                max_len = max(max_len, len(str(v)))
+        ws.column_dimensions[
+            ws.cell(row=5, column=col_idx).column_letter
+        ].width = min(max(max_len + 3, 12), 65)
+
+    ws.freeze_panes = ws["A6"]
+
+
 class App3Window(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -495,8 +697,8 @@ class App3Window(ctk.CTk):
         self.geometry("1440x860")
         self.minsize(1100, 680)
         self.configure(fg_color=BG)
-        self.grid_rowconfigure(0, weight=0, minsize=64)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=0)  # Header (can expand with tabs)
+        self.grid_rowconfigure(1, weight=1)  # Body
         self.grid_columnconfigure(0, weight=1)
 
         self.session: ClientSession | None = None
@@ -510,54 +712,116 @@ class App3Window(ctk.CTk):
         self._active_calendar: DatePickerDropdown | None = None
         self._load_generation: int = 0
         self._all_cuentas: list[str] = []  # Unfiltered account list
+        self._loading_overlay: LoadingOverlay | None = None  # Overlay de carga
+        self._tree_clave_map: dict[str, FacturaRecord] = {}  # Mapeo: clave → record (para mantener orden)
+        self._active_tab: str = "todas"  # Pestaña activa de facturas del período
+        self._tab_buttons: dict[str, ctk.CTkButton] = {}  # Botones de pestañas
 
         _apply_tree_style()
-        self._build()
 
-        # Abrir pantalla de sesión al inicio
-        self.withdraw()
-        self.after(100, self._open_session_view)
+        # Crear body_container (para header y body) — inicialmente oculto
+        self._body_container = ctk.CTkFrame(self, fg_color=BG)
+        self._body_container.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        self._body_container.grid_rowconfigure(0, weight=0)  # Header
+        self._body_container.grid_rowconfigure(1, weight=1)  # Body
+        self._body_container.grid_columnconfigure(0, weight=1)
+        self._build(self._body_container)
+        self._body_container.grid_remove()  # Ocultar inicialmente
+
+        # Crear SessionView (visible al inicio) — llena toda la ventana
+        self._session_frame = SessionView(self, on_session_resolved=self._on_session_resolved)
+        self._session_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
 
     # ── SESIÓN ────────────────────────────────────────────────────────────────
     def _open_session_view(self):
-        SessionView(self, on_session_resolved=self._on_session_resolved)
+        # Mostrar SessionView y ocultar body_container
+        self._body_container.grid_remove()
+        self._session_frame.grid()
+        self._session_frame.focus_force()
 
     def _on_session_resolved(self, session: ClientSession):
-        self.deiconify()
+        # Ocultar SessionView y mostrar body_container
+        self._session_frame.grid_remove()
+        self._body_container.grid()
         self.focus_force()
         self._load_session(session)
 
     def _load_session(self, session: ClientSession):
+        import time
         self._load_generation += 1
         generation = self._load_generation
-        self._set_status("Cargando facturas (rápido)...")
         self._load_queue = Queue()
+
+        # Mostrar overlay de carga integrado
+        if not hasattr(self, '_loading_overlay') or not self._loading_overlay:
+            self._loading_overlay = LoadingOverlay(self)
+            self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        else:
+            self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        self._loading_overlay.update_status("Iniciando...")
+
+        # 🔥 CRÍTICO: Forzar actualización visual del overlay
+        # Sin esto, el overlay no se ve en pantalla durante el worker thread
+        self.update_idletasks()
+        self.update()
 
         def worker():
             try:
+                start_total = time.perf_counter()
+
+                # Fase 1: Setup
                 mdir = metadata_dir(session.folder)
+                self.after(0, lambda: self._loading_overlay.update_status("📂 Preparando cliente..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(10, 100))
                 catalog = CatalogManager(mdir).load()
                 db = ClassificationDB(mdir)
                 indexer = FacturaIndexer()
+
+                # Fase 2: Load (XML + PDF)
+                self.after(0, lambda: self._loading_overlay.update_status("📄 Leyendo XMLs..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(20, 100))
+
+                # La fase larga: XML + PDF
+                self.after(0, lambda: self._loading_overlay.update_status("🔍 Escaneando PDFs (esto toma ~40s)..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(30, 100))
+
+                start_load = time.perf_counter()
                 records = indexer.load_period(
                     session.folder,
                     from_date="",
                     to_date="",
-                    include_pdf_scan=False,
+                    include_pdf_scan=True,
+                    allow_pdf_content_fallback=True,
                 )
+                load_time = time.perf_counter() - start_load
+                logger.info(f"load_period() tardó {load_time:.2f}s para {len(records)} registros")
+
+                # Casi listo
+                self.after(0, lambda: self._loading_overlay.update_status("✅ Finalizando..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(90, 100))
+
+                total_time = time.perf_counter() - start_total
+                logger.info(f"Worker total: {total_time:.2f}s")
+
                 self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors)))
             except Exception as exc:
+                logger.exception("Error en worker")
                 self._load_queue.put(("error", (generation, str(exc))))
 
         threading.Thread(target=worker, daemon=True).start()
         self.after(150, self._poll_load)
 
     def _poll_load(self):
+        import time
         if self._load_queue.empty():
             self.after(150, self._poll_load)
             return
 
         status, payload = self._load_queue.get()
+
+        # Ocultar overlay de carga
+        if hasattr(self, '_loading_overlay') and self._loading_overlay:
+            self._loading_overlay.grid_remove()
 
         if status == "error":
             generation, message = payload
@@ -575,7 +839,7 @@ class App3Window(ctk.CTk):
         self.db = db
         self.all_records = records
         self._db_records = db.get_records_map()
-        self.records = self._apply_date_filter(records)
+        self.records = self._apply_filters()
         self.selected = None
 
         # Actualizar header
@@ -590,11 +854,20 @@ class App3Window(ctk.CTk):
             self._on_categoria_change()
 
         self.pdf_viewer.clear()
-        self._refresh_tree()
-        self._update_progress()
-        self._set_status("Listo (escaneando PDFs en segundo plano...)")
 
-        self._start_pdf_enrichment(generation, session, records)
+        # Actualizar overlay: renderizando tabla
+        if hasattr(self, '_loading_overlay') and self._loading_overlay and self._loading_overlay.winfo_exists():
+            self._loading_overlay.update_status("Renderizando lista de facturas...")
+            self._loading_overlay.update_progress(0, len(self.records))
+
+        # Timing del refresh
+        start_refresh = time.perf_counter()
+        self._refresh_tree()
+        refresh_time = time.perf_counter() - start_refresh
+        logger.info(f"_refresh_tree() tardó {refresh_time:.2f}s para {len(self.records)} registros")
+
+        self._update_progress()
+        self._set_status("Listo")
 
         if parse_errors:
             self._show_warning(
@@ -604,24 +877,8 @@ class App3Window(ctk.CTk):
                 + "\n".join(parse_errors[:5])
             )
 
-    def _start_pdf_enrichment(self, generation: int, session: ClientSession, base_records: list[FacturaRecord]):
-        """Completa asociación de PDFs en segundo plano para acelerar carga inicial."""
-
-        def worker():
-            try:
-                indexer = FacturaIndexer()
-                enriched_records = indexer.link_pdfs_for_records(
-                    session.folder,
-                    list(base_records),
-                    allow_pdf_content_fallback=False,
-                )
-                self.after(0, lambda: self._apply_pdf_enrichment(generation, enriched_records, indexer.parse_errors))
-            except Exception as exc:
-                self.after(0, lambda e=exc: self._set_status(f"Carga parcial (PDF): {e}"))
-
-        threading.Thread(target=worker, daemon=True).start()
-
     def _apply_pdf_enrichment(self, generation: int, enriched_records: list[FacturaRecord], parse_errors: list[str]):
+        """Ya no se usa (PDFs cargados en _load_session). Mantenido por compatibilidad."""
         if generation != self._load_generation:
             return
 
@@ -638,14 +895,17 @@ class App3Window(ctk.CTk):
             )
 
     # ── CONSTRUCCIÓN UI ───────────────────────────────────────────────────────
-    def _build(self):
-        self._build_header()
-        self._build_body()
+    def _build(self, parent=None):
+        if parent is None:
+            parent = self
+        self._build_header(parent)
+        self._build_body(parent)
 
-    def _build_header(self):
-        hdr = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=64)
+    def _build_header(self, parent=None):
+        if parent is None:
+            parent = self
+        hdr = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=0)
         hdr.grid(row=0, column=0, sticky="ew")
-        hdr.grid_propagate(False)
         hdr.grid_columnconfigure(1, weight=1)
         hdr.grid_columnconfigure(2, weight=1)
 
@@ -733,12 +993,49 @@ class App3Window(ctk.CTk):
                       font=F_SMALL(), text_color=MUTED).grid(
             row=0, column=5, padx=(0, 16))
 
+        # Pestañas de clasificación (fila 1)
+        tabs_container = ctk.CTkFrame(hdr, fg_color="transparent")
+        tabs_container.grid(row=1, column=0, columnspan=6, sticky="ew", padx=16, pady=(8, 8))
+        tabs_container.grid_columnconfigure(0, weight=1)
+
+        tab_configs = [
+            ("todas", "Todas"),
+            ("ingreso", "Ingresos"),
+            ("egreso", "Egresos"),
+            ("ors", "ORS"),
+            ("pendiente", "Pendientes"),
+            ("sin_clave", "📄 Sin clave"),
+            ("omitidos", "⊘ Omitidos"),
+        ]
+
+        for tab_id, tab_label in tab_configs:
+            btn = ctk.CTkButton(
+                tabs_container,
+                text=tab_label,
+                width=90,
+                height=28,
+                fg_color=CARD,
+                hover_color=BORDER,
+                text_color=TEXT,
+                font=F_SMALL(),
+                corner_radius=6,
+                command=lambda t=tab_id: self._on_tab_clicked(t),
+            )
+            btn.pack(side="left", padx=4)
+            self._tab_buttons[tab_id] = btn
+
+        # Marcar pestaña inicial como activa
+        self._update_tab_appearance("todas")
+
+        # Separador
         ctk.CTkFrame(self, fg_color=BORDER, height=1, corner_radius=0).grid(
-            row=0, column=0, sticky="sew", pady=(63, 0)
+            row=0, column=0, columnspan=6, sticky="ew", pady=(0, 0)
         )
 
-    def _build_body(self):
-        body = ctk.CTkFrame(self, fg_color="transparent")
+    def _build_body(self, parent=None):
+        if parent is None:
+            parent = self
+        body = ctk.CTkFrame(parent, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(8, 8))
         body.grid_rowconfigure(0, weight=1)
         body.grid_columnconfigure(0, weight=33, minsize=360)  # lista
@@ -754,7 +1051,7 @@ class App3Window(ctk.CTk):
         frame = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=10, border_width=1, border_color=BORDER)
         frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         frame.grid_rowconfigure(1, weight=1)
-        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)  # Treeview
 
         # Header del panel
         top = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10, height=44)
@@ -782,21 +1079,23 @@ class App3Window(ctk.CTk):
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
-        cols = ("estado", "fecha", "tipo", "emisor", "moneda", "total")
+        # Columnas: Emisor, Fecha, Tipo, IVA 13%, Impuesto, Total (sin Estado)
+        cols = ("emisor", "fecha", "tipo", "iva_13", "impuesto", "total")
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
                                   selectmode="browse", style="Dark.Treeview")
-        self.tree.heading("estado",  text="Estado")
-        self.tree.heading("fecha",   text="Fecha")
-        self.tree.heading("tipo",    text="Tipo")
-        self.tree.heading("emisor",  text="Emisor")
-        self.tree.heading("moneda",  text="Mon.")
-        self.tree.heading("total",   text="Total")
-        self.tree.column("estado",  width=72,  stretch=False)
-        self.tree.column("fecha",   width=78,  stretch=False)
-        self.tree.column("tipo",    width=46,  stretch=False)
-        self.tree.column("emisor",  width=160)
-        self.tree.column("moneda",  width=36,  stretch=False, anchor="center")
-        self.tree.column("total",   width=96,  anchor="e", stretch=False)
+        self.tree.heading("emisor",    text="Emisor")
+        self.tree.heading("fecha",     text="Fecha")
+        self.tree.heading("tipo",      text="Tipo")
+        self.tree.heading("iva_13",    text="IVA 13%")
+        self.tree.heading("impuesto",  text="Impuesto")
+        self.tree.heading("total",     text="Total")
+
+        self.tree.column("emisor",    width=140)
+        self.tree.column("fecha",     width=78,  stretch=False)
+        self.tree.column("tipo",      width=46,  stretch=False)
+        self.tree.column("iva_13",    width=80,  stretch=False, anchor="e")
+        self.tree.column("impuesto",  width=90,  stretch=False, anchor="e")
+        self.tree.column("total",     width=96,  stretch=False, anchor="e")
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical",
                              command=self.tree.yview, style="Dark.Vertical.TScrollbar")
@@ -804,10 +1103,11 @@ class App3Window(ctk.CTk):
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
 
-        self.tree.tag_configure("clasificado",   foreground=SUCCESS)
-        self.tree.tag_configure("pendiente_pdf", foreground=WARNING)
-        self.tree.tag_configure("sin_xml",       foreground=MUTED)
-        self.tree.tag_configure("pendiente",     foreground=TEXT)
+        # Etiquetas para colores de fondo según estado
+        self.tree.tag_configure("clasificado",   background="#1a4d3d", foreground=TEXT)      # Verde oscuro
+        self.tree.tag_configure("pendiente",     background="",        foreground=TEXT)      # Sin color (normal)
+        self.tree.tag_configure("pendiente_pdf", background="#1a3d4d", foreground=TEXT)     # Azul oscuro
+        self.tree.tag_configure("sin_xml",       background="#2d2d2d", foreground=MUTED)    # Gris oscuro
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
     # ── PANEL CENTRAL — VISOR PDF ─────────────────────────────────────────────
@@ -993,35 +1293,161 @@ class App3Window(ctk.CTk):
                       justify="left", wraplength=200, anchor="w").grid(
             row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
 
+    # ── PESTAÑAS DE FACTURAS DEL PERÍODO ────────────────────────────────────────
+    def _on_tab_clicked(self, tab: str):
+        """Maneja click en pestaña. Filtra registros y actualiza UI."""
+        self._active_tab = tab
+        self._update_tab_appearance(tab)
+
+        # Filtrar registros según pestaña activa
+        if self.session:
+            self.records = self._apply_filters()
+            self._refresh_tree()
+            self._update_progress()
+
+    def _update_tab_appearance(self, active_tab: str):
+        """Actualiza colores de botones de pestañas."""
+        for tab_id, btn in self._tab_buttons.items():
+            if tab_id == active_tab:
+                btn.configure(fg_color=TEAL, text_color=BG)
+            else:
+                btn.configure(fg_color=CARD, text_color=TEXT)
+
+    def _get_client_cedula(self) -> str:
+        """Obtiene cédula confiable del cliente desde client_profiles.json.
+
+        Estructura: client_name → gmail_account → __email__:{gmail} → cedula
+        Con fallback inteligente a cedula más frecuente en XMLs si no hay match.
+        """
+        if not self.session:
+            return ""
+
+        try:
+            from app3.core.client_profiles import load_profiles
+            profiles = load_profiles()
+
+            # Paso 1: Buscar perfil del cliente por nombre
+            client_name = self.session.nombre
+            if client_name in profiles:
+                profile = profiles[client_name]
+                if isinstance(profile, dict):
+                    # Paso 2: Obtener gmail_account del perfil
+                    gmail = str(profile.get("gmail_account", "")).strip().lower()
+                    if gmail:
+                        # Paso 3: Buscar entrada __email__:{gmail}
+                        email_key = f"__email__:{gmail}"
+                        if email_key in profiles:
+                            email_profile = profiles[email_key]
+                            if isinstance(email_profile, dict):
+                                cedula = str(email_profile.get("cedula", "")).strip()
+                                if cedula:
+                                    # Limpiar cédula (solo dígitos)
+                                    import re
+                                    cedula_clean = re.sub(r"\D", "", cedula)
+                                    if cedula_clean:
+                                        logger.info(f"Cédula obtenida de perfiles: {cedula_clean}")
+                                        return cedula_clean
+        except Exception as e:
+            logger.warning(f"Error obteniendo cédula desde perfiles: {e}")
+
+        # Fallback inteligente: si la cédula no match ningún registro,
+        # usar la cédula más frecuente en todos los registros
+        if self.all_records:
+            from collections import Counter
+            import re
+            cedula_candidates = Counter()
+
+            for r in self.all_records:
+                if r.emisor_cedula:
+                    cedula_clean = re.sub(r"\D", "", str(r.emisor_cedula))
+                    if cedula_clean:
+                        cedula_candidates[cedula_clean] += 1
+                if r.receptor_cedula:
+                    cedula_clean = re.sub(r"\D", "", str(r.receptor_cedula))
+                    if cedula_clean:
+                        cedula_candidates[cedula_clean] += 1
+
+            if cedula_candidates:
+                most_common_cedula, count = cedula_candidates.most_common(1)[0]
+                logger.info(f"Cedula más frecuente en registros: {most_common_cedula} ({count} apariciones)")
+                return most_common_cedula
+
+        # Último fallback: cedula de sesión
+        cedula_fallback = (self.session.cedula or "").strip()
+        logger.info(f"Usando cedula fallback de sesión: {cedula_fallback}")
+        return cedula_fallback
 
     # ── TABLA ─────────────────────────────────────────────────────────────────
     def _refresh_tree(self):
+        """Refresca Treeview ordenado: Emisor → Tipo → Fecha (con colores por estado)."""
         self.tree.delete(*self.tree.get_children())
-        for idx, r in enumerate(self.records):
+
+        if not self.records:
+            return
+
+        # Mapeo de tipo_documento → abreviatura
+        tipo_map = {
+            "Factura Electrónica": "FE",
+            "Factura electronica": "FE",
+            "Nota de Crédito": "NC",
+            "Nota de Debito": "ND",
+            "Tiquete": "TQ",
+        }
+
+        # Reordenar por: Emisor → Tipo de documento → Fecha
+        def sort_key(r):
+            emisor = (r.emisor_nombre or "").lower()
+            tipo = (r.tipo_documento or "").lower()
+            fecha = r.fecha_emision or ""
+            return (emisor, tipo, fecha)
+
+        sorted_records = sorted(self.records, key=sort_key)
+
+        # Preparar items + mapeo de clave → record
+        items_to_insert = []
+        self._tree_clave_map = {}  # Mapeo visual: clave → record (para _on_select)
+
+        for r in sorted_records:
+            # Estado para etiqueta de color
             estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
-            icon  = ESTADO_ICON.get(estado, "·")
-            label = ESTADO_LABEL.get(estado, estado)
-            tag   = estado if estado in ("clasificado", "pendiente_pdf", "sin_xml") else ""
-            # Abreviar tipo de documento
+            tag = estado if estado in ("clasificado", "pendiente", "pendiente_pdf", "sin_xml") else "pendiente"
+
+            # Formatear campos
             tipo_raw = str(r.tipo_documento or "")
-            tipo_short = (tipo_raw
-                .replace("Factura Electrónica", "FE")
-                .replace("Factura electronica", "FE")
-                .replace("Nota de Crédito", "NC")
-                .replace("Nota de Debito", "ND")
-                .replace("Tiquete", "TQ")
-                [:4])
-            moneda = str(r.moneda or "")[:3]
-            self.tree.insert("", "end", iid=str(idx),
-                              values=(
-                                  icon + " " + label,
-                                  r.fecha_emision,
-                                  tipo_short,
-                                  _short_name(r.emisor_nombre),
-                                  moneda,
-                                  _fmt_amount(r.total_comprobante),
-                              ),
-                              tags=(tag,))
+            tipo_short = tipo_map.get(tipo_raw, tipo_raw[:4])
+            emisor_short = _short_name(r.emisor_nombre)
+
+            # Valores numéricos con formato
+            iva_13_fmt = _fmt_amount(r.iva_13)
+            impuesto_fmt = _fmt_amount(r.impuesto_total)
+            total_fmt = _fmt_amount(r.total_comprobante)
+
+            # Orden de columnas: emisor, fecha, tipo, iva_13, impuesto, total
+            row_values = (
+                emisor_short,
+                r.fecha_emision,
+                tipo_short,
+                iva_13_fmt,
+                impuesto_fmt,
+                total_fmt,
+            )
+
+            # Usar clave como iid (no índice) para evitar problemas de orden
+            items_to_insert.append((r.clave, row_values, tag))
+            self._tree_clave_map[r.clave] = r
+
+        # Insertar en batches para que UI responda
+        batch_size = 200
+        for batch_start in range(0, len(items_to_insert), batch_size):
+            batch_end = min(batch_start + batch_size, len(items_to_insert))
+            for iid, values, tag in items_to_insert[batch_start:batch_end]:
+                self.tree.insert("", "end", iid=iid, values=values, tags=(tag,))
+
+            self.update_idletasks()
+
+            if hasattr(self, '_loading_overlay') and self._loading_overlay and self._loading_overlay.winfo_exists():
+                pct = batch_end / len(items_to_insert)
+                self._loading_overlay.update_progress(batch_end, len(items_to_insert))
 
     def _update_progress(self):
         if not self.records:
@@ -1042,8 +1468,16 @@ class App3Window(ctk.CTk):
         sel = self.tree.selection()
         if not sel:
             return
-        idx = int(sel[0])
-        self.selected = self.records[idx]
+        # Usar clave (iid) para obtener record del mapeo (mantiene orden)
+        clave = sel[0]
+        if hasattr(self, '_tree_clave_map') and clave in self._tree_clave_map:
+            self.selected = self._tree_clave_map[clave]
+        else:
+            # Fallback: búsqueda por clave en records
+            matches = [r for r in self.records if r.clave == clave]
+            if not matches:
+                return
+            self.selected = matches[0]
         r = self.selected
 
         # Estado Hacienda — pill superior
@@ -1059,18 +1493,46 @@ class App3Window(ctk.CTk):
         else:
             self._hacienda_lbl.configure(text="", fg_color="transparent")
 
-        # PDF
+        # PDF: Intentar cargar desde ruta original, o desde ruta clasificada si ya fue movido
+        pdf_to_load = None
+
+        # 1️⃣ Intenta ruta original (si no fue clasificado aún)
         if r.pdf_path and r.pdf_path.exists():
-            self.pdf_viewer.load(r.pdf_path)
+            pdf_to_load = r.pdf_path
+
+        # 2️⃣ Si no está en original, busca en ruta destino (si ya fue clasificado)
+        elif self.db and r.clave:
+            db_record = self._db_records.get(r.clave)
+            if db_record and db_record.get("ruta_destino"):
+                ruta_destino = Path(db_record["ruta_destino"])
+                if ruta_destino.exists():
+                    pdf_to_load = ruta_destino
+                    logger.debug(f"PDF cargado desde ruta clasificada: {ruta_destino}")
+
+        # Cargar o mostrar vacío
+        if pdf_to_load:
+            self.pdf_viewer.load(pdf_to_load)
         else:
-            self.pdf_viewer.clear()
+            # Si es un registro omitido pero sin PDF encontrado, mostrar razón
+            if r.razon_omisión:
+                razon_text = {
+                    "non_invoice": "Detectado como no-factura (borrador, catálogo, comunicado, etc.)",
+                    "timeout": "Timeout durante extracción de clave",
+                    "extract_failed": "Error al extraer información del PDF",
+                }.get(r.razon_omisión, "PDF omitido")
+                self.pdf_viewer.release_file_handles(f"⊘ PDF Omitido\n\n{razon_text}")
+            else:
+                self.pdf_viewer.clear()
 
         # Prellenar proveedor
         if r.emisor_nombre:
             self._prov_var.set(r.emisor_nombre)
 
-        # Habilitar botón clasificar
-        self._btn_classify.configure(state="normal")
+        # Habilitar botón clasificar (excepto para registros omitidos)
+        if r.razon_omisión:
+            self._btn_classify.configure(state="disabled", text="⊘ No clasificable")
+        else:
+            self._btn_classify.configure(state="normal", text="✔  Clasificar")
 
         # Clasificación previa
         if self.db:
@@ -1217,7 +1679,7 @@ class App3Window(ctk.CTk):
     def _on_filter(self):
         if not self.all_records:
             return
-        self.records = self._apply_date_filter(self.all_records)
+        self.records = self._apply_filters()
         self.selected = None
         self.pdf_viewer.clear()
         self._refresh_tree()
@@ -1272,16 +1734,33 @@ class App3Window(ctk.CTk):
         if not target:
             return
 
-        rows: list[dict[str, str]] = []
-        for r in self.records:
+        # Eliminar archivo existente antes de escribir (evita error en Windows si está cerrado)
+        target_path = Path(target)
+        if target_path.exists():
+            try:
+                target_path.unlink()
+            except PermissionError:
+                self._show_error(
+                    "Error al exportar",
+                    f"El archivo está abierto en otro programa.\nCiérralo e intenta de nuevo:\n{target}",
+                )
+                return
+
+        client_cedula = self._get_client_cedula()
+
+        # Exportar todos los registros del período (sin filtro de pestaña, sin omitidos)
+        period_records = [r for r in self._apply_date_filter(self.all_records) if not r.razon_omisión]
+
+        rows: list[dict] = []
+        for r in period_records:
             meta = self._db_records.get(r.clave, {}) if self.db else {}
             estado = meta.get("estado") or r.estado
             rows.append(
                 {
                     "clave_numerica": r.clave,
-                    "estado": estado,
-                    "fecha_emision": r.fecha_emision,
                     "tipo_documento": r.tipo_documento,
+                    "fecha_emision": r.fecha_emision,
+                    "consecutivo": r.consecutivo,
                     "emisor_nombre": r.emisor_nombre,
                     "emisor_cedula": r.emisor_cedula,
                     "receptor_nombre": r.receptor_nombre,
@@ -1289,76 +1768,96 @@ class App3Window(ctk.CTk):
                     "moneda": r.moneda,
                     "tipo_cambio": r.tipo_cambio,
                     "subtotal": r.subtotal,
+                    "iva_1": r.iva_1,
+                    "iva_2": r.iva_2,
+                    "iva_4": r.iva_4,
+                    "iva_8": r.iva_8,
+                    "iva_13": r.iva_13,
                     "impuesto_total": r.impuesto_total,
                     "total_comprobante": r.total_comprobante,
                     "estado_hacienda": r.estado_hacienda,
                     "categoria": str(meta.get("categoria") or ""),
                     "subtipo": str(meta.get("subtipo") or ""),
                     "nombre_cuenta": str(meta.get("nombre_cuenta") or ""),
-                    "proveedor": str(meta.get("proveedor") or r.emisor_nombre or ""),
-                    "consecutivo": r.consecutivo,
-                    "xml_path": str(r.xml_path or ""),
-                    "pdf_path": str(r.pdf_path or ""),
+                    "estado": estado,
                 }
             )
 
-
-        # Mantener el reporte alineado a las columnas básicas por defecto de App 2.
-        app2_default_export_columns = [
+        export_columns = [
             "tipo_documento",
             "fecha_emision",
             "consecutivo",
             "emisor_nombre",
             "emisor_cedula",
+            "receptor_nombre",
+            "receptor_cedula",
             "moneda",
             "tipo_cambio",
             "subtotal",
+            "iva_1",
+            "iva_2",
+            "iva_4",
+            "iva_8",
+            "iva_13",
             "impuesto_total",
             "total_comprobante",
             "estado_hacienda",
+            "categoria",
+            "subtipo",
+            "nombre_cuenta",
+            "estado",
         ]
+
+        # Columnas ocultas: usadas internamente (agrupación Gasto) pero no visibles en ninguna hoja
+        _HIDDEN = {"subtipo", "nombre_cuenta", "estado", "categoria"}
+        display_columns = [c for c in export_columns if c not in _HIDDEN]
+
+        numeric_columns = {
+            "subtotal", "tipo_cambio",
+            "iva_1", "iva_2", "iva_4", "iva_8", "iva_13",
+            "impuesto_total", "total_comprobante",
+        }
+        text_columns = {"clave_numerica", "consecutivo", "emisor_cedula", "receptor_cedula"}
+        date_column = "fecha_emision"
+
+        pretty_headers = {
+            "clave_numerica": "Clave",
+            "tipo_documento": "Tipo documento",
+            "fecha_emision": "Fecha emisión",
+            "consecutivo": "Consecutivo",
+            "emisor_nombre": "Emisor",
+            "emisor_cedula": "Cédula emisor",
+            "receptor_nombre": "Receptor",
+            "receptor_cedula": "Cédula receptor",
+            "moneda": "Moneda",
+            "tipo_cambio": "Tipo cambio",
+            "subtotal": "Subtotal",
+            "iva_1": "IVA 1%",
+            "iva_2": "IVA 2%",
+            "iva_4": "IVA 4%",
+            "iva_8": "IVA 8%",
+            "iva_13": "IVA 13%",
+            "impuesto_total": "Impuesto total",
+            "total_comprobante": "Total comprobante",
+            "estado_hacienda": "Estado Hacienda",
+            "categoria": "Categoría",
+            "subtipo": "Subtipo",
+            "nombre_cuenta": "Cuenta",
+            "estado": "Estado App 3",
+        }
 
         try:
             if target.lower().endswith(".csv"):
                 with open(target, "w", newline="", encoding="utf-8-sig") as fh:
-                    writer = csv.DictWriter(fh, fieldnames=app2_default_export_columns)
+                    writer = csv.DictWriter(fh, fieldnames=export_columns)
                     writer.writeheader()
-                    writer.writerows([{col: row.get(col, "") for col in app2_default_export_columns} for row in rows])
+                    writer.writerows([{col: row.get(col, "") for col in export_columns} for row in rows])
             else:
                 import pandas as pd
                 from openpyxl.styles import Alignment, Font, PatternFill
 
-                df = pd.DataFrame(rows)
-                df = df[[col for col in app2_default_export_columns if col in df.columns]].copy()
-                pretty_headers = {
-                    "clave_numerica": "Clave",
-                    "tipo_documento": "Tipo documento",
-                    "fecha_emision": "Fecha emisión",
-                    "consecutivo": "Consecutivo",
-                    "emisor_nombre": "Emisor",
-                    "emisor_cedula": "Cédula emisor",
-                    "receptor_nombre": "Receptor",
-                    "receptor_cedula": "Cédula receptor",
-                    "moneda": "Moneda",
-                    "tipo_cambio": "Tipo cambio",
-                    "subtotal": "Subtotal",
-                    "impuesto_total": "Impuesto total",
-                    "total_comprobante": "Total comprobante",
-                    "estado_hacienda": "Estado Hacienda",
-                    "estado": "Estado App 3",
-                    "categoria": "Categoría",
-                    "subtipo": "Subtipo",
-                    "nombre_cuenta": "Cuenta",
-                    "proveedor": "Proveedor",
-                    "xml_path": "Ruta XML",
-                    "pdf_path": "Ruta PDF",
-                }
-
-                numeric_columns = {"tipo_cambio", "subtotal", "impuesto_total", "total_comprobante"}
-                text_columns = {
-                    "clave_numerica", "consecutivo", "emisor_cedula", "receptor_cedula", "xml_path", "pdf_path"
-                }
-                date_column = "fecha_emision"
+                df_all = pd.DataFrame(rows)
+                df = df_all[[col for col in export_columns if col in df_all.columns]].copy()
 
                 for col in text_columns:
                     if col in df.columns:
@@ -1374,6 +1873,37 @@ class App3Window(ctk.CTk):
                 if date_column in df.columns:
                     df[date_column] = pd.to_datetime(df[date_column], format="%d/%m/%Y", errors="coerce")
 
+                # ── Sheet splitting idéntico a App 2 ─────────────────────────
+                emisor_raw = df_all["emisor_cedula"].fillna("").astype(str).str.strip()
+                receptor_raw = df_all["receptor_cedula"].fillna("").astype(str).str.strip()
+                receptor_is_empty = receptor_raw.str.lower().isin({"", "null", "none", "nan"})
+
+                mask_ventas = emisor_raw.eq(client_cedula)
+                mask_egreso = ~mask_ventas & receptor_raw.eq(client_cedula)
+                mask_sin_receptor = ~mask_ventas & ~mask_egreso & receptor_is_empty
+                mask_ors = ~mask_ventas & ~mask_egreso & ~mask_sin_receptor
+
+                # Egresos: GASTOS → hoja "Gasto"; resto (COMPRAS + sin clasificar) → "Compras"
+                categoria_upper = df_all["categoria"].fillna("").astype(str).str.strip().str.upper()
+                mask_gasto = mask_egreso & categoria_upper.eq("GASTOS")
+                mask_compras = mask_egreso & ~mask_gasto
+
+                used_names: set[str] = set()
+                sheet_map: dict[str, pd.DataFrame] = {}
+                for label, mask in [
+                    ("Ventas", mask_ventas),
+                    ("Compras", mask_compras),
+                    ("Gasto", mask_gasto),
+                    ("Sin Receptor", mask_sin_receptor),
+                    ("ORS", mask_ors),
+                ]:
+                    chunk = df.loc[mask]
+                    if not chunk.empty:
+                        sheet_map[_safe_excel_sheet_name(label, used_names)] = chunk.copy()
+
+                if not sheet_map:
+                    sheet_map[_safe_excel_sheet_name("Reporte", used_names)] = df.copy()
+
                 owner_name = self._lbl_cliente.cget("text") or "REPORTE DE COMPROBANTES"
                 date_from_label = self.from_var.get().strip() or "01/01/1900"
                 date_to_label = self.to_var.get().strip() or datetime.now().strftime("%d/%m/%Y")
@@ -1382,28 +1912,37 @@ class App3Window(ctk.CTk):
                 subtitle_fill = PatternFill(fill_type="solid", fgColor="7F7F7F")
                 summary_fill = PatternFill(fill_type="solid", fgColor="EDEDED")
                 header_fill = PatternFill(fill_type="solid", fgColor="D9E1F2")
-                credit_fill = PatternFill(fill_type="solid", fgColor="FDE2E2")
-                title_font = Font(name="Calibri", size=16, bold=True, color="FFFFFF")
-                subtitle_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-                summary_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
-                header_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
-
-                # Usar una hoja principal; las columnas exportadas siguen el set básico por defecto de App 2.
-                sheet_map: dict[str, pd.DataFrame] = {}
-                used_sheet_names: set[str] = set()
-                if "categoria" in df.columns:
-                    for category, chunk in df.groupby(df["categoria"].fillna("")):
-                        name = str(category).strip().upper() or "SIN CLASIFICAR"
-                        safe_name = _safe_excel_sheet_name(name, used_sheet_names)
-                        sheet_map[safe_name] = chunk.copy()
-                if not sheet_map:
-                    fallback_name = _safe_excel_sheet_name("REPORTE", used_sheet_names)
-                    sheet_map = {fallback_name: df.copy()}
+                credit_fill = PatternFill(fill_type="solid", fgColor="DAF2D0")
+                title_font = Font(bold=True, color="FFFFFF", size=22)
+                subtitle_font = Font(bold=True, color="FFFFFF", size=14)
+                summary_font = Font(bold=False, color="111111", size=12)
+                header_font = Font(bold=True)
 
                 with pd.ExcelWriter(target, engine="openpyxl") as writer:
+                    # Eliminar hoja vacía por defecto que crea openpyxl
+                    if "Sheet" in writer.book.sheetnames:
+                        del writer.book["Sheet"]
+
                     for sheet_name, sheet_df in sheet_map.items():
-                        display_df = sheet_df.rename(
-                            columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in sheet_df.columns}
+                        # ── Hoja Gasto: layout agrupado especial ──────────────
+                        if sheet_name == "Gasto":
+                            ws = writer.book.create_sheet(title=sheet_name)
+                            writer.sheets[sheet_name] = ws
+                            _write_gasto_grouped(
+                                ws, sheet_df, display_columns,
+                                numeric_columns, text_columns, date_column,
+                                pretty_headers, owner_name, sheet_name,
+                                date_from_label, date_to_label,
+                                title_fill, subtitle_fill, summary_fill,
+                                header_fill, credit_fill,
+                                title_font, subtitle_font, summary_font, header_font,
+                            )
+                            continue
+
+                        # Hojas normales: solo columnas visibles
+                        visible_cols = [c for c in display_columns if c in sheet_df.columns]
+                        display_df = sheet_df[visible_cols].rename(
+                            columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in visible_cols}
                         )
                         display_df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=4)
                         ws = writer.sheets[sheet_name]
@@ -1412,6 +1951,7 @@ class App3Window(ctk.CTk):
                         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
                         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
                         ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
+
                         title_cell = ws.cell(row=1, column=1)
                         title_cell.value = str(owner_name).upper()
                         title_cell.font = title_font
@@ -1419,33 +1959,32 @@ class App3Window(ctk.CTk):
                         title_cell.fill = title_fill
 
                         subtitle_cell = ws.cell(row=2, column=1)
-                        subtitle_cell.value = f"REPORTE DE {sheet_name} - Período: {date_from_label} al {date_to_label}"
+                        subtitle_cell.value = f"REPORTE DE {sheet_name.upper()} - Período: {date_from_label} al {date_to_label}"
                         subtitle_cell.font = subtitle_font
                         subtitle_cell.alignment = Alignment(horizontal="center", vertical="center")
                         subtitle_cell.fill = subtitle_fill
 
                         monto_total = Decimal("0")
-                        valid_amounts: list[Decimal] = []
                         if "total_comprobante" in sheet_df.columns:
+                            valid_amounts = []
                             for value in sheet_df["total_comprobante"].dropna().tolist():
                                 try:
                                     valid_amounts.append(Decimal(str(value)))
                                 except Exception:
                                     continue
-                        if valid_amounts:
-                            monto_total = sum(valid_amounts, Decimal("0"))
+                            if valid_amounts:
+                                monto_total = sum(valid_amounts, Decimal("0"))
 
                         monedas = (
                             sorted({str(m).strip() for m in sheet_df["moneda"].dropna().tolist() if str(m).strip()})
                             if "moneda" in sheet_df.columns
                             else []
                         )
-                        if not monedas:
-                            moneda_value = "N/A"
-                        elif len(monedas) == 1:
-                            moneda_value = monedas[0]
-                        else:
-                            moneda_value = "MIXTA: " + ", ".join(monedas)
+                        moneda_value = (
+                            "N/A" if not monedas
+                            else monedas[0] if len(monedas) == 1
+                            else "MIXTA: " + ", ".join(monedas)
+                        )
                         generated = datetime.now().strftime("%d/%m/%Y %H:%M")
 
                         summary_cell = ws.cell(row=3, column=1)
@@ -1464,9 +2003,12 @@ class App3Window(ctk.CTk):
                             cell.fill = header_fill
                             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                        tipo_idx = list(sheet_df.columns).index("tipo_documento") + 1 if "tipo_documento" in sheet_df.columns else None
+                        tipo_idx = (
+                            visible_cols.index("tipo_documento") + 1
+                            if "tipo_documento" in visible_cols else None
+                        )
 
-                        for col_idx, col_name in enumerate(sheet_df.columns, start=1):
+                        for col_idx, col_name in enumerate(visible_cols, start=1):
                             for row_idx in range(header_row + 1, len(sheet_df) + header_row + 1):
                                 cell = ws.cell(row=row_idx, column=col_idx)
                                 if col_name in text_columns:
@@ -1476,6 +2018,8 @@ class App3Window(ctk.CTk):
                                     cell.number_format = "dd/mm/yyyy"
                                 elif col_name in numeric_columns and cell.value is not None:
                                     cell.number_format = "#,##0.00"
+                                    if isinstance(cell.value, Decimal):
+                                        cell.value = float(cell.value)
 
                         if tipo_idx is not None:
                             for row_idx in range(header_row + 1, len(sheet_df) + header_row + 1):
@@ -1493,6 +2037,7 @@ class App3Window(ctk.CTk):
                             ws.column_dimensions[ws.cell(row=header_row, column=col_idx).column_letter].width = min(max(max_len + 3, 12), 65)
 
                         ws.freeze_panes = ws["A6"]
+
             messagebox.showinfo("Exportar", f"Reporte guardado en:\n{target}")
             self._set_status("Reporte exportado")
         except Exception as exc:
@@ -1552,9 +2097,15 @@ class App3Window(ctk.CTk):
             updated = self.db.get_record(self.selected.clave)
             if updated:
                 self._db_records[self.selected.clave] = updated
+        saved_clave = self.selected.clave if self.selected else None
         self._btn_classify.configure(state="normal", text="✔  Clasificar")
         self._refresh_tree()
         self._update_progress()
+        # Restaurar posición y selección en el árbol
+        if saved_clave and self.tree.exists(saved_clave):
+            self.tree.selection_set(saved_clave)
+            self.tree.focus(saved_clave)
+            self.tree.see(saved_clave)
         self._on_select()
 
     @staticmethod
@@ -1568,6 +2119,16 @@ class App3Window(ctk.CTk):
             except ValueError:
                 continue
         return None
+
+    def _apply_filters(self) -> list[FacturaRecord]:
+        """Aplica filtro de pestaña activa + filtro de fecha sobre all_records."""
+        tab_filtered = filter_records_by_tab(
+            self.all_records,
+            self._active_tab,
+            self._get_client_cedula(),
+            self._db_records,
+        )
+        return self._apply_date_filter(tab_filtered)
 
     def _apply_date_filter(self, records: list[FacturaRecord]) -> list[FacturaRecord]:
         from_dt = self._parse_ui_date(self.from_var.get())

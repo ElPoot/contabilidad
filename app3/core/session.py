@@ -4,14 +4,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from app3.bootstrap import bootstrap_legacy_paths
 from app3.config import client_root
+from app3.core.client_profiles import load_profiles
+from app3.core.settings import get_setting
 from .xml_manager import CRXMLManager
-
-bootstrap_legacy_paths()
-
-from facturacion_system.core.client_profiles import load_profiles  # noqa: E402
-from facturacion_system.core.settings import get_setting  # noqa: E402
 
 
 @dataclass(slots=True)

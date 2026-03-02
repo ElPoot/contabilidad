@@ -6,14 +6,10 @@ from pathlib import Path
 
 import customtkinter as ctk
 
-from app3.bootstrap import bootstrap_legacy_paths
 from app3.config import client_root, metadata_dir
+from app3.core.client_profiles import load_profiles
 from app3.core.session import ClientSession, resolve_client_session
-
-bootstrap_legacy_paths()
-
-from facturacion_system.core.client_profiles import load_profiles  # noqa: E402
-from facturacion_system.core.settings import get_setting  # noqa: E402
+from app3.core.settings import get_setting
 
 # ── PALETA ────────────────────────────────────────────────────────────────────
 BG       = "#0d0f14"
@@ -197,38 +193,22 @@ class ClientCard(ctk.CTkFrame):
 
 
 # ── VISTA DE SESIÓN ────────────────────────────────────────────────────────────
-class SessionView(ctk.CTkToplevel):
+class SessionView(ctk.CTkFrame):
     """
-    Pantalla completa de inicio de sesión.
+    Panel de inicio de sesión embebido.
     Llama a on_session_resolved(session: ClientSession) cuando el usuario confirma.
+    Opcionalmente, llama a on_cancel() si el usuario cancela (para cambiar cliente).
     """
 
-    def __init__(self, parent, on_session_resolved, **kwargs):
-        super().__init__(parent, **kwargs)
+    def __init__(self, parent, on_session_resolved, on_cancel=None, **kwargs):
+        super().__init__(parent, fg_color=BG, **kwargs)
         self._on_resolved = on_session_resolved
+        self._on_cancel = on_cancel
         self._debounce_id = None
         self._resolve_thread = None
 
-        self.title("Clasificador Contable — Iniciar sesión")
-        self.geometry("1100x640")
-        self.minsize(900, 560)
-        self.configure(fg_color=BG)
-        self.resizable(True, True)
-
-        # Centrar en pantalla
-        self.update_idletasks()
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        x = (sw - 1100) // 2
-        y = (sh - 640) // 2
-        self.geometry(f"1100x640+{x}+{y}")
-
         self._build()
         self._load_clients_async()
-
-        # Bloquear ventana padre mientras esta está abierta
-        self.grab_set()
-        self.focus_force()
 
     # ── CONSTRUCCIÓN ──────────────────────────────────────────────────────────
     def _build(self):
@@ -524,8 +504,6 @@ class SessionView(ctk.CTkToplevel):
     def _on_continuar(self):
         if hasattr(self, "_pending_session") and self._pending_session:
             session = self._pending_session
-            self.grab_release()
-            self.destroy()
             self._on_resolved(session)
 
     # ── ESTADOS DEL PREVIEW ───────────────────────────────────────────────────

@@ -57,9 +57,6 @@ class PDFViewer(ctk.CTkFrame):
         self._tk_image            = None    # referencia anti-GC
         self._text_blocks: list   = []      # bloques de texto de la página actual
 
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
         self._build_toolbar()
         self._build_canvas()
 
@@ -70,14 +67,19 @@ class PDFViewer(ctk.CTkFrame):
 
     # ── TOOLBAR ───────────────────────────────────────────────────────────────
     def _build_toolbar(self):
-        bar = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=42)
-        bar.grid(row=0, column=0, sticky="ew")
-        bar.grid_propagate(False)
+        # Barra que ocupa todo el ancho, height fijo
+        bar = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=26)
+        bar.pack(side="top", fill="x", padx=0, pady=0)
+        bar.pack_propagate(False)
+
+        # Frame interno para empacar los elementos sin que se expandan
+        inner = ctk.CTkFrame(bar, fg_color=SURFACE, corner_radius=0)
+        inner.pack(side="left", fill="y", padx=0, pady=0)
 
         btn = dict(
             fg_color=CARD, hover_color=BORDER,
             text_color=TEXT, corner_radius=7,
-            width=30, height=26,
+            width=30, height=16,
             font=ctk.CTkFont(family="Segoe UI", size=13),
         )
         lbl = dict(
@@ -86,49 +88,48 @@ class PDFViewer(ctk.CTkFrame):
         )
 
         # ── Navegación
-        self._btn_prev = ctk.CTkButton(bar, text="◀", state="disabled",
+        self._btn_prev = ctk.CTkButton(inner, text="◀", state="disabled",
                                         command=self._prev_page, **btn)
-        self._btn_prev.pack(side="left", padx=(10, 2), pady=8)
+        self._btn_prev.pack(side="left", padx=(6, 2), pady=0)
 
-        self._lbl_page = ctk.CTkLabel(bar, text="—", width=78, anchor="center", **lbl)
+        self._lbl_page = ctk.CTkLabel(inner, text="—", width=78, anchor="center", **lbl)
         self._lbl_page.pack(side="left", padx=2)
 
-        self._btn_next = ctk.CTkButton(bar, text="▶", state="disabled",
+        self._btn_next = ctk.CTkButton(inner, text="▶", state="disabled",
                                         command=self._next_page, **btn)
-        self._btn_next.pack(side="left", padx=(2, 10), pady=8)
+        self._btn_next.pack(side="left", padx=(2, 6), pady=0)
 
         # Separador
-        ctk.CTkFrame(bar, fg_color=BORDER, width=1).pack(side="left", fill="y", pady=8)
+        ctk.CTkFrame(inner, fg_color=BORDER, width=1).pack(side="left", fill="y", pady=0)
 
         # ── Zoom
-        ctk.CTkButton(bar, text="−", command=self._zoom_out, **btn).pack(
-            side="left", padx=(10, 2), pady=8)
+        ctk.CTkButton(inner, text="−", command=self._zoom_out, **btn).pack(
+            side="left", padx=(6, 2), pady=0)
 
-        self._lbl_zoom = ctk.CTkLabel(bar, text="—", width=52, anchor="center", **lbl)
+        self._lbl_zoom = ctk.CTkLabel(inner, text="—", width=52, anchor="center", **lbl)
         self._lbl_zoom.pack(side="left", padx=2)
 
-        ctk.CTkButton(bar, text="+", command=self._zoom_in, **btn).pack(
-            side="left", padx=(2, 4), pady=8)
+        ctk.CTkButton(inner, text="+", command=self._zoom_in, **btn).pack(
+            side="left", padx=(2, 2), pady=0)
 
         # Fit-to-width (↺ = reset al ajuste automático)
-        self._btn_fit = ctk.CTkButton(bar, text="↺", command=self._zoom_fit_width,
+        self._btn_fit = ctk.CTkButton(inner, text="↺", command=self._zoom_fit_width,
                                        **btn)
-        self._btn_fit.pack(side="left", padx=(0, 10), pady=8)
+        self._btn_fit.pack(side="left", padx=(2, 6), pady=0)
 
         # Separador
-        ctk.CTkFrame(bar, fg_color=BORDER, width=1).pack(side="left", fill="y", pady=8)
+        ctk.CTkFrame(inner, fg_color=BORDER, width=1).pack(side="left", fill="y", pady=0, padx=2)
 
         # Hint Ctrl+scroll
-        ctk.CTkLabel(bar, text="Ctrl+scroll = zoom",
-                      font=ctk.CTkFont(family="Segoe UI", size=10),
-                      text_color="#3a4055").pack(side="left", padx=10)
+        ctk.CTkLabel(inner, text="Ctrl+scroll = zoom",
+                      font=ctk.CTkFont(family="Segoe UI", size=9),
+                      text_color="#3a4055").pack(side="left", padx=4, pady=0)
 
     # ── CANVAS ────────────────────────────────────────────────────────────────
     def _build_canvas(self):
+        # Contenedor que se expande para llenar espacio disponible
         container = tk.Frame(self, bg=CANVAS_BG, bd=0, highlightthickness=0)
-        container.grid(row=1, column=0, sticky="nsew")
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
+        container.pack(side="top", fill="both", expand=True, padx=0, pady=0)
 
         self._canvas = tk.Canvas(
             container,
@@ -137,17 +138,17 @@ class PDFViewer(ctk.CTkFrame):
             bd=0,
             cursor="crosshair",
         )
-        self._canvas.grid(row=0, column=0, sticky="nsew")
+        self._canvas.pack(side="left", fill="both", expand=True)
 
         vsb = ttk.Scrollbar(container, orient="vertical",
                              command=self._canvas.yview,
                              style="PDF.Vertical.TScrollbar")
-        vsb.grid(row=0, column=1, sticky="ns")
+        vsb.pack(side="right", fill="y")
 
         hsb = ttk.Scrollbar(container, orient="horizontal",
                              command=self._canvas.xview,
                              style="PDF.Horizontal.TScrollbar")
-        hsb.grid(row=1, column=0, sticky="ew")
+        hsb.pack(side="bottom", fill="x")
 
         self._canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
