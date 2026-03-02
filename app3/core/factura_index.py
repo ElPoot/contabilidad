@@ -29,6 +29,7 @@ _RE_DIGITS_50_TEXT = re.compile(r"\d{50}")
 _RE_DIGITS_10_20 = re.compile(r"\d{10,20}")
 _RE_CLAVE_RAW_BYTES = re.compile(rb"506\d{47}")
 _RE_NON_DIGIT = re.compile(r"\D")
+_RE_CLAVE_PARTITIONED = re.compile(r"506\d{47}[\s\n]+\d")  # Clave split across lines
 
 
 def _extract_clave_from_filename(filename: str) -> str | None:
@@ -1136,6 +1137,26 @@ class FacturaIndexer:
         matches_50 = list(dict.fromkeys(_RE_DIGITS_50_TEXT.findall(text_content)))
         if matches_50:
             return matches_50[0], "ok", [], matches_50[:20]
+
+        # ── Búsqueda para claves particionadas (ej: 49 dígitos + salto línea + 1 dígito) ──
+        # Estrategia: buscar líneas que comienzan con "506" (patrón de clave Costa Rica)
+        # y luego intentar combinar con líneas siguientes si el primer intento no suma 50 dígitos
+        lines = text_content.split("\n")
+        for i, line in enumerate(lines):
+            line_digits = _RE_NON_DIGIT.sub("", line)
+            if line_digits.startswith("506") and len(line_digits) >= 49:
+                # Potencial clave incompleta
+                if len(line_digits) == 50:
+                    # Ya está completa (caso estándar)
+                    return line_digits, "ok", [], [line_digits]
+                elif len(line_digits) == 49 and i + 1 < len(lines):
+                    # Buscar el dígito final en la siguiente línea
+                    next_line = lines[i + 1].strip()
+                    next_digits = _RE_NON_DIGIT.sub("", next_line)
+                    if next_digits and next_digits[0].isdigit():
+                        clave_complete = line_digits + next_digits[0]
+                        if len(clave_complete) == 50:
+                            return clave_complete, "ok_partitioned", [], [clave_complete]
 
         tokens = _RE_DIGITS_10_20.findall(text_content)[:20]
         return None, "extract_failed", tokens, []
