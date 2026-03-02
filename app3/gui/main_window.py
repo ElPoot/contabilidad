@@ -1355,6 +1355,16 @@ class App3Window(ctk.CTk):
         )
         self._btn_delete.grid_remove()  # Ocultar por defecto, mostrar solo con omitidos
 
+        # row 7 -- Botón Crear PDF (para XMLs sin PDF)
+        self._btn_create_pdf = ctk.CTkButton(
+            clf, text="📄  Crear PDF",
+            font=F_BTN(), fg_color="#3b82f6", hover_color="#2563eb",
+            text_color="#0d1a18", corner_radius=10, height=40,
+            state="disabled",
+            command=self._create_pdf_for_selected,
+        )
+        self._btn_create_pdf.grid_remove()  # Ocultar por defecto
+
         # row 8 -- Botón Auto-clasificar (para Ingresos y Sin Receptor)
         self._btn_auto_classify = ctk.CTkButton(
             clf, text="⚡  Clasificar todos",
@@ -1388,6 +1398,22 @@ class App3Window(ctk.CTk):
                       font=F_SMALL(), text_color="#555e6e",
                       justify="left", wraplength=200, anchor="w").grid(
             row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
+
+        # Label ruta destino (tk.Label nativo para cursor hand2 y color exacto)
+        import tkinter as tk
+        self._prev_path_lbl = tk.Label(
+            self._prev_frame,
+            text="",
+            font=("Segoe UI", 10),
+            fg=TEAL,
+            bg=CARD,
+            cursor="hand2",
+            anchor="w",
+            justify="left",
+            wraplength=195,
+        )
+        self._prev_path_lbl.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
+        self._prev_path_lbl.bind("<Button-1>", self._open_dest_folder)
 
     # ── PESTAÑAS DE FACTURAS DEL PERÍODO ────────────────────────────────────────
     def _on_tab_clicked(self, tab: str):
@@ -1627,8 +1653,14 @@ class App3Window(ctk.CTk):
         if pdf_to_load:
             self.pdf_viewer.load(pdf_to_load)
         else:
-            # Si es un registro omitido pero sin PDF encontrado, mostrar razón
-            if r.razon_omisión:
+            # Si es un registro sin PDF, mostrar mensaje específico
+            if r.estado == "pendiente_pdf":
+                self.pdf_viewer.show_message(
+                    "📄 XML sin PDF\n\nPresiona «Crear PDF» para generar\n"
+                    "una factura a partir de los datos del XML."
+                )
+            elif r.razon_omisión:
+                # Registro omitido - mostrar razón
                 razon_text = {
                     "non_invoice": "Detectado como no-factura (borrador, catálogo, comunicado, etc.)",
                     "timeout": "Timeout durante extracción de clave",
@@ -1667,15 +1699,24 @@ class App3Window(ctk.CTk):
             self._btn_recover.grid_remove()
             self._btn_link.grid_remove()
             self._btn_delete.grid_remove()
-            # Mostrar botón auto-clasificar solo en Ingresos o Sin Receptor
-            if self._active_tab in ("ingreso", "sin_receptor"):
-                self._btn_auto_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
-                self._btn_auto_classify.configure(state="normal")
-                self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
-            else:
+            if r.estado == "pendiente_pdf":
+                # XML sin PDF: ofrecer crear PDF
+                self._btn_create_pdf.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
+                self._btn_create_pdf.configure(state="normal")
                 self._btn_auto_classify.grid_remove()
-                self._btn_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
-            self._btn_classify.configure(state="normal", text="✔  Clasificar")
+                self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
+                self._btn_classify.configure(state="normal", text="✔  Clasificar sin PDF")
+            else:
+                self._btn_create_pdf.grid_remove()
+                # Mostrar botón auto-clasificar solo en Ingresos o Sin Receptor
+                if self._active_tab in ("ingreso", "sin_receptor"):
+                    self._btn_auto_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
+                    self._btn_auto_classify.configure(state="normal")
+                    self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
+                else:
+                    self._btn_auto_classify.grid_remove()
+                    self._btn_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
+                self._btn_classify.configure(state="normal", text="✔  Clasificar")
 
         # Clasificación previa
         if self.db:
@@ -1690,8 +1731,18 @@ class App3Window(ctk.CTk):
                     ] if p
                 )
                 self._prev_var.set(f"{crumbs}\n{prev.get('fecha_clasificacion', '')}")
+
+                # Ruta destino
+                ruta_dest = prev.get("ruta_destino", "")
+                if ruta_dest:
+                    parts = Path(ruta_dest).parts
+                    snippet = ("📁 .../" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else f"📁 {ruta_dest}/"
+                    self._prev_path_lbl.config(text=snippet)
+                else:
+                    self._prev_path_lbl.config(text="")
             else:
                 self._prev_var.set("--")
+                self._prev_path_lbl.config(text="")
 
     def _on_multi_select(self, records: list[FacturaRecord]):
         """Maneja selección de múltiples facturas (modo lote)."""
@@ -2630,6 +2681,41 @@ class App3Window(ctk.CTk):
             text_color="#0d1a18", command=on_select, width=100, corner_radius=8,
         ).pack(side="right")
 
+    def _create_pdf_for_selected(self):
+        """Crea un PDF desde los datos del XML para facturas sin PDF."""
+        r = self.selected
+        if not r or r.estado != "pendiente_pdf" or not r.xml_path:
+            return
+
+        # Ruta destino: .../CLIENT/PDF/{clave}.pdf
+        client_folder = r.xml_path.parent.parent
+        pdf_root = client_folder / "PDF"
+        output_path = pdf_root / f"{r.clave}.pdf"
+
+        self._btn_create_pdf.configure(state="disabled", text="Generando...")
+
+        def _do_generate():
+            from app3.core.pdf_generator import generate_factura_pdf
+            try:
+                generate_factura_pdf(r, output_path)
+                self.after(0, lambda: _on_done())
+            except Exception as exc:
+                err = str(exc)
+                self.after(0, lambda e=err: _on_error(e))
+
+        def _on_done():
+            r.pdf_path = output_path
+            r.estado = "pendiente"
+            self._refresh_tree()
+            self.pdf_viewer.load(output_path)
+            self._on_select_single(r)  # Re-trigger para actualizar botones
+
+        def _on_error(err):
+            self._btn_create_pdf.configure(state="normal", text="📄  Crear PDF")
+            messagebox.showerror("Error al generar PDF", f"No se pudo generar el PDF:\n{err}", parent=self)
+
+        threading.Thread(target=_do_generate, daemon=True).start()
+
     def _delete_omitido(self):
         """Borra uno o más PDFs omitidos del disco."""
         # Determinar qué registros borrar
@@ -3036,3 +3122,22 @@ class App3Window(ctk.CTk):
                        command=win.destroy).pack(side="left", padx=8)
         win.wait_window()
         return result[0]
+
+    def _open_dest_folder(self, event=None):
+        """Abre en el Explorador de Windows la carpeta donde está el PDF clasificado."""
+        if not self.selected or not self.db:
+            return
+        db_rec = self._db_records.get(self.selected.clave)
+        if not db_rec or not db_rec.get("ruta_destino"):
+            return
+        try:
+            ruta = Path(db_rec["ruta_destino"])
+            import subprocess
+            if ruta.exists():
+                # Seleccionar el archivo en la carpeta
+                subprocess.Popen(["explorer", f"/select,{ruta}"])
+            elif ruta.parent.exists():
+                # El archivo no existe pero la carpeta sí — abrir la carpeta
+                subprocess.Popen(["explorer", str(ruta.parent)])
+        except Exception as e:
+            logger.warning(f"No se pudo abrir carpeta destino: {e}")
