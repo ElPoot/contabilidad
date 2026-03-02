@@ -82,10 +82,12 @@ def filter_records_by_tab(
         ]
 
     if tab == "sin_clave":
-        # PDFs sin clave: no tienen clave válida (50 dígitos) o falta vinculación
+        # PDFs sin clave: no tienen clave válida (50 dígitos) o falta vinculación.
+        # Excluir ya clasificados (PDF movido → pdf_path=None en recarga, no es error).
         return [
             r for r in non_omitted
-            if not r.clave or len(r.clave) != 50 or r.estado in ("pendiente_pdf", "sin_xml") or not r.pdf_path
+            if not (db_records.get(r.clave, {}).get("estado") == "clasificado")
+            and (not r.clave or len(r.clave) != 50 or r.estado in ("pendiente_pdf", "sin_xml") or not r.pdf_path)
         ]
 
     if tab == "omitidos":

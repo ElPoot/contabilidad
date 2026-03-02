@@ -497,6 +497,196 @@ def _safe_excel_sheet_name(raw_name: str, used_names: set[str]) -> str:
     return candidate
 
 
+_GASTO_PREFIX = {
+    "GASTOS GENERALES": "GG",
+    "GASTOS ESPECÍFICOS": "GE",
+    "GASTOS ESPECIFICOS": "GE",
+}
+
+
+def _write_gasto_grouped(
+    ws, sheet_df, display_cols,
+    numeric_columns, text_columns, date_column,
+    pretty_headers, owner_name, sheet_name, date_from_label, date_to_label,
+    title_fill, subtitle_fill, summary_fill, header_fill, credit_fill,
+    title_font, subtitle_font, summary_font, header_font,
+):
+    """Hoja Gasto — agrupación por (subtipo, nombre_cuenta).
+
+    Layout por grupo:
+        [filas de datos — sin color]
+        [fila subtotal: sumas numéricas + label "GG/GE / NOMBRE" en última col]  ← fill azul
+        [fila vacía]
+
+    display_cols: columnas a mostrar.  subtipo/nombre_cuenta se leen del DataFrame
+    para agrupar aunque no aparezcan en display_cols.
+    """
+    import pandas as pd
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    n_cols = len(display_cols)
+
+    # ── Filas 1-3: título / subtítulo / resumen ───────────────────────────────
+    for row in (1, 2, 3):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_cols)
+
+    ws.cell(row=1, column=1).value = str(owner_name).upper()
+    ws.cell(row=1, column=1).font = title_font
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(row=1, column=1).fill = title_fill
+
+    ws.cell(row=2, column=1).value = (
+        f"REPORTE DE {sheet_name.upper()} - Período: {date_from_label} al {date_to_label}"
+    )
+    ws.cell(row=2, column=1).font = subtitle_font
+    ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(row=2, column=1).fill = subtitle_fill
+
+    monto_total = Decimal("0")
+    if "total_comprobante" in sheet_df.columns:
+        for v in sheet_df["total_comprobante"].dropna():
+            try:
+                monto_total += Decimal(str(v))
+            except Exception:
+                pass
+
+    monedas = (
+        sorted({str(m).strip() for m in sheet_df["moneda"].dropna() if str(m).strip()})
+        if "moneda" in sheet_df.columns else []
+    )
+    moneda_value = (
+        "N/A" if not monedas
+        else monedas[0] if len(monedas) == 1
+        else "MIXTA: " + ", ".join(monedas)
+    )
+
+    ws.cell(row=3, column=1).value = (
+        f"Total filas: {len(sheet_df)}   |   Monto Total: {_format_amount_es(monto_total)}   |   "
+        f"Moneda: {moneda_value}   |   Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    )
+    ws.cell(row=3, column=1).font = summary_font
+    ws.cell(row=3, column=1).alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(row=3, column=1).fill = summary_fill
+
+    # ── Fila 5: encabezados de columna ────────────────────────────────────────
+    for col_idx, col_name in enumerate(display_cols, start=1):
+        cell = ws.cell(row=5, column=col_idx)
+        cell.value = pretty_headers.get(col_name, col_name.replace("_", " ").title())
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    tipo_col_idx   = (display_cols.index("tipo_documento") + 1) if "tipo_documento" in display_cols else None
+    numeric_display = [c for c in display_cols if c in numeric_columns]  # subtotal … total_comprobante
+
+    subtotal_fill = PatternFill(fill_type="solid", fgColor="BDD7EE")
+    subtotal_font = Font(bold=True)
+
+    # ── Ordenar y agrupar (claves de agrupación vienen del df, no de display) ─
+    group_cols = [c for c in ("subtipo", "nombre_cuenta") if c in sheet_df.columns]
+    sort_cols  = group_cols + (["fecha_emision"] if "fecha_emision" in sheet_df.columns else [])
+    sorted_df  = sheet_df.sort_values(sort_cols) if sort_cols else sheet_df
+
+    def _safe(v):
+        try:
+            return None if pd.isna(v) else v
+        except (TypeError, ValueError):
+            return v
+
+    current_row = 6
+
+    if group_cols:
+        for group_keys, group_df in sorted_df.groupby(group_cols, sort=False):
+            if isinstance(group_keys, tuple) and len(group_keys) == 2:
+                subtipo_val = str(group_keys[0]).strip().upper()
+                cuenta_val  = str(group_keys[1]).strip()
+            else:
+                subtipo_val = ""
+                cuenta_val  = str(group_keys).strip()
+
+            group_sums: dict[str, Decimal] = {c: Decimal("0") for c in numeric_display}
+
+            # Filas de datos (sin color)
+            for _, row_data in group_df.iterrows():
+                for col_idx, col_name in enumerate(display_cols, start=1):
+                    val  = _safe(row_data[col_name])
+                    cell = ws.cell(row=current_row, column=col_idx)
+                    cell.value = val
+                    if col_name in text_columns:
+                        cell.number_format = "@"
+                        cell.value = "" if cell.value is None else str(cell.value)
+                    elif col_name == date_column and cell.value is not None:
+                        cell.number_format = "dd/mm/yyyy"
+                    elif col_name in numeric_columns and cell.value is not None:
+                        cell.number_format = "#,##0.00"
+                        if isinstance(cell.value, Decimal):
+                            cell.value = float(cell.value)
+
+                if tipo_col_idx and ws.cell(row=current_row, column=tipo_col_idx).value == "Nota de Crédito":
+                    for c in range(1, n_cols + 1):
+                        ws.cell(row=current_row, column=c).fill = credit_fill
+
+                for col_name in numeric_display:
+                    tv = _safe(row_data[col_name]) if col_name in row_data.index else None
+                    try:
+                        if tv is not None:
+                            group_sums[col_name] += Decimal(str(tv))
+                    except Exception:
+                        pass
+
+                current_row += 1
+
+            # ── Fila de subtotal: sumas + label en la ÚLTIMA columna ──────────
+            for col_idx in range(1, n_cols + 1):
+                ws.cell(row=current_row, column=col_idx).fill = subtotal_fill
+
+            for col_name in numeric_display:
+                ci = display_cols.index(col_name) + 1
+                tc = ws.cell(row=current_row, column=ci)
+                tc.value         = float(group_sums[col_name])
+                tc.number_format = "#,##0.00"
+                tc.font          = subtotal_font
+
+            prefix      = _GASTO_PREFIX.get(subtipo_val, "")
+            cuenta_label = cuenta_val.upper() if cuenta_val else subtipo_val
+            label        = f"{prefix} / {cuenta_label}" if prefix else cuenta_label
+            lbl = ws.cell(row=current_row, column=n_cols)
+            lbl.value     = label
+            lbl.font      = subtotal_font
+            lbl.alignment = Alignment(horizontal="right", vertical="center")
+
+            current_row += 2  # subtotal + fila vacía
+
+    else:
+        # Sin agrupación: filas directas
+        for _, row_data in sorted_df.iterrows():
+            for col_idx, col_name in enumerate(display_cols, start=1):
+                val  = _safe(row_data[col_name])
+                cell = ws.cell(row=current_row, column=col_idx)
+                cell.value = val
+                if col_name in text_columns:
+                    cell.number_format = "@"
+                    cell.value = "" if cell.value is None else str(cell.value)
+                elif col_name == date_column and cell.value is not None:
+                    cell.number_format = "dd/mm/yyyy"
+                elif col_name in numeric_columns and cell.value is not None:
+                    cell.number_format = "#,##0.00"
+            current_row += 1
+
+    # ── Ancho de columnas ─────────────────────────────────────────────────────
+    for col_idx in range(1, n_cols + 1):
+        max_len = 0
+        for row_idx in range(5, current_row):
+            v = ws.cell(row=row_idx, column=col_idx).value
+            if v is not None:
+                max_len = max(max_len, len(str(v)))
+        ws.column_dimensions[
+            ws.cell(row=5, column=col_idx).column_letter
+        ].width = min(max(max_len + 3, 12), 65)
+
+    ws.freeze_panes = ws["A6"]
+
+
 class App3Window(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -636,7 +826,7 @@ class App3Window(ctk.CTk):
         self.db = db
         self.all_records = records
         self._db_records = db.get_records_map()
-        self.records = self._apply_date_filter(records)
+        self.records = self._apply_filters()
         self.selected = None
 
         # Actualizar header
@@ -1092,12 +1282,7 @@ class App3Window(ctk.CTk):
 
         # Filtrar registros según pestaña activa
         if self.session:
-            self.records = filter_records_by_tab(
-                self.all_records,
-                tab,
-                self._get_client_cedula(),
-                self._db_records,
-            )
+            self.records = self._apply_filters()
             self._refresh_tree()
             self._update_progress()
 
@@ -1119,7 +1304,7 @@ class App3Window(ctk.CTk):
             return ""
 
         try:
-            from facturacion_system.core.client_profiles import load_profiles
+            from app3.core.client_profiles import load_profiles
             profiles = load_profiles()
 
             # Paso 1: Buscar perfil del cliente por nombre
@@ -1475,7 +1660,7 @@ class App3Window(ctk.CTk):
     def _on_filter(self):
         if not self.all_records:
             return
-        self.records = self._apply_date_filter(self.all_records)
+        self.records = self._apply_filters()
         self.selected = None
         self.pdf_viewer.clear()
         self._refresh_tree()
@@ -1530,16 +1715,33 @@ class App3Window(ctk.CTk):
         if not target:
             return
 
-        rows: list[dict[str, str]] = []
-        for r in self.records:
+        # Eliminar archivo existente antes de escribir (evita error en Windows si está cerrado)
+        target_path = Path(target)
+        if target_path.exists():
+            try:
+                target_path.unlink()
+            except PermissionError:
+                self._show_error(
+                    "Error al exportar",
+                    f"El archivo está abierto en otro programa.\nCiérralo e intenta de nuevo:\n{target}",
+                )
+                return
+
+        client_cedula = self._get_client_cedula()
+
+        # Exportar todos los registros del período (sin filtro de pestaña, sin omitidos)
+        period_records = [r for r in self._apply_date_filter(self.all_records) if not r.razon_omisión]
+
+        rows: list[dict] = []
+        for r in period_records:
             meta = self._db_records.get(r.clave, {}) if self.db else {}
             estado = meta.get("estado") or r.estado
             rows.append(
                 {
                     "clave_numerica": r.clave,
-                    "estado": estado,
-                    "fecha_emision": r.fecha_emision,
                     "tipo_documento": r.tipo_documento,
+                    "fecha_emision": r.fecha_emision,
+                    "consecutivo": r.consecutivo,
                     "emisor_nombre": r.emisor_nombre,
                     "emisor_cedula": r.emisor_cedula,
                     "receptor_nombre": r.receptor_nombre,
@@ -1547,76 +1749,96 @@ class App3Window(ctk.CTk):
                     "moneda": r.moneda,
                     "tipo_cambio": r.tipo_cambio,
                     "subtotal": r.subtotal,
+                    "iva_1": r.iva_1,
+                    "iva_2": r.iva_2,
+                    "iva_4": r.iva_4,
+                    "iva_8": r.iva_8,
+                    "iva_13": r.iva_13,
                     "impuesto_total": r.impuesto_total,
                     "total_comprobante": r.total_comprobante,
                     "estado_hacienda": r.estado_hacienda,
                     "categoria": str(meta.get("categoria") or ""),
                     "subtipo": str(meta.get("subtipo") or ""),
                     "nombre_cuenta": str(meta.get("nombre_cuenta") or ""),
-                    "proveedor": str(meta.get("proveedor") or r.emisor_nombre or ""),
-                    "consecutivo": r.consecutivo,
-                    "xml_path": str(r.xml_path or ""),
-                    "pdf_path": str(r.pdf_path or ""),
+                    "estado": estado,
                 }
             )
 
-
-        # Mantener el reporte alineado a las columnas básicas por defecto de App 2.
-        app2_default_export_columns = [
+        export_columns = [
             "tipo_documento",
             "fecha_emision",
             "consecutivo",
             "emisor_nombre",
             "emisor_cedula",
+            "receptor_nombre",
+            "receptor_cedula",
             "moneda",
             "tipo_cambio",
             "subtotal",
+            "iva_1",
+            "iva_2",
+            "iva_4",
+            "iva_8",
+            "iva_13",
             "impuesto_total",
             "total_comprobante",
             "estado_hacienda",
+            "categoria",
+            "subtipo",
+            "nombre_cuenta",
+            "estado",
         ]
+
+        # Columnas ocultas: usadas internamente (agrupación Gasto) pero no visibles en ninguna hoja
+        _HIDDEN = {"subtipo", "nombre_cuenta", "estado", "categoria"}
+        display_columns = [c for c in export_columns if c not in _HIDDEN]
+
+        numeric_columns = {
+            "subtotal", "tipo_cambio",
+            "iva_1", "iva_2", "iva_4", "iva_8", "iva_13",
+            "impuesto_total", "total_comprobante",
+        }
+        text_columns = {"clave_numerica", "consecutivo", "emisor_cedula", "receptor_cedula"}
+        date_column = "fecha_emision"
+
+        pretty_headers = {
+            "clave_numerica": "Clave",
+            "tipo_documento": "Tipo documento",
+            "fecha_emision": "Fecha emisión",
+            "consecutivo": "Consecutivo",
+            "emisor_nombre": "Emisor",
+            "emisor_cedula": "Cédula emisor",
+            "receptor_nombre": "Receptor",
+            "receptor_cedula": "Cédula receptor",
+            "moneda": "Moneda",
+            "tipo_cambio": "Tipo cambio",
+            "subtotal": "Subtotal",
+            "iva_1": "IVA 1%",
+            "iva_2": "IVA 2%",
+            "iva_4": "IVA 4%",
+            "iva_8": "IVA 8%",
+            "iva_13": "IVA 13%",
+            "impuesto_total": "Impuesto total",
+            "total_comprobante": "Total comprobante",
+            "estado_hacienda": "Estado Hacienda",
+            "categoria": "Categoría",
+            "subtipo": "Subtipo",
+            "nombre_cuenta": "Cuenta",
+            "estado": "Estado App 3",
+        }
 
         try:
             if target.lower().endswith(".csv"):
                 with open(target, "w", newline="", encoding="utf-8-sig") as fh:
-                    writer = csv.DictWriter(fh, fieldnames=app2_default_export_columns)
+                    writer = csv.DictWriter(fh, fieldnames=export_columns)
                     writer.writeheader()
-                    writer.writerows([{col: row.get(col, "") for col in app2_default_export_columns} for row in rows])
+                    writer.writerows([{col: row.get(col, "") for col in export_columns} for row in rows])
             else:
                 import pandas as pd
                 from openpyxl.styles import Alignment, Font, PatternFill
 
-                df = pd.DataFrame(rows)
-                df = df[[col for col in app2_default_export_columns if col in df.columns]].copy()
-                pretty_headers = {
-                    "clave_numerica": "Clave",
-                    "tipo_documento": "Tipo documento",
-                    "fecha_emision": "Fecha emisión",
-                    "consecutivo": "Consecutivo",
-                    "emisor_nombre": "Emisor",
-                    "emisor_cedula": "Cédula emisor",
-                    "receptor_nombre": "Receptor",
-                    "receptor_cedula": "Cédula receptor",
-                    "moneda": "Moneda",
-                    "tipo_cambio": "Tipo cambio",
-                    "subtotal": "Subtotal",
-                    "impuesto_total": "Impuesto total",
-                    "total_comprobante": "Total comprobante",
-                    "estado_hacienda": "Estado Hacienda",
-                    "estado": "Estado App 3",
-                    "categoria": "Categoría",
-                    "subtipo": "Subtipo",
-                    "nombre_cuenta": "Cuenta",
-                    "proveedor": "Proveedor",
-                    "xml_path": "Ruta XML",
-                    "pdf_path": "Ruta PDF",
-                }
-
-                numeric_columns = {"tipo_cambio", "subtotal", "impuesto_total", "total_comprobante"}
-                text_columns = {
-                    "clave_numerica", "consecutivo", "emisor_cedula", "receptor_cedula", "xml_path", "pdf_path"
-                }
-                date_column = "fecha_emision"
+                df_all = pd.DataFrame(rows)
+                df = df_all[[col for col in export_columns if col in df_all.columns]].copy()
 
                 for col in text_columns:
                     if col in df.columns:
@@ -1632,6 +1854,37 @@ class App3Window(ctk.CTk):
                 if date_column in df.columns:
                     df[date_column] = pd.to_datetime(df[date_column], format="%d/%m/%Y", errors="coerce")
 
+                # ── Sheet splitting idéntico a App 2 ─────────────────────────
+                emisor_raw = df_all["emisor_cedula"].fillna("").astype(str).str.strip()
+                receptor_raw = df_all["receptor_cedula"].fillna("").astype(str).str.strip()
+                receptor_is_empty = receptor_raw.str.lower().isin({"", "null", "none", "nan"})
+
+                mask_ventas = emisor_raw.eq(client_cedula)
+                mask_egreso = ~mask_ventas & receptor_raw.eq(client_cedula)
+                mask_sin_receptor = ~mask_ventas & ~mask_egreso & receptor_is_empty
+                mask_ors = ~mask_ventas & ~mask_egreso & ~mask_sin_receptor
+
+                # Egresos: GASTOS → hoja "Gasto"; resto (COMPRAS + sin clasificar) → "Compras"
+                categoria_upper = df_all["categoria"].fillna("").astype(str).str.strip().str.upper()
+                mask_gasto = mask_egreso & categoria_upper.eq("GASTOS")
+                mask_compras = mask_egreso & ~mask_gasto
+
+                used_names: set[str] = set()
+                sheet_map: dict[str, pd.DataFrame] = {}
+                for label, mask in [
+                    ("Ventas", mask_ventas),
+                    ("Compras", mask_compras),
+                    ("Gasto", mask_gasto),
+                    ("Sin Receptor", mask_sin_receptor),
+                    ("ORS", mask_ors),
+                ]:
+                    chunk = df.loc[mask]
+                    if not chunk.empty:
+                        sheet_map[_safe_excel_sheet_name(label, used_names)] = chunk.copy()
+
+                if not sheet_map:
+                    sheet_map[_safe_excel_sheet_name("Reporte", used_names)] = df.copy()
+
                 owner_name = self._lbl_cliente.cget("text") or "REPORTE DE COMPROBANTES"
                 date_from_label = self.from_var.get().strip() or "01/01/1900"
                 date_to_label = self.to_var.get().strip() or datetime.now().strftime("%d/%m/%Y")
@@ -1640,28 +1893,37 @@ class App3Window(ctk.CTk):
                 subtitle_fill = PatternFill(fill_type="solid", fgColor="7F7F7F")
                 summary_fill = PatternFill(fill_type="solid", fgColor="EDEDED")
                 header_fill = PatternFill(fill_type="solid", fgColor="D9E1F2")
-                credit_fill = PatternFill(fill_type="solid", fgColor="FDE2E2")
-                title_font = Font(name="Calibri", size=16, bold=True, color="FFFFFF")
-                subtitle_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-                summary_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
-                header_font = Font(name="Calibri", size=10, bold=True, color="1F2937")
-
-                # Usar una hoja principal; las columnas exportadas siguen el set básico por defecto de App 2.
-                sheet_map: dict[str, pd.DataFrame] = {}
-                used_sheet_names: set[str] = set()
-                if "categoria" in df.columns:
-                    for category, chunk in df.groupby(df["categoria"].fillna("")):
-                        name = str(category).strip().upper() or "SIN CLASIFICAR"
-                        safe_name = _safe_excel_sheet_name(name, used_sheet_names)
-                        sheet_map[safe_name] = chunk.copy()
-                if not sheet_map:
-                    fallback_name = _safe_excel_sheet_name("REPORTE", used_sheet_names)
-                    sheet_map = {fallback_name: df.copy()}
+                credit_fill = PatternFill(fill_type="solid", fgColor="DAF2D0")
+                title_font = Font(bold=True, color="FFFFFF", size=22)
+                subtitle_font = Font(bold=True, color="FFFFFF", size=14)
+                summary_font = Font(bold=False, color="111111", size=12)
+                header_font = Font(bold=True)
 
                 with pd.ExcelWriter(target, engine="openpyxl") as writer:
+                    # Eliminar hoja vacía por defecto que crea openpyxl
+                    if "Sheet" in writer.book.sheetnames:
+                        del writer.book["Sheet"]
+
                     for sheet_name, sheet_df in sheet_map.items():
-                        display_df = sheet_df.rename(
-                            columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in sheet_df.columns}
+                        # ── Hoja Gasto: layout agrupado especial ──────────────
+                        if sheet_name == "Gasto":
+                            ws = writer.book.create_sheet(title=sheet_name)
+                            writer.sheets[sheet_name] = ws
+                            _write_gasto_grouped(
+                                ws, sheet_df, display_columns,
+                                numeric_columns, text_columns, date_column,
+                                pretty_headers, owner_name, sheet_name,
+                                date_from_label, date_to_label,
+                                title_fill, subtitle_fill, summary_fill,
+                                header_fill, credit_fill,
+                                title_font, subtitle_font, summary_font, header_font,
+                            )
+                            continue
+
+                        # Hojas normales: solo columnas visibles
+                        visible_cols = [c for c in display_columns if c in sheet_df.columns]
+                        display_df = sheet_df[visible_cols].rename(
+                            columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in visible_cols}
                         )
                         display_df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=4)
                         ws = writer.sheets[sheet_name]
@@ -1670,6 +1932,7 @@ class App3Window(ctk.CTk):
                         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
                         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
                         ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
+
                         title_cell = ws.cell(row=1, column=1)
                         title_cell.value = str(owner_name).upper()
                         title_cell.font = title_font
@@ -1677,33 +1940,32 @@ class App3Window(ctk.CTk):
                         title_cell.fill = title_fill
 
                         subtitle_cell = ws.cell(row=2, column=1)
-                        subtitle_cell.value = f"REPORTE DE {sheet_name} - Período: {date_from_label} al {date_to_label}"
+                        subtitle_cell.value = f"REPORTE DE {sheet_name.upper()} - Período: {date_from_label} al {date_to_label}"
                         subtitle_cell.font = subtitle_font
                         subtitle_cell.alignment = Alignment(horizontal="center", vertical="center")
                         subtitle_cell.fill = subtitle_fill
 
                         monto_total = Decimal("0")
-                        valid_amounts: list[Decimal] = []
                         if "total_comprobante" in sheet_df.columns:
+                            valid_amounts = []
                             for value in sheet_df["total_comprobante"].dropna().tolist():
                                 try:
                                     valid_amounts.append(Decimal(str(value)))
                                 except Exception:
                                     continue
-                        if valid_amounts:
-                            monto_total = sum(valid_amounts, Decimal("0"))
+                            if valid_amounts:
+                                monto_total = sum(valid_amounts, Decimal("0"))
 
                         monedas = (
                             sorted({str(m).strip() for m in sheet_df["moneda"].dropna().tolist() if str(m).strip()})
                             if "moneda" in sheet_df.columns
                             else []
                         )
-                        if not monedas:
-                            moneda_value = "N/A"
-                        elif len(monedas) == 1:
-                            moneda_value = monedas[0]
-                        else:
-                            moneda_value = "MIXTA: " + ", ".join(monedas)
+                        moneda_value = (
+                            "N/A" if not monedas
+                            else monedas[0] if len(monedas) == 1
+                            else "MIXTA: " + ", ".join(monedas)
+                        )
                         generated = datetime.now().strftime("%d/%m/%Y %H:%M")
 
                         summary_cell = ws.cell(row=3, column=1)
@@ -1722,9 +1984,12 @@ class App3Window(ctk.CTk):
                             cell.fill = header_fill
                             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                        tipo_idx = list(sheet_df.columns).index("tipo_documento") + 1 if "tipo_documento" in sheet_df.columns else None
+                        tipo_idx = (
+                            visible_cols.index("tipo_documento") + 1
+                            if "tipo_documento" in visible_cols else None
+                        )
 
-                        for col_idx, col_name in enumerate(sheet_df.columns, start=1):
+                        for col_idx, col_name in enumerate(visible_cols, start=1):
                             for row_idx in range(header_row + 1, len(sheet_df) + header_row + 1):
                                 cell = ws.cell(row=row_idx, column=col_idx)
                                 if col_name in text_columns:
@@ -1734,6 +1999,8 @@ class App3Window(ctk.CTk):
                                     cell.number_format = "dd/mm/yyyy"
                                 elif col_name in numeric_columns and cell.value is not None:
                                     cell.number_format = "#,##0.00"
+                                    if isinstance(cell.value, Decimal):
+                                        cell.value = float(cell.value)
 
                         if tipo_idx is not None:
                             for row_idx in range(header_row + 1, len(sheet_df) + header_row + 1):
@@ -1751,6 +2018,7 @@ class App3Window(ctk.CTk):
                             ws.column_dimensions[ws.cell(row=header_row, column=col_idx).column_letter].width = min(max(max_len + 3, 12), 65)
 
                         ws.freeze_panes = ws["A6"]
+
             messagebox.showinfo("Exportar", f"Reporte guardado en:\n{target}")
             self._set_status("Reporte exportado")
         except Exception as exc:
@@ -1810,9 +2078,15 @@ class App3Window(ctk.CTk):
             updated = self.db.get_record(self.selected.clave)
             if updated:
                 self._db_records[self.selected.clave] = updated
+        saved_clave = self.selected.clave if self.selected else None
         self._btn_classify.configure(state="normal", text="✔  Clasificar")
         self._refresh_tree()
         self._update_progress()
+        # Restaurar posición y selección en el árbol
+        if saved_clave and self.tree.exists(saved_clave):
+            self.tree.selection_set(saved_clave)
+            self.tree.focus(saved_clave)
+            self.tree.see(saved_clave)
         self._on_select()
 
     @staticmethod
@@ -1826,6 +2100,16 @@ class App3Window(ctk.CTk):
             except ValueError:
                 continue
         return None
+
+    def _apply_filters(self) -> list[FacturaRecord]:
+        """Aplica filtro de pestaña activa + filtro de fecha sobre all_records."""
+        tab_filtered = filter_records_by_tab(
+            self.all_records,
+            self._active_tab,
+            self._get_client_cedula(),
+            self._db_records,
+        )
+        return self._apply_date_filter(tab_filtered)
 
     def _apply_date_filter(self, records: list[FacturaRecord]) -> list[FacturaRecord]:
         from_dt = self._parse_ui_date(self.from_var.get())

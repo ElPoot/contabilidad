@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .bootstrap import bootstrap_legacy_paths
-
-bootstrap_legacy_paths()
-
-from facturacion_system.core.settings import get_setting  # noqa: E402
+from app3.core.settings import get_setting
 
 
 def network_drive() -> Path:
