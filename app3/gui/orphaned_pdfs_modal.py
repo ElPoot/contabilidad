@@ -188,7 +188,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
                 # Actualizar UI
                 self.after(0, self._display_results)
             except Exception as e:
-                self.after(0, lambda: self._show_error("Error en escaneo", str(e)))
+                self.after(0, lambda error=e: self._show_error("Error en escaneo", str(error)))
 
         threading.Thread(target=worker, daemon=True).start()
 

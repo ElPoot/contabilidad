@@ -2470,7 +2470,7 @@ class App3Window(ctk.CTk):
                 else:
                     self.after(0, lambda: self._show_error("Error", "No se pudo recuperar el PDF"))
             except Exception as e:
-                self.after(0, lambda: self._show_error("Error", str(e)))
+                self.after(0, lambda error=e: self._show_error("Error", str(error)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2616,7 +2616,7 @@ class App3Window(ctk.CTk):
                     ))
                     self.after(0, self._load_session, self.session)
                 except Exception as e:
-                    self.after(0, lambda: self._show_error("Error en vinculación", str(e)))
+                    self.after(0, lambda error=e: self._show_error("Error en vinculación", str(error)))
 
             threading.Thread(target=worker, daemon=True).start()
 
