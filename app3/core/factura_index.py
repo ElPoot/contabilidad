@@ -1019,7 +1019,12 @@ class FacturaIndexer:
           - Positions 0:3   → "506" (country code, already matched by regex)
           - Positions 3:5   → day (01-31)
           - Positions 5:7   → month (01-12)
-          - Positions 41:42 → situación comprobante (1-4)
+          - Positions 19:21 → situación comprobante (01-04)
+
+        Clave structure (50 digits):
+          0-2: 506 (country), 3-8: DDMMYY (date), 9-16: cedula (8),
+          17-18: doc_type (2), 19-20: situacion (2), 21-27: consecutivo (7),
+          28-49: other segments (22)
         """
         for raw_match in _RE_CLAVE_RAW_BYTES.finditer(pdf_data):
             candidate = raw_match.group(0).decode("ascii")
@@ -1032,9 +1037,13 @@ class FacturaIndexer:
             if not (1 <= day <= 31 and 1 <= month <= 12):
                 continue
 
-            # Validate situación (position 41): must be 1-4
-            situacion = int(candidate[41])
-            if situacion < 1 or situacion > 4:
+            # Validate situación comprobante (positions 19:21, must be 01-04)
+            # This field indicates the state of the document (01=con contingencia, 02=sin contingencia, etc)
+            try:
+                situacion = int(candidate[19:21])
+                if situacion < 1 or situacion > 4:
+                    continue
+            except (ValueError, IndexError):
                 continue
 
             return candidate
