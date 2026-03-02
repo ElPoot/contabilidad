@@ -1162,6 +1162,7 @@ class App3Window(ctk.CTk):
         self.tree.tag_configure("pendiente_pdf", background="#1a3d4d", foreground=TEXT)     # Azul oscuro
         self.tree.tag_configure("sin_xml",       background="#2d2d2d", foreground=MUTED)    # Gris oscuro
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        self.tree.bind("<Return>", lambda _e: self._classify_selected())
 
     # ── PANEL CENTRAL — VISOR PDF ─────────────────────────────────────────────
     def _build_pdf_panel(self, parent):
@@ -2523,11 +2524,21 @@ class App3Window(ctk.CTk):
         self._btn_classify.configure(state="normal", text="✔  Clasificar")
         self._refresh_tree()
         self._update_progress()
-        # Restaurar posición y selección en el árbol
-        if saved_clave and self.tree.exists(saved_clave):
-            self.tree.selection_set(saved_clave)
-            self.tree.focus(saved_clave)
-            self.tree.see(saved_clave)
+        # Auto-avance: seleccionar el siguiente registro si existe
+        if saved_clave:
+            # Buscar IID correcto (formato: clave_idx) usando _tree_clave_map
+            saved_iid = next(
+                (iid for iid, r in self._tree_clave_map.items() if r.clave == saved_clave),
+                None
+            )
+            if saved_iid and self.tree.exists(saved_iid):
+                # Intentar obtener el siguiente registro
+                next_iid = self.tree.next(saved_iid)
+                # Si hay siguiente, seleccionarlo; si no, quedarse en el actual
+                target_iid = next_iid if next_iid else saved_iid
+                self.tree.selection_set(target_iid)
+                self.tree.focus(target_iid)
+                self.tree.see(target_iid)
         self._on_select()
 
     def _on_batch_classify_done(self, total: int, errores: list[tuple]):
