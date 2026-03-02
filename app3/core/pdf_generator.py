@@ -111,7 +111,7 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
 
     y_pos += 10
 
-    # === SECCIÓN EMISOR ===
+    # === SECCION EMISOR ===
     page.insert_text((margin_left, y_pos), "EMISOR",
                      fontsize=10, color=muted_color, fontname="helv")
     y_pos += 15
@@ -122,13 +122,13 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
         y_pos += 15
 
     if record.emisor_cedula:
-        page.insert_text((margin_left + 10, y_pos), f"Cédula: {record.emisor_cedula}",
+        page.insert_text((margin_left + 10, y_pos), f"Cedula: {record.emisor_cedula}",
                          fontsize=9, color=muted_color, fontname="helv")
         y_pos += 15
 
     y_pos += 10
 
-    # === SECCIÓN RECEPTOR ===
+    # === SECCION RECEPTOR ===
     page.insert_text((margin_left, y_pos), "RECEPTOR",
                      fontsize=10, color=muted_color, fontname="helv")
     y_pos += 15
@@ -139,13 +139,13 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
         y_pos += 15
 
     if record.receptor_cedula:
-        page.insert_text((margin_left + 10, y_pos), f"Cédula: {record.receptor_cedula}",
+        page.insert_text((margin_left + 10, y_pos), f"Cedula: {record.receptor_cedula}",
                          fontsize=9, color=muted_color, fontname="helv")
         y_pos += 15
 
     y_pos += 15
 
-    # === LÍNEA SEPARADORA ===
+    # === LINEA SEPARADORA ===
     line_y = y_pos
     page.draw_line((margin_left, line_y), (595 - margin_right, line_y),
                    color=border_color, width=0.5)
@@ -154,17 +154,20 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
     # === MONTOS ===
     def _draw_amount_row(label: str, value: str, is_bold: bool = False):
         nonlocal y_pos
-        fontname = "helv-bold" if is_bold else "helv"
+        fontname = "helv"
         fontsize = 10 if is_bold else 9
 
         # Etiqueta a la izquierda
         page.insert_text((margin_left, y_pos), label,
                          fontsize=fontsize, color=text_color, fontname=fontname)
 
-        # Valor a la derecha (alineado a derecha)
+        # Valor a la derecha (posición fija aproximada)
+        # Calculamos aproximadamente basado en número de caracteres
         formatted = _format_amount(value)
-        text_width = page.get_text_length(formatted, fontsize=fontsize, fontname=fontname)
-        page.insert_text((595 - margin_right - text_width, y_pos), formatted,
+        # Para Helvetica, aproximadamente 6px por carácter en fontsize 9-10
+        est_width = len(formatted) * (fontsize * 0.55)
+        value_x = max(margin_left + 250, 595 - margin_right - est_width)
+        page.insert_text((value_x, y_pos), formatted,
                          fontsize=fontsize, color=text_color, fontname=fontname)
 
         y_pos += 18
@@ -211,7 +214,7 @@ def generate_factura_pdf(record: FacturaRecord, output_path: Path) -> None:
     footer_text = "* PDF generado automáticamente por App 3 — No es el documento original *"
     footer_y = 800
     page.insert_text((margin_left, footer_y), footer_text,
-                     fontsize=8, color=muted_color, fontname="helv-italic")
+                     fontsize=8, color=muted_color, fontname="helv")
 
     # Crear carpeta si no existe
     output_path.parent.mkdir(parents=True, exist_ok=True)
