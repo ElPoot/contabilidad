@@ -2156,6 +2156,7 @@ class App3Window(ctk.CTk):
                 mask_gasto = mask_egreso & categoria_upper.eq("GASTOS")
                 mask_ognd = categoria_upper.eq("OGND")  # OGND: sin restricción de receptor (gastos propios de la empresa)
                 mask_compras = mask_egreso & categoria_upper.eq("COMPRAS")
+                mask_activos = mask_egreso & categoria_upper.eq("ACTIVO")  # ACTIVO: adquisición de activos fijos
                 mask_pendiente = mask_egreso & estado_export.eq("pendiente")
 
                 # Nueva máscara: Rechazados por Hacienda (todos los registros, no solo egresos)
@@ -2167,6 +2168,7 @@ class App3Window(ctk.CTk):
                 for label, mask in [
                     ("Ingresos", mask_ventas),
                     ("Compras", mask_compras),
+                    ("Activos", mask_activos),
                     ("Gastos", mask_gasto),
                     ("OGND", mask_ognd),
                     ("Pendientes", mask_pendiente),

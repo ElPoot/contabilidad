@@ -489,10 +489,12 @@ class FacturaIndexer:
                 # Crear un registro dummy para el PDF omitido
                 dummy_clave = f"OMITIDO_{pdf_filename.replace('.pdf', '').replace(' ', '_')}"
                 razon_final = razon if razon in ("non_invoice", "timeout", "extract_failed") else "non_invoice"
+                # Nombre legible: sin .pdf, reemplazar _ con espacio, truncar si es muy largo
+                pdf_display_name = pdf_filename.replace('.pdf', '').replace('_', ' ')[:60]
                 dummy_record = FacturaRecord(
                     clave=dummy_clave,
                     fecha_emision="",
-                    emisor_nombre="[PDF omitido]",
+                    emisor_nombre=pdf_display_name,
                     receptor_nombre="[PDF omitido]",
                     pdf_path=pdf_path,
                     estado="sin_xml",
@@ -690,10 +692,23 @@ class FacturaIndexer:
             if clave and clave in records:
                 # ── Detectar PDF duplicado (misma clave, dos PDFs) ──
                 if records[clave].pdf_path and records[clave].pdf_path != pdf_path:
-                    existing_name = records[clave].pdf_path.name
-                    self.parse_errors.append(
-                        f"PDF duplicado para clave {clave[:12]}...: '{existing_name}' y '{pdf_file.name}'. Se usa el primero."
+                    # Elegir el mejor PDF (preferir el más pesado si alguno < 5KB)
+                    best_path, change_msg = self._choose_best_pdf_for_duplicate(
+                        records[clave].pdf_path, pdf_path
                     )
+                    if change_msg:
+                        self.parse_errors.append(change_msg)
+                    if best_path != records[clave].pdf_path:
+                        # Cambió al nuevo PDF
+                        linked[clave] = best_path
+                        records[clave].pdf_path = best_path
+                        logger.info(f"PDF duplicado: cambio a {best_path.name} (más pesado/mejor)")
+                    else:
+                        # Se mantiene el existente
+                        logger.debug(
+                            f"PDF duplicado para clave {clave[:12]}...: "
+                            f"'{records[clave].pdf_path.name}' mantiene prioridad sobre '{pdf_file.name}'"
+                        )
                 elif records[clave].pdf_path == pdf_path:
                     # Mismo PDF, idempotente - no hace nada
                     pass
@@ -798,18 +813,30 @@ class FacturaIndexer:
                         metodo = "contenido_consecutivo"
 
                 if clave:
-                    linked[clave] = pdf_file
                     if clave in records:
                         # ── Detectar PDF duplicado (misma clave, dos PDFs) ──
                         if records[clave].pdf_path and records[clave].pdf_path != pdf_file:
-                            existing_name = records[clave].pdf_path.name
-                            self.parse_errors.append(
-                                f"PDF duplicado para clave {clave[:12]}...: '{existing_name}' y '{pdf_file.name}'. Se usa el primero."
+                            # Elegir el mejor PDF (preferir el más pesado si alguno < 5KB)
+                            best_path, change_msg = self._choose_best_pdf_for_duplicate(
+                                records[clave].pdf_path, pdf_file
                             )
+                            if change_msg:
+                                self.parse_errors.append(change_msg)
+                            records[clave].pdf_path = best_path
+                            linked[clave] = best_path
+                            if best_path == pdf_file:
+                                logger.info(f"PDF duplicado: cambio a {pdf_file.name} (más pesado/mejor)")
+                            else:
+                                logger.debug(
+                                    f"PDF duplicado para clave {clave[:12]}...: "
+                                    f"'{records[clave].pdf_path.name}' mantiene prioridad sobre '{pdf_file.name}'"
+                                )
                         elif records[clave].pdf_path != pdf_file:
                             records[clave].pdf_path = pdf_file
+                            linked[clave] = pdf_file
                     else:
                         records[clave] = FacturaRecord(clave=clave, pdf_path=pdf_file, estado="sin_xml")
+                        linked[clave] = pdf_file
                     logger.debug("PDF: %s -> FOUND EN %s (%sms)", pdf_file.name, metodo.upper(), elapsed_ms)
                     continue
 
@@ -953,6 +980,57 @@ class FacturaIndexer:
                 },
             },
         }
+
+    def _choose_best_pdf_for_duplicate(
+        self, existing_path: Path, new_path: Path
+    ) -> tuple[Path, str | None]:
+        """
+        Elige el mejor PDF cuando hay dos con la misma clave.
+
+        Estrategia:
+        1. Si alguno < 5KB: usa el más pesado (5KB limit)
+        2. Si ambos > 5KB: usa el existente (mantiene compatibilidad)
+        3. Si no se puede obtener tamaño: usa el existente
+
+        Args:
+            existing_path: Ruta del PDF ya vinculado
+            new_path: Ruta del nuevo PDF encontrado
+
+        Returns:
+            (best_path, message) donde message es None si no hay cambio, o una descripción del cambio
+        """
+        MIN_SIZE = 5 * 1024  # 5 KB en bytes
+
+        try:
+            existing_size = existing_path.stat().st_size
+        except (OSError, PermissionError):
+            existing_size = 0
+
+        try:
+            new_size = new_path.stat().st_size
+        except (OSError, PermissionError):
+            new_size = 0
+
+        # Si alguno es muy pequeño (< 5KB), preferir el más pesado
+        if existing_size < MIN_SIZE or new_size < MIN_SIZE:
+            if new_size > existing_size:
+                return (
+                    new_path,
+                    f"PDF duplicado: '{existing_path.name}' ({existing_size} B) → "
+                    f"'{new_path.name}' ({new_size} B) [más pesado]",
+                )
+            else:
+                return (
+                    existing_path,
+                    f"PDF duplicado: ignorado '{new_path.name}' ({new_size} B) ≤ "
+                    f"'{existing_path.name}' ({existing_size} B)",
+                )
+
+        # Ambos > 5KB: mantener el existente
+        return (
+            existing_path,
+            None,  # Sin cambio
+        )
 
     def _process_single_pdf(
         self,
