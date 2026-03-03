@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 def find_empty_folders(client_folder: Path) -> list[Path]:
     """
-    Encuentra carpetas COMPLETAMENTE vacías en Contabilidades/{cliente}/.
+    Encuentra carpetas COMPLETAMENTE vacías en Contabilidades/{mes}/{cliente}/.
 
     Una carpeta se considera vacía solo si:
     - No contiene archivos (ni .pdf, ni .txt, ni nada)
@@ -24,24 +24,41 @@ def find_empty_folders(client_folder: Path) -> list[Path]:
         logger.warning(f"Carpeta de cliente no existe: {client_folder}")
         return []
 
-    contabilidades_root = client_folder.parent.parent / "Contabilidades" / client_folder.name
+    client_name = client_folder.name
+    pf_root = client_folder.parent.parent
+    contabilidades_root = pf_root / "Contabilidades"
+
     if not contabilidades_root.exists():
-        logger.debug(f"No hay Contabilidades para {client_folder.name}")
+        logger.debug(f"No hay carpeta Contabilidades en {pf_root}")
         return []
 
     empty_folders: list[Path] = []
 
     try:
-        # Recorrer recursivamente todo en Contabilidades/{cliente}/
-        for folder in sorted(contabilidades_root.rglob("*"), key=lambda p: (-len(p.parts), p)):
-            if not folder.is_dir():
+        # Recorrer TODOS los meses en Contabilidades (ej: 01-ENERO, 02-FEBRERO, etc)
+        for mes_folder in contabilidades_root.iterdir():
+            if not mes_folder.is_dir():
                 continue
 
-            # Verificar si la carpeta está vacía
-            has_content = any(folder.iterdir())
-            if not has_content:
-                empty_folders.append(folder)
-                logger.debug(f"Carpeta vacía detectada: {folder.relative_to(contabilidades_root.parent)}")
+            # Carpeta del cliente dentro del mes (ej: Contabilidades/02-FEBRERO/{client_name}/)
+            cliente_in_mes = mes_folder / client_name
+            if not cliente_in_mes.exists():
+                continue
+
+            # Recorrer recursivamente carpetas de clasificación del cliente en este mes
+            for folder in sorted(cliente_in_mes.rglob("*"), key=lambda p: (-len(p.parts), p)):
+                if not folder.is_dir():
+                    continue
+
+                # Verificar si la carpeta está vacía
+                has_content = any(folder.iterdir())
+                if not has_content:
+                    empty_folders.append(folder)
+                    try:
+                        rel_path = folder.relative_to(contabilidades_root.parent)
+                        logger.debug(f"Carpeta vacía detectada: {rel_path}")
+                    except ValueError:
+                        logger.debug(f"Carpeta vacía detectada: {folder}")
     except Exception as e:
         logger.exception(f"Error escaneando carpetas en {contabilidades_root}: {e}")
         return []
