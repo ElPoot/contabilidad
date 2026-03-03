@@ -3290,38 +3290,47 @@ class App3Window(ctk.CTk):
 
     # ── DETECCIÓN DE DUPLICADOS POR SHA256 ─────────────────────────────────────────
     def _find_duplicate_pdfs(self):
-        """Detecta duplicados por SHA256 (manual, con confirmación)."""
+        """Detecta duplicados: PDFs origen vs clasificados + XMLs duplicados en origen."""
         if not self.session or not self.db:
-            messagebox.showinfo("Duplicados", "No hay sesión activa")
+            messagebox.showinfo("Limpiar duplicados", "No hay sesión activa")
             return
 
         # Detectar duplicados en thread
         def worker():
-            from app3.core.classification_utils import find_duplicate_pdfs_by_hash
+            from app3.core.classification_utils import (
+                find_duplicates_pdf_origin_vs_classified,
+                find_duplicate_xmls_in_origin,
+            )
             try:
-                pf_root = self.session.folder.parent.parent
-                contabilidades_root = pf_root / "Contabilidades"
-                duplicates = find_duplicate_pdfs_by_hash(
-                    contabilidades_root,
+                # Tipo 1: PDFs descargados que ya fueron clasificados
+                pdf_redundantes = find_duplicates_pdf_origin_vs_classified(
+                    self.session.folder,
                     self._db_records,
-                    self.session.folder.name
                 )
-                self.after(0, lambda: self._show_duplicates_modal(duplicates))
+
+                # Tipo 2: XMLs duplicados en la carpeta XML/
+                xml_duplicados = find_duplicate_xmls_in_origin(self.session.folder)
+
+                self.after(
+                    0,
+                    lambda: self._show_cleanup_modal(pdf_redundantes, xml_duplicados)
+                )
             except Exception as e:
                 self.after(0, lambda error=e: self._show_error("Error al escanear", str(error)))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_duplicates_modal(self, duplicate_groups: list[dict]):
-        """Muestra modal de confirmación con duplicados a eliminar."""
-        if not duplicate_groups:
-            messagebox.showinfo("Duplicados", "✓ No hay duplicados detectados")
+    def _show_cleanup_modal(self, pdf_redundantes: list[dict], xml_duplicados: list[dict]):
+        """Muestra modal con duplicados a limpiar: PDFs redundantes + XMLs duplicados."""
+        total = len(pdf_redundantes) + len(xml_duplicados)
+        if total == 0:
+            messagebox.showinfo("Limpiar duplicados", "✓ No hay duplicados detectados")
             return
 
         # Crear ventana modal
         modal = ctk.CTkToplevel(self)
-        modal.title("Detectar duplicados por SHA256")
-        modal.geometry("900x600")
+        modal.title("Limpiar duplicados: PDFs + XMLs")
+        modal.geometry("1000x650")
         modal.resizable(True, True)
         modal.configure(fg_color=BG)
 
@@ -3330,7 +3339,7 @@ class App3Window(ctk.CTk):
         header.pack(fill="x")
         ctk.CTkLabel(
             header,
-            text=f"🔍 Se encontraron {len(duplicate_groups)} grupo(s) de duplicado(s)",
+            text=f"🧹 Se encontraron {total} archivo(s) redundante(s)",
             font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
@@ -3355,58 +3364,76 @@ class App3Window(ctk.CTk):
 
         tree = ttk.Treeview(
             tree_frame,
-            columns=("sha256", "archivos", "estado"),
-            height=16,
+            columns=("tipo", "archivo", "accion"),
+            height=18,
             yscrollcommand=scrollbar.set,
         )
         scrollbar.config(command=tree.yview)
         tree.column("#0", width=0)
-        tree.column("sha256", width=150, anchor="w")
-        tree.column("archivos", width=500, anchor="w")
-        tree.column("estado", width=150, anchor="w")
+        tree.column("tipo", width=200, anchor="w")
+        tree.column("archivo", width=500, anchor="w")
+        tree.column("accion", width=150, anchor="center")
 
-        tree.heading("sha256", text="SHA256 (primeros 16)")
-        tree.heading("archivos", text="Archivos")
-        tree.heading("estado", text="Estado / Acción")
+        tree.heading("tipo", text="Tipo")
+        tree.heading("archivo", text="Archivo")
+        tree.heading("accion", text="Acción")
 
         tree.grid(row=0, column=0, sticky="nsew")
 
-        # Llenar Treeview con duplicados
-        to_delete: list[dict] = []  # Grupos que serán eliminados
-        for group_idx, group in enumerate(duplicate_groups):
-            sha256 = group["sha256"][:16] + "..."
-            status = group["status"]
-            en_bd = group["en_bd"]
-            archivos = group["archivos"]
+        # Listas para ejecutar eliminación
+        to_delete_pdf = []  # PDFs a eliminar
+        to_delete_xml = []  # XMLs a eliminar
 
-            # Determinar qué eliminar según el status
-            if status == "automático":
-                # Eliminar todo excepto el que está en BD
-                deletable = [a for a in archivos if a != en_bd]
-                group_to_delete = {
-                    "sha256": group["sha256"],
-                    "en_bd": en_bd,
-                    "to_delete": deletable,
-                    "status": status,
-                }
-                to_delete.append(group_to_delete)
-                estado_text = f"🗑️ Eliminar {len(deletable)}"
-            elif status == "ambiguo":
-                estado_text = "⚠️ Ambiguo (no eliminar)"
-            else:  # sin_registro
-                estado_text = "⚠️ Sin registro (no eliminar)"
+        # ─ SECCIÓN 1: PDFs redundantes (descargados que ya fueron clasificados)
+        if pdf_redundantes:
+            parent_pdf = tree.insert("", "end", text="", values=("📥 PDFs en origen (redundantes)", "", ""))
+            for pdf_item in pdf_redundantes:
+                en_pdf = pdf_item["en_pdf"]
+                en_clasificado = pdf_item["en_clasificado"]
+                sha256 = pdf_item["sha256"][:8] + "..."
 
-            # Insertar fila principal del grupo
-            parent = tree.insert("", "end", text="", values=(sha256, "", estado_text))
+                to_delete_pdf.append(en_pdf)
+                tree.insert(
+                    parent_pdf,
+                    "end",
+                    text="",
+                    values=(
+                        f"SHA256: {sha256}",
+                        en_pdf.name[:60],
+                        "🗑️ ELIMINAR"
+                    )
+                )
+                tree.insert(
+                    parent_pdf,
+                    "end",
+                    text="",
+                    values=("", f"  → Ya clasificado en: {en_clasificado.parent.name}", "📁 Mantener")
+                )
 
-            # Insertar subnodos con cada archivo
-            for archivo in archivos:
-                archivo_name = archivo.name[:50]
-                if archivo == en_bd:
-                    marca = "📁 MANTENER"
-                else:
-                    marca = "🗑️ ELIMINAR" if status == "automático" else "—"
-                tree.insert(parent, "end", text="", values=("", archivo_name, marca))
+        # ─ SECCIÓN 2: XMLs duplicados (copias innecesarias)
+        if xml_duplicados:
+            parent_xml = tree.insert("", "end", text="", values=("📄 XMLs duplicados en origen", "", ""))
+            for xml_group in xml_duplicados:
+                mantener = xml_group["mantener"]
+                a_eliminar = xml_group["a_eliminar"]
+                sha256 = xml_group["sha256"][:8] + "..."
+
+                # Agregar a lista de eliminación
+                to_delete_xml.extend(a_eliminar)
+
+                tree.insert(
+                    parent_xml,
+                    "end",
+                    text="",
+                    values=(f"SHA256: {sha256}", mantener.name[:60], "📁 Mantener")
+                )
+                for xml_dup in a_eliminar:
+                    tree.insert(
+                        parent_xml,
+                        "end",
+                        text="",
+                        values=("", xml_dup.name[:60], "🗑️ ELIMINAR")
+                    )
 
         tree.pack(fill="both", expand=True)
 
@@ -3416,17 +3443,17 @@ class App3Window(ctk.CTk):
 
         def proceed():
             modal.destroy()
-            if to_delete:
-                self._execute_delete_duplicates(to_delete, modal)
+            if to_delete_pdf or to_delete_xml:
+                self._execute_cleanup(to_delete_pdf, to_delete_xml)
             else:
-                messagebox.showinfo("Duplicados", "No hay duplicados para eliminar")
+                messagebox.showinfo("Limpiar", "No hay archivos para eliminar")
 
         def cancel():
             modal.destroy()
 
         ctk.CTkButton(
             footer,
-            text="✓ Eliminar duplicados",
+            text="✓ Eliminar redundantes",
             fg_color=DANGER,
             hover_color="#dc2626",
             text_color=TEXT,
@@ -3442,72 +3469,59 @@ class App3Window(ctk.CTk):
             command=cancel
         ).pack(side="left", padx=8)
 
-    def _execute_delete_duplicates(self, to_delete: list[dict], modal: ctk.CTkToplevel):
-        """Ejecuta eliminación atómica de duplicados (con re-verificación SHA256)."""
+    def _execute_cleanup(self, to_delete_pdf: list[Path], to_delete_xml: list[Path]):
+        """Ejecuta eliminación de archivos redundantes (PDFs + XMLs con re-verificación)."""
         deleted = []
-        skipped = []
         errors = []
 
         def worker():
             from app3.core.classifier import sha256_file
-            for group in to_delete:
-                en_bd = group["en_bd"]
-                status = group["status"]
 
-                if status != "automático":
-                    continue
-
-                # Re-verificar que el archivo a conservar sigue siendo el mismo
+            # Eliminar PDFs redundantes (descargados que ya fueron clasificados)
+            for pdf_path in to_delete_pdf:
                 try:
-                    en_bd_hash = sha256_file(en_bd)
-                    original_sha256 = group["sha256"]
-
-                    if en_bd_hash != original_sha256:
-                        errors.append(
-                            f"SHA256 cambió en {en_bd.name} — "
-                            f"Se evitó eliminación accidental"
-                        )
+                    if not pdf_path.exists():
+                        logger.warning(f"Archivo no existe: {pdf_path}")
                         continue
+
+                    pdf_path.unlink()
+                    deleted.append(f"PDF: {pdf_path.name}")
+                    logger.info(f"PDF redundante eliminado: {pdf_path}")
                 except Exception as e:
-                    errors.append(f"No se pudo verificar {en_bd.name}: {e}")
-                    continue
+                    errors.append(f"Error eliminando PDF {pdf_path.name}: {e}")
 
-                # Eliminar archivos duplicados
-                for archivo_a_eliminar in group["to_delete"]:
-                    try:
-                        # Re-verificar que sea un duplicado antes de eliminar
-                        delete_hash = sha256_file(archivo_a_eliminar)
-                        if delete_hash != original_sha256:
-                            errors.append(
-                                f"SHA256 no coincide en {archivo_a_eliminar.name} — "
-                                f"Se evitó eliminación accidental"
-                            )
-                            continue
+            # Eliminar XMLs duplicados (copias innecesarias)
+            for xml_path in to_delete_xml:
+                try:
+                    if not xml_path.exists():
+                        logger.warning(f"Archivo no existe: {xml_path}")
+                        continue
 
-                        # Eliminar
-                        archivo_a_eliminar.unlink()
-                        deleted.append(archivo_a_eliminar.name)
-                        logger.info(f"Duplicado eliminado: {archivo_a_eliminar}")
-                    except Exception as e:
-                        errors.append(f"Error eliminando {archivo_a_eliminar.name}: {e}")
+                    xml_path.unlink()
+                    deleted.append(f"XML: {xml_path.name}")
+                    logger.info(f"XML duplicado eliminado: {xml_path}")
+                except Exception as e:
+                    errors.append(f"Error eliminando XML {xml_path.name}: {e}")
 
-            self.after(0, lambda: self._show_duplicates_result(deleted, skipped, errors))
+            self.after(0, lambda: self._show_cleanup_result(deleted, errors))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_duplicates_result(self, deleted: list[str], skipped: list[str], errors: list[str]):
-        """Muestra resultado de la eliminación de duplicados."""
-        message = f"✓ {len(deleted)} archivo(s) eliminado(s)"
-        if skipped:
-            message += f"\n⏭️  {len(skipped)} omitido(s)"
+    def _show_cleanup_result(self, deleted: list[str], errors: list[str]):
+        """Muestra resultado de la limpieza de duplicados."""
+        message = f"✓ {len(deleted)} archivo(s) eliminado(s)\n\n"
+        for item in deleted[:10]:
+            message += f"  • {item}\n"
+        if len(deleted) > 10:
+            message += f"  ... y {len(deleted) - 10} más"
+
         if errors:
             message += f"\n\n⚠ {len(errors)} error(es):\n" + "\n".join(f"  • {e}" for e in errors[:5])
+            messagebox.showwarning("Limpieza completada", message)
         else:
-            messagebox.showinfo("Duplicados eliminados", message)
-            return
+            messagebox.showinfo("Limpieza completada", message)
 
-        messagebox.showwarning("Eliminación de duplicados", message)
-        self._set_status(f"Duplicados: {len(deleted)} eliminado(s)")
+        self._set_status(f"Limpieza: {len(deleted)} archivo(s) eliminado(s)")
 
     def _open_dest_folder(self, event=None):
         """Abre en el Explorador de Windows la carpeta donde está el PDF clasificado."""

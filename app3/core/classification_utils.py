@@ -406,3 +406,128 @@ def find_duplicate_pdfs_by_hash(
 
     logger.info(f"Total: {len(duplicates)} grupo(s) de duplicados detectados")
     return duplicates
+
+
+def find_duplicates_pdf_origin_vs_classified(
+    client_folder: Path,
+    db_records: dict[str, dict],
+) -> list[dict]:
+    """
+    Detecta PDFs descargados (en PDF/) que ya fueron clasificados (en Contabilidades/).
+
+    Si un PDF existe en ambos lugares con igual SHA256, el de PDF/ es redundante.
+
+    Returns:
+        Lista de diccionarios:
+        {
+            "sha256": str,
+            "en_pdf": Path,          # ubicación en CLIENTES/{cliente}/PDF/
+            "en_clasificado": Path,  # ubicación en Contabilidades/
+            "a_eliminar": Path,      # siempre en_pdf (la copia redundante)
+        }
+    """
+    from app3.core.classifier import sha256_file
+
+    redundantes = []
+
+    # Carpetas a escanear
+    pdf_folder = client_folder / "PDF"
+
+    if not pdf_folder.exists():
+        return redundantes
+
+    # Mapeo: SHA256 -> ruta en Contabilidades (desde BD)
+    sha256_to_classified = {}
+    for record in db_records.values():
+        ruta_destino = record.get("ruta_destino")
+        if ruta_destino:
+            try:
+                classified_path = Path(ruta_destino)
+                if classified_path.exists():
+                    hash_val = sha256_file(classified_path)
+                    if hash_val not in sha256_to_classified:
+                        sha256_to_classified[hash_val] = classified_path
+            except Exception as e:
+                logger.warning(f"No se pudo calcular SHA256 de {ruta_destino}: {e}")
+
+    # Escanear PDFs en PDF/ y buscar duplicados
+    for pdf_path in pdf_folder.rglob("*.pdf"):
+        try:
+            pdf_hash = sha256_file(pdf_path)
+
+            if pdf_hash in sha256_to_classified:
+                classified_path = sha256_to_classified[pdf_hash]
+                redundantes.append({
+                    "sha256": pdf_hash,
+                    "en_pdf": pdf_path,
+                    "en_clasificado": classified_path,
+                    "a_eliminar": pdf_path,  # Siempre eliminar la copia en PDF/
+                })
+                logger.info(
+                    f"Duplicado encontrado (SHA256: {pdf_hash[:16]}...): "
+                    f"{pdf_path.name} ya está clasificado en {classified_path.parent.name}"
+                )
+        except Exception as e:
+            logger.warning(f"No se pudo procesar {pdf_path}: {e}")
+
+    logger.info(f"Total: {len(redundantes)} PDF(s) redundante(s) en origen")
+    return redundantes
+
+
+def find_duplicate_xmls_in_origin(
+    client_folder: Path,
+) -> list[dict]:
+    """
+    Detecta XMLs duplicados en CLIENTES/{cliente}/XML/.
+
+    Si hay N copias del mismo SHA256, mantiene 1 y marca N-1 para eliminar.
+
+    Returns:
+        Lista de diccionarios:
+        {
+            "sha256": str,
+            "copias": [Path, Path, ...],  # todas las copias del archivo
+            "mantener": Path,              # cuál mantener (la primera)
+            "a_eliminar": [Path, ...],     # cuáles eliminar (el resto)
+        }
+    """
+    from app3.core.classifier import sha256_file
+
+    duplicados = []
+
+    xml_folder = client_folder / "XML"
+    if not xml_folder.exists():
+        return duplicados
+
+    # Mapeo: SHA256 -> lista de rutas
+    sha256_groups = {}
+
+    for xml_path in xml_folder.rglob("*.xml"):
+        try:
+            xml_hash = sha256_file(xml_path)
+            if xml_hash not in sha256_groups:
+                sha256_groups[xml_hash] = []
+            sha256_groups[xml_hash].append(xml_path)
+        except Exception as e:
+            logger.warning(f"No se pudo calcular SHA256 de {xml_path}: {e}")
+
+    # Filtrar solo grupos con 2+ copias
+    for sha256, copias in sha256_groups.items():
+        if len(copias) >= 2:
+            copias_ordenadas = sorted(copias)  # Mantener la primera (por orden alfabético)
+            mantener = copias_ordenadas[0]
+            a_eliminar = copias_ordenadas[1:]
+
+            duplicados.append({
+                "sha256": sha256,
+                "copias": copias_ordenadas,
+                "mantener": mantener,
+                "a_eliminar": a_eliminar,
+            })
+            logger.info(
+                f"Duplicados en XML encontrados (SHA256: {sha256[:16]}...): "
+                f"{len(copias)} copias, mantener: {mantener.name}, eliminar: {len(a_eliminar)}"
+            )
+
+    logger.info(f"Total: {len(duplicados)} grupo(s) de XMLs duplicados en origen")
+    return duplicados
