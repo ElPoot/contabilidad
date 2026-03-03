@@ -68,6 +68,27 @@ def find_empty_folders(client_folder: Path) -> list[Path]:
     return empty_folders
 
 
+def _try_make_writable(folder: Path) -> bool:
+    """
+    Intenta cambiar permisos de la carpeta a escribible.
+
+    Args:
+        folder: Ruta de la carpeta
+
+    Returns:
+        True si se logró cambiar permisos, False si no
+    """
+    try:
+        import stat
+        # Cambiar permisos a 777 (lectura, escritura, ejecución)
+        os.chmod(folder, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+        logger.debug(f"Permisos cambiados para: {folder}")
+        return True
+    except Exception as e:
+        logger.debug(f"No se pudieron cambiar permisos de {folder}: {e}")
+        return False
+
+
 def delete_empty_folders(empty_folders: list[Path]) -> tuple[int, list[str]]:
     """
     Elimina carpetas vacías de forma segura.
@@ -96,7 +117,7 @@ def delete_empty_folders(empty_folders: list[Path]) -> tuple[int, list[str]]:
             try:
                 items = list(folder.iterdir())
             except PermissionError as pe:
-                errors.append(f"Permiso denegado: {folder.name} - Cierra Explorador Windows si está abierto")
+                errors.append(f"Permiso denegado para leer: {folder.name}")
                 logger.warning(f"Permiso denegado en {folder}: {pe}")
                 continue
 
@@ -107,12 +128,23 @@ def delete_empty_folders(empty_folders: list[Path]) -> tuple[int, list[str]]:
                     deleted += 1
                     logger.info(f"Carpeta eliminada: {folder}")
                 except PermissionError:
-                    errors.append(f"No hay permisos para eliminar: {folder.name}")
+                    # Intento 1: cambiar permisos
+                    logger.debug(f"Intentando cambiar permisos para: {folder}")
+                    if _try_make_writable(folder):
+                        try:
+                            folder.rmdir()
+                            deleted += 1
+                            logger.info(f"Carpeta eliminada (después de cambiar permisos): {folder}")
+                        except Exception as e2:
+                            errors.append(f"Permisos insuficientes: {folder.name} (necesitas derechos administrativos)")
+                            logger.warning(f"Fallo incluso después de cambiar permisos: {e2}")
+                    else:
+                        errors.append(f"Permisos insuficientes: {folder.name} (necesitas derechos administrativos)")
                 except OSError as ose:
                     if ose.winerror == 5:  # WinError 5: Access Denied
-                        errors.append(f"Acceso denegado (quizás abierta): {folder.name}")
+                        errors.append(f"Acceso denegado: {folder.name} (proceso puede estar usando esta carpeta)")
                     else:
-                        errors.append(f"Error del sistema: {folder.name} ({ose})")
+                        errors.append(f"Error del sistema: {folder.name} ({ose.strerror})")
             else:
                 # Cambió entre la detección y ahora (contenido agregado)
                 file_list = ", ".join(str(i.name) for i in items[:3])

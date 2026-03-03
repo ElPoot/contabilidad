@@ -2628,6 +2628,10 @@ class App3Window(ctk.CTk):
         message = f"✓ {deleted} carpeta(s) eliminada(s)"
         if errors:
             message += f"\n\n⚠ {len(errors)} error(es):\n" + "\n".join(f"  • {e}" for e in errors[:5])
+            # Detectar si hay errores de permisos
+            has_perm_errors = any("Permisos" in e or "administrativo" in e.lower() for e in errors)
+            if has_perm_errors:
+                message += "\n\n💡 SOLUCIÓN:\n  1. Cierra App3\n  2. Ejecuta App3 como ADMINISTRADOR\n  3. Intenta de nuevo"
             messagebox.showwarning("Sanitización completada", message)
         else:
             messagebox.showinfo("Sanitización completada", message)
