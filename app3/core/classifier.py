@@ -79,6 +79,8 @@ def build_dest_folder(
         )
     if cat == "OGND":
         return base / "OGND" / _sanitize_folder(subtipo)
+    if cat == "ACTIVO":
+        return base / "ACTIVO" / _sanitize_folder(proveedor)
     if cat == "INGRESOS":
         return base / "INGRESOS"
     if cat == "SIN_RECEPTOR":

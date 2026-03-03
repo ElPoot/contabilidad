@@ -59,6 +59,7 @@ def _parse_dm(dm_path: Path) -> dict:
         "COMPRAS": {},
         "GASTOS": gastos_section,
         "OGND": {},
+        "ACTIVO": {},
     }
 
 
@@ -126,6 +127,7 @@ def _default_catalog() -> dict:
             ],
         },
         "OGND": {},
+        "ACTIVO": {},
     }
 
 
@@ -141,9 +143,9 @@ class CatalogManager:
                 raw = self.path.read_text(encoding="utf-8").strip()
                 if raw:
                     data = json.loads(raw)
-                    # Validar estructura nueva (3 categorías)
+                    # Validar estructura nueva (4 categorías)
                     if isinstance(data, dict) and any(
-                        k in data for k in ("COMPRAS", "GASTOS", "OGND")
+                        k in data for k in ("COMPRAS", "GASTOS", "OGND", "ACTIVO")
                     ):
                         self._data = data
                         return self

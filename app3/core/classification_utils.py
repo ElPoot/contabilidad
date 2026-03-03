@@ -225,7 +225,12 @@ def find_orphaned_pdfs(
         return orphaned
 
     # Crear mapa inverso: archivo -> clave (desde BD)
-    db_by_destino = {v.get("ruta_destino"): k for k, v in db_records.items() if v.get("ruta_destino")}
+    from pathlib import Path
+    db_by_destino = {
+        str(Path(v["ruta_destino"])): k
+        for k, v in db_records.items()
+        if v.get("ruta_destino")
+    }
 
     # Escanear todos los PDFs en Contabilidades
     for pdf_path in contabilidades_root.rglob("*.pdf"):

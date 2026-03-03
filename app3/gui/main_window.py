@@ -831,7 +831,8 @@ class App3Window(ctk.CTk):
                 from app3.core.classification_utils import find_orphaned_pdfs, create_orphaned_record
                 pf_root = session.folder.parent.parent
                 contabilidades_root = pf_root / "Contabilidades"
-                orphaned_list = find_orphaned_pdfs(contabilidades_root, self._db_records)
+                local_db_records = db.get_records_map()
+                orphaned_list = find_orphaned_pdfs(contabilidades_root, local_db_records)
 
                 # Agregar registros dummy para PDFs huérfanos
                 for orphaned_info in orphaned_list:
@@ -1807,6 +1808,11 @@ class App3Window(ctk.CTk):
             self._cuenta_frame.grid_remove()
             self._prov_frame.grid()
 
+        elif cat == "ACTIVO":
+            self._tipo_frame.grid_remove()
+            self._cuenta_frame.grid_remove()
+            self._prov_frame.grid()
+
         elif cat == "GASTOS":
             tipos = mgr.subtipos("GASTOS") if mgr else []
             self._tipo_cb.configure(values=tipos)
@@ -1904,14 +1910,14 @@ class App3Window(ctk.CTk):
         cat     = self._cat_var.get()
         subtipo = self._tipo_var.get() if cat in ("GASTOS", "OGND") else ""
         cuenta  = self._cuenta_var.get() if cat == "GASTOS" else ""
-        prov    = self._prov_var.get().strip() if cat in ("COMPRAS", "GASTOS") else ""
+        prov    = self._prov_var.get().strip() if cat in ("COMPRAS", "GASTOS", "ACTIVO") else ""
         fecha   = (self.selected.fecha_emision if self.selected else "") or ""
 
         # Validar mínimos necesarios para construir la ruta
         if not cat:
             self._preview_lbl.configure(text="")
             return
-        if cat == "COMPRAS" and not prov:
+        if cat in ("COMPRAS", "ACTIVO") and not prov:
             self._preview_lbl.configure(text="")
             return
         if cat == "GASTOS" and not (subtipo and cuenta and prov):
@@ -2815,7 +2821,7 @@ class App3Window(ctk.CTk):
         cat    = self._cat_var.get().strip().upper()
         subtipo = self._tipo_var.get().strip().upper() if cat in ("GASTOS", "OGND") else ""
         cuenta  = self._cuenta_var.get().strip().upper() if cat == "GASTOS" else ""
-        prov    = self._prov_var.get().strip().upper() if cat in ("COMPRAS", "GASTOS") else ""
+        prov    = self._prov_var.get().strip().upper() if cat in ("COMPRAS", "GASTOS", "ACTIVO") else ""
 
         if not cat:
             self._show_warning("Atención", "Selecciona una categoría.")
@@ -2826,7 +2832,7 @@ class App3Window(ctk.CTk):
         if cat == "GASTOS" and not cuenta:
             self._show_warning("Atención", "Selecciona la cuenta contable.")
             return
-        if cat in ("COMPRAS", "GASTOS") and not prov:
+        if cat in ("COMPRAS", "GASTOS", "ACTIVO") and not prov:
             self._show_warning("Atención", "Ingresa el proveedor.")
             return
         if cat == "OGND" and not subtipo:
