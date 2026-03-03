@@ -2566,13 +2566,20 @@ class App3Window(ctk.CTk):
         footer.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         footer.grid_columnconfigure(0, weight=1)
 
-        # Info
+        # Info y advertencia
         ctk.CTkLabel(
             footer,
             text="⚠ Solo se eliminarán carpetas COMPLETAMENTE vacías",
             font=ctk.CTkFont(size=10),
             text_color=WARNING,
         ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            footer,
+            text="💡 Si hay error de acceso: Cierra Explorador Windows si está abierto en estas carpetas",
+            font=ctk.CTkFont(size=9),
+            text_color=MUTED,
+        ).pack(anchor="w", pady=(4, 0))
 
         # Botones
         button_frame = ctk.CTkFrame(footer, fg_color="transparent")

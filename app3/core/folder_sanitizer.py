@@ -1,6 +1,8 @@
 """Sanitización segura de carpetas vacías después de reclasificación."""
 
+import gc
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -79,21 +81,46 @@ def delete_empty_folders(empty_folders: list[Path]) -> tuple[int, list[str]]:
     deleted = 0
     errors: list[str] = []
 
+    # Liberar referencias en memoria (importante para Windows)
+    gc.collect()
+
     # Ordenar por profundidad (más profundas primero) para evitar intentar eliminar padre vacío cuando hijo falla
     sorted_folders = sorted(empty_folders, key=lambda p: (-len(p.parts), str(p)))
 
     for folder in sorted_folders:
         try:
-            if folder.exists() and not any(folder.iterdir()):
+            if not folder.exists():
+                continue
+
+            # Verificación: listar contenido (incluso archivos ocultos)
+            try:
+                items = list(folder.iterdir())
+            except PermissionError as pe:
+                errors.append(f"Permiso denegado: {folder.name} - Cierra Explorador Windows si está abierto")
+                logger.warning(f"Permiso denegado en {folder}: {pe}")
+                continue
+
+            if not items:
                 # Doble verificación: está seguro que está vacía
-                folder.rmdir()
-                deleted += 1
-                logger.info(f"Carpeta eliminada: {folder}")
-            elif folder.exists():
+                try:
+                    folder.rmdir()
+                    deleted += 1
+                    logger.info(f"Carpeta eliminada: {folder}")
+                except PermissionError:
+                    errors.append(f"No hay permisos para eliminar: {folder.name}")
+                except OSError as ose:
+                    if ose.winerror == 5:  # WinError 5: Access Denied
+                        errors.append(f"Acceso denegado (quizás abierta): {folder.name}")
+                    else:
+                        errors.append(f"Error del sistema: {folder.name} ({ose})")
+            else:
                 # Cambió entre la detección y ahora (contenido agregado)
-                errors.append(f"Contiene archivos ahora: {folder.name}")
+                file_list = ", ".join(str(i.name) for i in items[:3])
+                if len(items) > 3:
+                    file_list += f", ... (+{len(items) - 3} más)"
+                errors.append(f"Contiene archivos: {folder.name} [{file_list}]")
         except Exception as e:
-            errors.append(f"Error eliminando {folder.name}: {str(e)}")
+            errors.append(f"Error inesperado en {folder.name}: {str(e)}")
             logger.exception(f"Error eliminando carpeta {folder}: {e}")
 
     return deleted, errors
