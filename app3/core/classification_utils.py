@@ -4,6 +4,7 @@ Clasifica cada factura según la perspectiva del cliente actual.
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from app3.core.models import FacturaRecord
 
@@ -299,3 +300,109 @@ def find_orphaned_pdfs(
 
     logger.info(f"Encontrados {len(orphaned)} PDFs huérfanos u inconsistentes")
     return orphaned
+
+
+def find_duplicate_pdfs_by_hash(
+    contabilidades_root: Path,
+    db_records: dict[str, dict],
+    client_name: str = "",
+) -> list[dict]:
+    """
+    Escanea PDFs en Contabilidades y detecta duplicados por SHA256.
+
+    Agrupa archivos con el mismo hash y retorna solo grupos con 2+ archivos.
+
+    Args:
+        contabilidades_root: Raíz de la carpeta Contabilidades
+        db_records: Mapeo de clave -> datos de clasificación (BD)
+        client_name: Limita el escaneo a este cliente (si se proporciona)
+
+    Returns:
+        Lista de diccionarios con:
+        {
+            "sha256": str,
+            "archivos": [Path, ...],
+            "en_bd": Path | None,  # cuál está registrado como ruta_destino
+            "status": str,         # "automático" | "ambiguo" | "sin_registro"
+        }
+    """
+    if not contabilidades_root.exists():
+        return []
+
+    # Crear mapa inverso: archivo -> clave (desde BD)
+    db_by_destino = {
+        str(Path(v["ruta_destino"])): k
+        for k, v in db_records.items()
+        if v.get("ruta_destino")
+    }
+
+    # Mapeo: SHA256 -> lista de archivos
+    hash_groups: dict[str, list[Path]] = {}
+
+    # Función worker para calcular SHA256 de un PDF
+    def compute_sha256(pdf_path: Path) -> tuple[Path, str | None]:
+        try:
+            from app3.core.classifier import sha256_file
+            hash_val = sha256_file(pdf_path)
+            return (pdf_path, hash_val)
+        except Exception as e:
+            logger.warning(f"No se pudo calcular SHA256 de {pdf_path}: {e}")
+            return (pdf_path, None)
+
+    # Recolectar todos los PDFs a escanear
+    pdfs_to_scan = []
+    for pdf_path in contabilidades_root.rglob("*.pdf"):
+        # Filtrar por cliente si se proporciona
+        if client_name and client_name not in pdf_path.parts:
+            continue
+        pdfs_to_scan.append(pdf_path)
+
+    logger.info(f"Escaneando {len(pdfs_to_scan)} PDFs en Contabilidades para detectar duplicados...")
+
+    # Calcular SHA256 en paralelo (ThreadPoolExecutor)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(compute_sha256, pdfs_to_scan))
+
+    # Agrupar por SHA256
+    for pdf_path, hash_val in results:
+        if hash_val is None:
+            continue
+        if hash_val not in hash_groups:
+            hash_groups[hash_val] = []
+        hash_groups[hash_val].append(pdf_path)
+
+    # Filtrar solo grupos con 2+ archivos
+    duplicates = []
+    for sha256, archivo_list in hash_groups.items():
+        if len(archivo_list) >= 2:
+            # Determinar cuál está en BD y cuál no
+            en_bd = None
+            for archivo in archivo_list:
+                if str(archivo) in db_by_destino:
+                    en_bd = archivo
+                    break
+
+            # Determinar status automático
+            if en_bd is None:
+                # Ninguno en BD → no se puede eliminar automáticamente
+                status = "sin_registro"
+            elif len([a for a in archivo_list if str(a) in db_by_destino]) > 1:
+                # Múltiples en BD → ambiguo, no se puede elegir
+                status = "ambiguo"
+            else:
+                # Uno en BD, otros no → automático, eliminar los que no están en BD
+                status = "automático"
+
+            duplicates.append({
+                "sha256": sha256,
+                "archivos": sorted(archivo_list),  # Ordenar para consistencia
+                "en_bd": en_bd,
+                "status": status,
+            })
+            logger.info(
+                f"Duplicados encontrados (SHA256: {sha256[:16]}...): "
+                f"{len(archivo_list)} archivos, status={status}"
+            )
+
+    logger.info(f"Total: {len(duplicates)} grupo(s) de duplicados detectados")
+    return duplicates

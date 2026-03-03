@@ -268,7 +268,13 @@ def classify_record(
     Clasifica una factura moviéndola a la carpeta contable correspondiente.
 
     Si no hay PDF registra como 'pendiente_pdf' sin mover archivos.
-    Movimiento atómico: SHA256 -> copiar -> verificar SHA256 -> borrar original.
+    Movimiento ATÓMICO con verificación SHA256:
+      1. Calcular SHA256 del original
+      2. Copiar (preservando metadata)
+      3. Calcular SHA256 de la copia
+      4. Si no coinciden → borrar copia, error
+      5. Si coinciden → borrar original (con retry)
+      6. Registrar en BD
     """
     if record.pdf_path is None:
         db.upsert(
@@ -299,7 +305,7 @@ def classify_record(
     original       = record.pdf_path
     ruta_origen_str = str(original)
 
-    # Calcular hash ANTES de mover (para integridad)
+    # (1) Calcular hash del original
     source_hash = sha256_file(original)
 
     target = dest_folder / original.name
@@ -307,16 +313,51 @@ def classify_record(
         suffix = source_hash[:8]
         target = dest_folder / f"{original.stem}__{suffix}{original.suffix}"
 
-    # Movimiento: usar shutil.move() con retry loop en Windows
-    # shutil.move() es más eficiente que copy+delete en el mismo volumen
-    moved = False
+    # (2) Copiar con metadata preservada
+    try:
+        shutil.copy2(str(original), str(target))
+        logger.info(f"PDF copiado: {original.name} → {target.name}")
+    except Exception as err:
+        raise RuntimeError(
+            f"No se pudo copiar el PDF a la carpeta de destino.\n"
+            f"Verifica que Z:/ esté accesible y haya espacio disponible.\n\n"
+            f"Error: {err}"
+        ) from err
+
+    # (3) Calcular hash de la copia
+    try:
+        dest_hash = sha256_file(target)
+    except Exception as err:
+        # Si no se puede leer la copia, eliminarla y abortar
+        target.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"No se pudo verificar la copia del PDF.\n"
+            f"La copia ha sido eliminada. Intenta de nuevo.\n\n"
+            f"Error: {err}"
+        ) from err
+
+    # (4) Verificar integridad SHA256
+    if dest_hash != source_hash:
+        target.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"SHA256 mismatch después de copiar el PDF.\n"
+            f"Original: {source_hash}\n"
+            f"Copia:    {dest_hash}\n"
+            f"La copia corrupta ha sido eliminada. El original está intacto.\n"
+            f"Intenta de nuevo."
+        )
+
+    logger.info(f"SHA256 verificado: {source_hash}")
+
+    # (5) Borrar original con retry loop
+    deleted = False
     last_err: Exception | None = None
 
-    # Retry loop para mover el archivo (maneja locks de Windows)
     for attempt in range(12):
         try:
-            shutil.move(str(original), str(target))
-            moved = True
+            original.unlink()
+            deleted = True
+            logger.info(f"Original eliminado después del intento {attempt + 1}")
             break
         except PermissionError as err:
             last_err = err
@@ -327,13 +368,17 @@ def classify_record(
             # Otros errores del SO (no reintentar)
             break
 
-    if not moved:
+    if not deleted:
+        # Si no se puede borrar el original, al menos elimina la copia para evitar duplicado
         target.unlink(missing_ok=True)
         raise RuntimeError(
-            "No se pudo mover el PDF porque está en uso por otra aplicación (ej: visor PDF abierto).\n"
-            f"Intenta reclasificar en unos segundos. [Intentos: {attempt + 1}/12]"
+            "El PDF fue copiado correctamente, pero no se pudo eliminar el original\n"
+            "(está en uso por otra aplicación, ej: visor PDF abierto).\n"
+            "La copia ha sido eliminada para evitar duplicados.\n\n"
+            "Cierra el visor de PDFs e intenta de nuevo. [Intentos: {attempt + 1}/12]"
         ) from last_err
 
+    # (6) Registrar en BD
     db.upsert(
         clave_numerica=record.clave,
         estado="clasificado",

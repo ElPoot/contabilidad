@@ -1128,7 +1128,12 @@ class App3Window(ctk.CTk):
         ctk.CTkButton(top, text="🧹 Sanitizar", width=100, height=30,
                       fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
                       font=F_SMALL(), corner_radius=8,
-                      command=self._sanitize_folders).grid(row=0, column=3, sticky="e", padx=(0, 10))
+                      command=self._sanitize_folders).grid(row=0, column=3, sticky="e", padx=(0, 5))
+
+        ctk.CTkButton(top, text="🔍 Dupl.", width=100, height=30,
+                      fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
+                      font=F_SMALL(), corner_radius=8,
+                      command=self._find_duplicate_pdfs).grid(row=0, column=4, sticky="e", padx=(0, 10))
 
         self._progress_var = ctk.StringVar(value="")
         ctk.CTkLabel(top, textvariable=self._progress_var,
@@ -3282,6 +3287,227 @@ class App3Window(ctk.CTk):
                        command=win.destroy).pack(side="left", padx=8)
         win.wait_window()
         return result[0]
+
+    # ── DETECCIÓN DE DUPLICADOS POR SHA256 ─────────────────────────────────────────
+    def _find_duplicate_pdfs(self):
+        """Detecta duplicados por SHA256 (manual, con confirmación)."""
+        if not self.session or not self.db:
+            messagebox.showinfo("Duplicados", "No hay sesión activa")
+            return
+
+        # Detectar duplicados en thread
+        def worker():
+            from app3.core.classification_utils import find_duplicate_pdfs_by_hash
+            try:
+                pf_root = self.session.folder.parent.parent
+                contabilidades_root = pf_root / "Contabilidades"
+                duplicates = find_duplicate_pdfs_by_hash(
+                    contabilidades_root,
+                    self._db_records,
+                    self.session.folder.name
+                )
+                self.after(0, lambda: self._show_duplicates_modal(duplicates))
+            except Exception as e:
+                self.after(0, lambda error=e: self._show_error("Error al escanear", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_duplicates_modal(self, duplicate_groups: list[dict]):
+        """Muestra modal de confirmación con duplicados a eliminar."""
+        if not duplicate_groups:
+            messagebox.showinfo("Duplicados", "✓ No hay duplicados detectados")
+            return
+
+        # Crear ventana modal
+        modal = ctk.CTkToplevel(self)
+        modal.title("Detectar duplicados por SHA256")
+        modal.geometry("900x600")
+        modal.resizable(True, True)
+        modal.configure(fg_color=BG)
+
+        # Header
+        header = ctk.CTkFrame(modal, fg_color=SURFACE, corner_radius=0)
+        header.pack(fill="x")
+        ctk.CTkLabel(
+            header,
+            text=f"🔍 Se encontraron {len(duplicate_groups)} grupo(s) de duplicado(s)",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text_color=TEXT,
+        ).pack(side="left", padx=16, pady=12)
+
+        # Body scrollable
+        body = ctk.CTkFrame(modal, fg_color=BG)
+        body.pack(fill="both", expand=True, padx=12, pady=12)
+
+        # Crear Treeview para listar duplicados
+        tree_frame = ctk.CTkFrame(body, fg_color=CARD, corner_radius=8)
+        tree_frame.pack(fill="both", expand=True, pady=(0, 12))
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        scrollbar = ttk.Scrollbar(tree_frame)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview", background=CARD, foreground=TEXT, fieldbackground=CARD)
+        style.configure("Treeview.Heading", background=SURFACE, foreground=TEXT)
+
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=("sha256", "archivos", "estado"),
+            height=16,
+            yscrollcommand=scrollbar.set,
+        )
+        scrollbar.config(command=tree.yview)
+        tree.column("#0", width=0)
+        tree.column("sha256", width=150, anchor="w")
+        tree.column("archivos", width=500, anchor="w")
+        tree.column("estado", width=150, anchor="w")
+
+        tree.heading("sha256", text="SHA256 (primeros 16)")
+        tree.heading("archivos", text="Archivos")
+        tree.heading("estado", text="Estado / Acción")
+
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        # Llenar Treeview con duplicados
+        to_delete: list[dict] = []  # Grupos que serán eliminados
+        for group_idx, group in enumerate(duplicate_groups):
+            sha256 = group["sha256"][:16] + "..."
+            status = group["status"]
+            en_bd = group["en_bd"]
+            archivos = group["archivos"]
+
+            # Determinar qué eliminar según el status
+            if status == "automático":
+                # Eliminar todo excepto el que está en BD
+                deletable = [a for a in archivos if a != en_bd]
+                group_to_delete = {
+                    "sha256": group["sha256"],
+                    "en_bd": en_bd,
+                    "to_delete": deletable,
+                    "status": status,
+                }
+                to_delete.append(group_to_delete)
+                estado_text = f"🗑️ Eliminar {len(deletable)}"
+            elif status == "ambiguo":
+                estado_text = "⚠️ Ambiguo (no eliminar)"
+            else:  # sin_registro
+                estado_text = "⚠️ Sin registro (no eliminar)"
+
+            # Insertar fila principal del grupo
+            parent = tree.insert("", "end", text="", values=(sha256, "", estado_text))
+
+            # Insertar subnodos con cada archivo
+            for archivo in archivos:
+                archivo_name = archivo.name[:50]
+                if archivo == en_bd:
+                    marca = "📁 MANTENER"
+                else:
+                    marca = "🗑️ ELIMINAR" if status == "automático" else "—"
+                tree.insert(parent, "end", text="", values=("", archivo_name, marca))
+
+        tree.pack(fill="both", expand=True)
+
+        # Footer con botones
+        footer = ctk.CTkFrame(modal, fg_color=BG)
+        footer.pack(fill="x", padx=12, pady=12)
+
+        def proceed():
+            modal.destroy()
+            if to_delete:
+                self._execute_delete_duplicates(to_delete, modal)
+            else:
+                messagebox.showinfo("Duplicados", "No hay duplicados para eliminar")
+
+        def cancel():
+            modal.destroy()
+
+        ctk.CTkButton(
+            footer,
+            text="✓ Eliminar duplicados",
+            fg_color=DANGER,
+            hover_color="#dc2626",
+            text_color=TEXT,
+            command=proceed
+        ).pack(side="left", padx=8)
+
+        ctk.CTkButton(
+            footer,
+            text="Cancelar",
+            fg_color=SURFACE,
+            hover_color=BORDER,
+            text_color=TEXT,
+            command=cancel
+        ).pack(side="left", padx=8)
+
+    def _execute_delete_duplicates(self, to_delete: list[dict], modal: ctk.CTkToplevel):
+        """Ejecuta eliminación atómica de duplicados (con re-verificación SHA256)."""
+        deleted = []
+        skipped = []
+        errors = []
+
+        def worker():
+            from app3.core.classifier import sha256_file
+            for group in to_delete:
+                en_bd = group["en_bd"]
+                status = group["status"]
+
+                if status != "automático":
+                    continue
+
+                # Re-verificar que el archivo a conservar sigue siendo el mismo
+                try:
+                    en_bd_hash = sha256_file(en_bd)
+                    original_sha256 = group["sha256"]
+
+                    if en_bd_hash != original_sha256:
+                        errors.append(
+                            f"SHA256 cambió en {en_bd.name} — "
+                            f"Se evitó eliminación accidental"
+                        )
+                        continue
+                except Exception as e:
+                    errors.append(f"No se pudo verificar {en_bd.name}: {e}")
+                    continue
+
+                # Eliminar archivos duplicados
+                for archivo_a_eliminar in group["to_delete"]:
+                    try:
+                        # Re-verificar que sea un duplicado antes de eliminar
+                        delete_hash = sha256_file(archivo_a_eliminar)
+                        if delete_hash != original_sha256:
+                            errors.append(
+                                f"SHA256 no coincide en {archivo_a_eliminar.name} — "
+                                f"Se evitó eliminación accidental"
+                            )
+                            continue
+
+                        # Eliminar
+                        archivo_a_eliminar.unlink()
+                        deleted.append(archivo_a_eliminar.name)
+                        logger.info(f"Duplicado eliminado: {archivo_a_eliminar}")
+                    except Exception as e:
+                        errors.append(f"Error eliminando {archivo_a_eliminar.name}: {e}")
+
+            self.after(0, lambda: self._show_duplicates_result(deleted, skipped, errors))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_duplicates_result(self, deleted: list[str], skipped: list[str], errors: list[str]):
+        """Muestra resultado de la eliminación de duplicados."""
+        message = f"✓ {len(deleted)} archivo(s) eliminado(s)"
+        if skipped:
+            message += f"\n⏭️  {len(skipped)} omitido(s)"
+        if errors:
+            message += f"\n\n⚠ {len(errors)} error(es):\n" + "\n".join(f"  • {e}" for e in errors[:5])
+        else:
+            messagebox.showinfo("Duplicados eliminados", message)
+            return
+
+        messagebox.showwarning("Eliminación de duplicados", message)
+        self._set_status(f"Duplicados: {len(deleted)} eliminado(s)")
 
     def _open_dest_folder(self, event=None):
         """Abre en el Explorador de Windows la carpeta donde está el PDF clasificado."""
