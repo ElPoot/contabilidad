@@ -1123,7 +1123,12 @@ class App3Window(ctk.CTk):
         ctk.CTkButton(top, text="Exportar reporte", width=120, height=30,
                       fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
                       font=F_SMALL(), corner_radius=8,
-                      command=self._export_report).grid(row=0, column=2, sticky="e", padx=(0, 10))
+                      command=self._export_report).grid(row=0, column=2, sticky="e", padx=(0, 5))
+
+        ctk.CTkButton(top, text="🧹 Sanitizar", width=100, height=30,
+                      fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
+                      font=F_SMALL(), corner_radius=8,
+                      command=self._sanitize_folders).grid(row=0, column=3, sticky="e", padx=(0, 10))
 
         self._progress_var = ctk.StringVar(value="")
         ctk.CTkLabel(top, textvariable=self._progress_var,
@@ -2487,6 +2492,139 @@ class App3Window(ctk.CTk):
             self._set_status("Reporte exportado")
         except Exception as exc:
             self._show_error("Error al exportar", str(exc))
+
+    # ── SANITIZACIÓN DE CARPETAS VACÍAS ────────────────────────────────────────
+    def _sanitize_folders(self):
+        """Detecta y elimina carpetas vacías (manual, con confirmación)."""
+        if not self.session:
+            messagebox.showinfo("Sanitizar", "No hay sesión activa")
+            return
+
+        # Detectar carpetas vacías en thread
+        def worker():
+            from app3.core.folder_sanitizer import find_empty_folders
+            try:
+                empty_folders = find_empty_folders(self.session.folder)
+                self.after(0, lambda: self._show_sanitization_modal(empty_folders))
+            except Exception as e:
+                self.after(0, lambda error=e: self._show_error("Error al escanear", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_sanitization_modal(self, empty_folders: list[Path]):
+        """Muestra modal de confirmación con carpetas a eliminar."""
+        if not empty_folders:
+            messagebox.showinfo("Sanitizar", "✓ No hay carpetas vacías\n\nTodas las carpetas de clasificación tienen contenido.")
+            return
+
+        # Crear ventana modal
+        modal = ctk.CTkToplevel(self)
+        modal.title("Sanitizar carpetas vacías")
+        modal.geometry("700x500")
+        modal.resizable(True, True)
+        modal.configure(fg_color=BG)
+
+        # Header
+        header = ctk.CTkFrame(modal, fg_color=SURFACE, corner_radius=0)
+        header.pack(fill="x")
+        ctk.CTkLabel(
+            header,
+            text=f"🧹 Se encontraron {len(empty_folders)} carpeta(s) vacía(s)",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text_color=TEXT,
+        ).pack(side="left", padx=16, pady=12)
+
+        # Body con listado
+        body = ctk.CTkFrame(modal, fg_color=BG)
+        body.pack(fill="both", expand=True, padx=12, pady=12)
+        body.grid_rowconfigure(0, weight=1)
+        body.grid_columnconfigure(0, weight=1)
+
+        # Scrollable frame para lista
+        from customtkinter import CTkScrollableFrame
+        list_frame = CTkScrollableFrame(body, fg_color=CARD, corner_radius=8)
+        list_frame.grid(row=0, column=0, sticky="nsew")
+
+        # Mostrar carpetas a eliminar (ruta relativa para claridad)
+        contabilidades_root = self.session.folder.parent.parent / "Contabilidades" / self.session.folder.name
+        for folder in sorted(empty_folders):
+            try:
+                rel_path = folder.relative_to(contabilidades_root.parent)
+            except ValueError:
+                rel_path = folder
+            label_text = f"  📁 {rel_path}"
+            ctk.CTkLabel(
+                list_frame,
+                text=label_text,
+                font=ctk.CTkFont(size=10),
+                text_color=MUTED,
+                justify="left",
+            ).pack(anchor="w", padx=12, pady=4)
+
+        # Footer con botones
+        footer = ctk.CTkFrame(body, fg_color="transparent")
+        footer.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        footer.grid_columnconfigure(0, weight=1)
+
+        # Info
+        ctk.CTkLabel(
+            footer,
+            text="⚠ Solo se eliminarán carpetas COMPLETAMENTE vacías",
+            font=ctk.CTkFont(size=10),
+            text_color=WARNING,
+        ).pack(anchor="w")
+
+        # Botones
+        button_frame = ctk.CTkFrame(footer, fg_color="transparent")
+        button_frame.pack(anchor="e", pady=(8, 0))
+
+        ctk.CTkButton(
+            button_frame,
+            text="Cancelar",
+            width=100,
+            height=32,
+            fg_color=SURFACE,
+            hover_color=BORDER,
+            text_color=TEXT,
+            corner_radius=8,
+            command=modal.destroy,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            button_frame,
+            text="Eliminar",
+            width=100,
+            height=32,
+            fg_color=DANGER,
+            hover_color="#f56565",
+            text_color="white",
+            corner_radius=8,
+            command=lambda: self._execute_sanitization(empty_folders, modal),
+        ).pack(side="left")
+
+    def _execute_sanitization(self, empty_folders: list[Path], modal):
+        """Ejecuta la eliminación de carpetas vacías en thread."""
+        modal.destroy()
+
+        def worker():
+            from app3.core.folder_sanitizer import delete_empty_folders
+            try:
+                deleted, errors = delete_empty_folders(empty_folders)
+                self.after(0, lambda: self._show_sanitization_result(deleted, errors))
+            except Exception as e:
+                self.after(0, lambda error=e: self._show_error("Error al eliminar", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_sanitization_result(self, deleted: int, errors: list[str]):
+        """Muestra resultado de la sanitización."""
+        message = f"✓ {deleted} carpeta(s) eliminada(s)"
+        if errors:
+            message += f"\n\n⚠ {len(errors)} error(es):\n" + "\n".join(f"  • {e}" for e in errors[:5])
+            messagebox.showwarning("Sanitización completada", message)
+        else:
+            messagebox.showinfo("Sanitización completada", message)
+        self._set_status(f"Sanitización: {deleted} carpeta(s) eliminada(s)")
 
     # ── RECUPERACIÓN DE PDFs HUÉRFANOS ────────────────────────────────────────
     def _recover_selected(self):
