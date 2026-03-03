@@ -147,6 +147,12 @@ class CatalogManager:
                     if isinstance(data, dict) and any(
                         k in data for k in ("COMPRAS", "GASTOS", "OGND", "ACTIVO")
                     ):
+                        # Migración: agregar ACTIVO si falta
+                        if "ACTIVO" not in data:
+                            data["ACTIVO"] = {}
+                            self._data = data
+                            self.save()  # Guardar con ACTIVO agregado
+                            return self
                         self._data = data
                         return self
             except Exception:
