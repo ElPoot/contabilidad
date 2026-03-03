@@ -2168,9 +2168,9 @@ class App3Window(ctk.CTk):
                 for label, mask in [
                     ("Ingresos", mask_ventas),
                     ("Compras", mask_compras),
-                    ("Activos", mask_activos),
                     ("Gastos", mask_gasto),
                     ("OGND", mask_ognd),
+                    ("Activos", mask_activos),
                     ("Pendientes", mask_pendiente),
                     ("Sin Receptor", mask_sin_receptor),
                     ("Rechazados", mask_rechazados),
