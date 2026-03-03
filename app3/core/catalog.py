@@ -172,7 +172,7 @@ class CatalogManager:
     # ── API pública ────────────────────────────────────────────────────────────
 
     def categorias(self) -> list[str]:
-        return list((self._data or {}).keys()) or ["COMPRAS", "GASTOS", "OGND"]
+        return list((self._data or {}).keys()) or ["COMPRAS", "GASTOS", "OGND", "ACTIVO"]
 
     def subtipos(self, categoria: str) -> list[str]:
         """Subtipos de una categoría. OGND devuelve lista fija."""

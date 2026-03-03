@@ -206,8 +206,12 @@ def create_orphaned_record(orphaned_info: dict) -> FacturaRecord:
 def find_orphaned_pdfs(
     contabilidades_root: Path,
     db_records: dict[str, dict],
+    client_name: str = "",
 ) -> list[dict]:
     """Escanea PDFs en Contabilidades que no están en BD o están en estado inconsistente.
+
+    Si client_name se proporciona, filtra solo PDFs de ese cliente.
+    La ruta esperada es: Contabilidades/{mes}/{client_name}/...
 
     Returns:
         Lista de diccionarios con:
@@ -234,6 +238,10 @@ def find_orphaned_pdfs(
 
     # Escanear todos los PDFs en Contabilidades
     for pdf_path in contabilidades_root.rglob("*.pdf"):
+        # Filtrar por cliente si se proporciona
+        if client_name and client_name not in pdf_path.parts:
+            continue
+
         nombre = pdf_path.name
         # Extraer clave del nombre (si es un archivo nombrado por clave)
         clave_from_name = nombre.replace(".pdf", "").strip()

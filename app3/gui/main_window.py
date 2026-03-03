@@ -832,7 +832,8 @@ class App3Window(ctk.CTk):
                 pf_root = session.folder.parent.parent
                 contabilidades_root = pf_root / "Contabilidades"
                 local_db_records = db.get_records_map()
-                orphaned_list = find_orphaned_pdfs(contabilidades_root, local_db_records)
+                client_name = session.folder.name  # Limitar huérfanos al cliente actual
+                orphaned_list = find_orphaned_pdfs(contabilidades_root, local_db_records, client_name)
 
                 # Agregar registros dummy para PDFs huérfanos
                 for orphaned_info in orphaned_list:
