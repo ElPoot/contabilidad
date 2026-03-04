@@ -24,7 +24,7 @@ from app3.core.classification_utils import (
 )
 from app3.core.classifier import ClassificationDB, build_dest_folder, classify_record
 from app3.core.factura_index import FacturaIndexer
-from app3.core.iva_utils import apply_exchange_rate
+from app3.core.iva_utils import apply_exchange_rate, parse_decimal_value
 from app3.core.models import FacturaRecord
 from app3.core.session import ClientSession
 from app3.gui.loading_modal import LoadingOverlay
@@ -2154,14 +2154,15 @@ class App3Window(ctk.CTk):
                     for idx in df.index:
                         moneda_str = str(df_all.loc[idx, "moneda"] or "").strip().upper()
                         if moneda_str and moneda_str != "CRC":
-                            tc_raw = df_all.loc[idx, "tipo_cambio"]
-                            tc = Decimal(str(tc_raw or 0))
-                            if tc > Decimal("0"):
+                            tc = parse_decimal_value(df_all.loc[idx, "tipo_cambio"])
+                            if tc and tc > Decimal("0"):
                                 for col in numeric_columns:
                                     if col in df.columns and pd.notna(df.loc[idx, col]):
-                                        amount = Decimal(str(df.loc[idx, col] or 0))
-                                        converted = apply_exchange_rate(amount, moneda_str, tc)
-                                        df.loc[idx, col] = float(converted)
+                                        amount_val = df.loc[idx, col]
+                                        if amount_val and isinstance(amount_val, (int, float)):
+                                            amount = Decimal(str(amount_val))
+                                            converted = apply_exchange_rate(amount, moneda_str, tc)
+                                            df.loc[idx, col] = float(converted)
 
                 if date_column in df.columns:
                     df[date_column] = pd.to_datetime(df[date_column], format="%d/%m/%Y", errors="coerce")
