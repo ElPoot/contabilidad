@@ -2149,14 +2149,20 @@ class App3Window(ctk.CTk):
                         )
 
                 # Aplicar tipo_cambio a todos los montos si moneda != CRC
-                # tipo_cambio solo sirve como factor, no se modifica
+                # tipo_cambio solo sirve como factor, NO se modifica
+                # EXCLUIR: tipo_cambio, moneda (solo usar montos)
+                amounts_to_convert = {
+                    "subtotal", "iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros",
+                    "impuesto_total", "total_comprobante"
+                }
+
                 if "moneda" in df_all.columns and "tipo_cambio" in df_all.columns:
                     for idx in df.index:
                         moneda_str = str(df_all.loc[idx, "moneda"] or "").strip().upper()
                         if moneda_str and moneda_str != "CRC":
                             tc = parse_decimal_value(df_all.loc[idx, "tipo_cambio"])
                             if tc and tc > Decimal("0"):
-                                for col in numeric_columns:
+                                for col in amounts_to_convert:
                                     if col in df.columns and pd.notna(df.loc[idx, col]):
                                         amount_val = df.loc[idx, col]
                                         if amount_val and isinstance(amount_val, (int, float)):
