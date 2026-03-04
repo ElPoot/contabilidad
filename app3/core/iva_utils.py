@@ -177,3 +177,30 @@ def validate_total_comprobante(
     diferencia = abs(suma - total)
 
     return diferencia <= Decimal("0.01")
+
+
+def apply_exchange_rate(amount: Decimal, moneda: str, tipo_cambio: Decimal) -> Decimal:
+    """Aplica tipo_cambio a un monto si la moneda no es CRC.
+
+    Solo usa tipo_cambio como factor multiplicador. No modifica ni toca tipo_cambio.
+    Si moneda == CRC o tipo_cambio inválido, retorna el monto original.
+
+    Args:
+        amount: Monto en Decimal
+        moneda: Código de moneda (ej: "CRC", "USD", "EUR")
+        tipo_cambio: Factor de conversión
+
+    Returns:
+        Monto convertido a CRC (Decimal)
+    """
+    if amount is None or not isinstance(amount, Decimal):
+        return Decimal("0")
+
+    moneda_clean = str(moneda or "").strip().upper()
+    if not moneda_clean or moneda_clean == "CRC":
+        return amount
+
+    if tipo_cambio is None or not isinstance(tipo_cambio, Decimal) or tipo_cambio <= Decimal("0"):
+        return amount
+
+    return amount * tipo_cambio

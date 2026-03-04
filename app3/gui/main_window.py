@@ -24,6 +24,7 @@ from app3.core.classification_utils import (
 )
 from app3.core.classifier import ClassificationDB, build_dest_folder, classify_record
 from app3.core.factura_index import FacturaIndexer
+from app3.core.iva_utils import apply_exchange_rate
 from app3.core.models import FacturaRecord
 from app3.core.session import ClientSession
 from app3.gui.loading_modal import LoadingOverlay
@@ -2146,6 +2147,21 @@ class App3Window(ctk.CTk):
                             df[col].astype(str).str.replace(" ", "", regex=False).str.replace(",", ".", regex=False),
                             errors="coerce",
                         )
+
+                # Aplicar tipo_cambio a todos los montos si moneda != CRC
+                # tipo_cambio solo sirve como factor, no se modifica
+                if "moneda" in df_all.columns and "tipo_cambio" in df_all.columns:
+                    for idx in df.index:
+                        moneda_str = str(df_all.loc[idx, "moneda"] or "").strip().upper()
+                        if moneda_str and moneda_str != "CRC":
+                            tc_raw = df_all.loc[idx, "tipo_cambio"]
+                            tc = Decimal(str(tc_raw or 0))
+                            if tc > Decimal("0"):
+                                for col in numeric_columns:
+                                    if col in df.columns and pd.notna(df.loc[idx, col]):
+                                        amount = Decimal(str(df.loc[idx, col] or 0))
+                                        converted = apply_exchange_rate(amount, moneda_str, tc)
+                                        df.loc[idx, col] = float(converted)
 
                 if date_column in df.columns:
                     df[date_column] = pd.to_datetime(df[date_column], format="%d/%m/%Y", errors="coerce")
