@@ -216,16 +216,25 @@ Some NC (credit notes) PDFs contain **two claves**:
 
 ## Development Rules (App 3)
 
-### ⚠️ CRITICAL: App 3 Independence Rule
+### 🚨 CRITICAL: App 3 Independence Rule (STRICT ENFORCEMENT)
 
-**If you need logic that exists in App 1 or App 2 → replicate it natively in App 3. NEVER import from `facturacion_system` or `facturacion`.**
+**RULE: ONLY modify files inside `app3/` directory. NEVER touch `APP 1/`, `APP 2/`, or any files outside `app3/`.**
 
-App 3 is 100% independent. All business logic and utilities must be written in `app3/` or use only standard library/external packages. Code from Apps 1 & 2 is not available — and that's intentional.
+**If you need logic from App 1 or App 2:**
+1. ✅ **REPLICATE it natively in `app3/core/`**
+2. ❌ **NEVER import from those apps**
+3. ❌ **NEVER modify files outside `app3/`**
+4. ❌ **NEVER use their code directly**
 
-### Imports & Dependencies
-- **NO imports from App 1 (`facturacion_system`) or App 2 (`facturacion`)** — App 3 is fully independent
-- **All modules must be in `app3/` or its subdirectories**
-- When you need logic that exists elsewhere, replicate it natively in App 3 (see examples: `iva_utils.py`, `xml_manager.py`, `client_profiles.py`)
+App 3 is 100% independent and will eventually REPLACE App 2. All business logic must be written natively in `app3/` using only standard library/external packages.
+
+### Imports & Dependencies (STRICT)
+- ❌ **NO imports from App 1 (`facturacion_system`)** — VIOLATION = REVERT IMMEDIATELY
+- ❌ **NO imports from App 2 (`facturacion`)** — VIOLATION = REVERT IMMEDIATELY
+- ✅ **All modules must be ONLY in `app3/` or its subdirectories**
+- ✅ **Allowed externals:** pandas, openpyxl, requests, cryptography, customtkinter, pymupdf, etc.
+- ✅ **When you need logic that exists in App 1/2, replicate it natively** (examples: `iva_utils.py`, `xml_manager.py`, `client_profiles.py`)
+- ✅ **You can READ files from other apps to understand logic, but NEVER import or modify them**
 
 ### File System
 - **Always use `pathlib.Path`** — Windows paths with `Z:/DATA/` notation
