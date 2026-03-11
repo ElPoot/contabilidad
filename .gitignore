@@ -211,18 +211,11 @@ __marimo__/
 # Claude Code — memoria local del proyecto
 .claude/
 
-# App 2 — cache de nombres/cédulas (se regenera consultando la API de Hacienda)
-APP 2/data/hacienda_cache.db
+# Hacienda API cache (regenerado en cada consulta)
+gestor_contable/data/hacienda_cache.db
 
-# App 2 — logs de auditoría generados en cada ejecución
-APP 2/data/audit_logs/
-
-# App 3 / App 1 — bases de datos de estado y clasificación por cliente
-# (viven en Z:/DATA/…/.metadata/, pero por si se crean localmente)
+# Clasificación y bases de datos de estado (viven en Z:/DATA/…/.metadata/)
 .metadata/
 *.sqlite
 clasificacion.sqlite
 state.sqlite
-
-# App 3 — cache de Hacienda propio (fallback cuando APP 2/data/ no existe)
-app3/data/
