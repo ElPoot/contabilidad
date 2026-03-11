@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from app3.core.settings import get_setting
+from gestor_contable.core.settings import get_setting
 
 logger = logging.getLogger(__name__)
 

@@ -6,10 +6,10 @@ from pathlib import Path
 
 import customtkinter as ctk
 
-from app3.config import client_root, metadata_dir
-from app3.core.client_profiles import load_profiles
-from app3.core.session import ClientSession, resolve_client_session
-from app3.core.settings import get_setting
+from gestor_contable.config import client_root, metadata_dir
+from gestor_contable.core.client_profiles import load_profiles
+from gestor_contable.core.session import ClientSession, resolve_client_session
+from gestor_contable.core.settings import get_setting
 
 # ── PALETA ────────────────────────────────────────────────────────────────────
 BG       = "#0d0f14"

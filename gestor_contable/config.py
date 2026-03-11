@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app3.core.settings import get_setting
+from gestor_contable.core.settings import get_setting
 
 
 def network_drive() -> Path:

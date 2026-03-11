@@ -6,8 +6,8 @@ from tkinter import messagebox, ttk
 
 import customtkinter as ctk
 
-from app3.core.classifier import ClassificationDB, recover_orphaned_pdf
-from app3.core.classification_utils import find_orphaned_pdfs
+from gestor_contable.core.classifier import ClassificationDB, recover_orphaned_pdf
+from gestor_contable.core.classification_utils import find_orphaned_pdfs
 
 # ── PALETA ─────────────────────────────────────────────────────────────────
 BG = "#0d0f14"

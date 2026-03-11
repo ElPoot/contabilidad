@@ -14,22 +14,22 @@ from tkinter import filedialog, messagebox, ttk  # Treeview + diálogos
 
 import logging
 
-from app3.config import metadata_dir
-from app3.core.catalog import CatalogManager
-from app3.core.classification_utils import (
+from gestor_contable.config import metadata_dir
+from gestor_contable.core.catalog import CatalogManager
+from gestor_contable.core.classification_utils import (
     classify_transaction,
     filter_records_by_tab,
     get_classification_label,
     get_tab_statistics,
 )
-from app3.core.classifier import ClassificationDB, build_dest_folder, classify_record
-from app3.core.factura_index import FacturaIndexer
-from app3.core.iva_utils import apply_exchange_rate, parse_decimal_value
-from app3.core.models import FacturaRecord
-from app3.core.session import ClientSession
-from app3.gui.loading_modal import LoadingOverlay
-from app3.gui.pdf_viewer import PDFViewer
-from app3.gui.session_view import SessionView
+from gestor_contable.core.classifier import ClassificationDB, build_dest_folder, classify_record
+from gestor_contable.core.factura_index import FacturaIndexer
+from gestor_contable.core.iva_utils import apply_exchange_rate, parse_decimal_value
+from gestor_contable.core.models import FacturaRecord
+from gestor_contable.core.session import ClientSession
+from gestor_contable.gui.loading_modal import LoadingOverlay
+from gestor_contable.gui.pdf_viewer import PDFViewer
+from gestor_contable.gui.session_view import SessionView
 
 logger = logging.getLogger(__name__)
 
@@ -829,7 +829,7 @@ class App3Window(ctk.CTk):
                 logger.info(f"load_period() tardó {load_time:.2f}s para {len(records)} registros")
 
                 # Escanear PDFs huérfanos
-                from app3.core.classification_utils import find_orphaned_pdfs, create_orphaned_record
+                from gestor_contable.core.classification_utils import find_orphaned_pdfs, create_orphaned_record
                 pf_root = session.folder.parent.parent
                 contabilidades_root = pf_root / "Contabilidades"
                 local_db_records = db.get_records_map()
@@ -1458,7 +1458,7 @@ class App3Window(ctk.CTk):
             return ""
 
         try:
-            from app3.core.client_profiles import load_profiles
+            from gestor_contable.core.client_profiles import load_profiles
             profiles = load_profiles()
 
             # Paso 1: Buscar perfil del cliente por nombre
@@ -2530,7 +2530,7 @@ class App3Window(ctk.CTk):
 
         # Detectar carpetas vacías en thread
         def worker():
-            from app3.core.folder_sanitizer import find_empty_folders
+            from gestor_contable.core.folder_sanitizer import find_empty_folders
             try:
                 empty_folders = find_empty_folders(self.session.folder)
                 self.after(0, lambda: self._show_sanitization_modal(empty_folders))
@@ -2642,7 +2642,7 @@ class App3Window(ctk.CTk):
         modal.destroy()
 
         def worker():
-            from app3.core.folder_sanitizer import delete_empty_folders
+            from gestor_contable.core.folder_sanitizer import delete_empty_folders
             try:
                 deleted, errors = delete_empty_folders(empty_folders)
                 self.after(0, lambda: self._show_sanitization_result(deleted, errors))
@@ -2700,7 +2700,7 @@ class App3Window(ctk.CTk):
         # Ejecutar recuperación
         def worker():
             try:
-                from app3.core.classifier import recover_orphaned_pdf
+                from gestor_contable.core.classifier import recover_orphaned_pdf
                 if recover_orphaned_pdf(orphaned_info, self.db):
                     self.after(0, lambda: self._show_info("✓ Recuperado", "PDF movido exitosamente"))
                     self.after(0, self._load_session, self.session)
@@ -2881,7 +2881,7 @@ class App3Window(ctk.CTk):
         self._btn_create_pdf.configure(state="disabled", text="Generando...")
 
         def _do_generate():
-            from app3.core.pdf_generator import generate_factura_pdf, extract_items_from_xml
+            from gestor_contable.core.pdf_generator import generate_factura_pdf, extract_items_from_xml
             try:
                 # Intentar extraer items del XML
                 items = extract_items_from_xml(r.xml_path) if r.xml_path and r.xml_path.exists() else None
@@ -3320,7 +3320,7 @@ class App3Window(ctk.CTk):
 
         # Detectar duplicados en thread
         def worker():
-            from app3.core.classification_utils import (
+            from gestor_contable.core.classification_utils import (
                 find_duplicates_pdf_origin_vs_classified,
                 find_duplicate_xmls_in_origin,
             )
@@ -3498,7 +3498,7 @@ class App3Window(ctk.CTk):
         errors = []
 
         def worker():
-            from app3.core.classifier import sha256_file
+            from gestor_contable.core.classifier import sha256_file
 
             # Eliminar PDFs redundantes (descargados que ya fueron clasificados)
             for pdf_path in to_delete_pdf:

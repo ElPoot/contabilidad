@@ -18,7 +18,7 @@ try:
 except ImportError:
     fitz = None
 
-from app3.core.models import FacturaRecord
+from gestor_contable.core.models import FacturaRecord
 
 
 def extract_items_from_xml(xml_path: Path | str) -> list[dict] | None:

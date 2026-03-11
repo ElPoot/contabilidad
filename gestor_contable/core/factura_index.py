@@ -344,7 +344,7 @@ class FacturaIndexer:
 
         # ─ Paso 1.5.1: Cargar BD de clasificaciones ─
         try:
-            from app3.core.classifier import ClassificationDB, sha256_file
+            from gestor_contable.core.classifier import ClassificationDB, sha256_file
             db = ClassificationDB(metadata_dir)
             db_records = db.get_records_map()
             logger.info(f"PASO 1.5.1: BD cargada con {len(db_records)} registros clasificados")

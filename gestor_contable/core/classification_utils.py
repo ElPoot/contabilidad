@@ -6,7 +6,7 @@ Clasifica cada factura según la perspectiva del cliente actual.
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from app3.core.models import FacturaRecord
+from gestor_contable.core.models import FacturaRecord
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +342,7 @@ def find_duplicate_pdfs_by_hash(
     # Función worker para calcular SHA256 de un PDF
     def compute_sha256(pdf_path: Path) -> tuple[Path, str | None]:
         try:
-            from app3.core.classifier import sha256_file
+            from gestor_contable.core.classifier import sha256_file
             hash_val = sha256_file(pdf_path)
             return (pdf_path, hash_val)
         except Exception as e:
@@ -426,7 +426,7 @@ def find_duplicates_pdf_origin_vs_classified(
             "a_eliminar": Path,      # siempre en_pdf (la copia redundante)
         }
     """
-    from app3.core.classifier import sha256_file
+    from gestor_contable.core.classifier import sha256_file
 
     redundantes = []
 
@@ -491,7 +491,7 @@ def find_duplicate_xmls_in_origin(
             "a_eliminar": [Path, ...],     # cuáles eliminar (el resto)
         }
     """
-    from app3.core.classifier import sha256_file
+    from gestor_contable.core.classifier import sha256_file
 
     duplicados = []
 

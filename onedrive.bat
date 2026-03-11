@@ -1,0 +1,1 @@
+subst z: "C:\Users\MalwarePRO\OneDrive"
