@@ -4,24 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Accounting toolset for a Costa Rican accounting firm. Three apps that work together:
+Invoice classification and organization system for a Costa Rican accounting firm.
 
 | App | Path | Status | Purpose |
 |-----|------|--------|---------|
-| **App 1 — Mass Download** | `APP 1/facturacion_system/` | Stable | Downloads Gmail/IMAP attachments, organizes XML and PDF by client |
-| **App 2 — XML Processor** | `APP 2/facturacion/` | Stable | Parses XMLs, extracts fields, exports Excel reports |
-| **App 3 — Clasificador** | `app3/` | In development | Visual classifier; fully independent; will replace App 2 |
+| **Clasificador** | `app3/` | Production | Visual invoice classifier; organizes XMLs/PDFs into accounting structure; exports Excel reports |
 
-## Running the Apps
+## Running the App
 
 ```bash
-# App 1 — Mass Download
-python "APP 1/facturacion_system/main.py"
-
-# App 2 — XML Processor
-cd "APP 2" && python facturacion/ui_main.py
-
-# App 3 — Clasificador (from repo root)
+# Clasificador (from repo root)
 python app3/main.py
 ```
 
@@ -35,17 +27,7 @@ Key packages: `customtkinter`, `pymupdf` (fitz), `pandas`, `openpyxl`, `requests
 
 ## Architecture
 
-### App 3 Independence
-
-App 3 is **fully independent** — no imports from App 1 or App 2:
-
-- ✅ Has its own native modules: `xml_manager.py`, `settings.py`, `client_profiles.py`, `classifier.py`, etc.
-- ✅ Uses FILES from Apps 1 & 2 (XMLs, PDFs, Hacienda cache) but not their code
-- ✅ IVA parsing logic is replicated natively in `iva_utils.py`
-
-For detailed module breakdown, see `app3/core/` and supporting documentation.
-
-### App 3 Module Structure
+### Module Structure (Clasificador)
 
 **Core Business Logic:**
 
@@ -60,7 +42,7 @@ app3/core/
   pdf_cache.py           ← PDFCacheManager: caches PDF extraction results
   settings.py            ← get_setting(): configuration management
   client_profiles.py     ← load_profiles(): client folder mappings
-  iva_utils.py           ← parse_decimal_value(): IVA parsing (replicated from App 2)
+  iva_utils.py           ← parse_decimal_value(): IVA parsing
   classification_utils.py ← filter records, get statistics, classify transactions
 ```
 
@@ -90,26 +72,24 @@ Z:/DATA/
   PF-{year}/
     CLIENTES/
       CLIENT_NAME/
-        XML/                      ← XMLs (created by App 1, read by App 3)
-        PDF/                      ← PDFs (created by App 1, read by App 3)
-          SENDER/                 ← subfolder by sender (App 1)
+        XML/                      ← Source XMLs
+        PDF/                      ← Source PDFs
+          SENDER/                 ← subfolder by sender
         .metadata/
-          state.sqlite            ← download history (App 1)
-          pdf_cache.json          ← PDF scan results (App 3)
-          clasificacion.sqlite    ← classification records (App 3)
-          catalogo_cuentas.json   ← per-client account catalog (App 3)
-    Contabilidades/               ← destination folder for classified PDFs (App 3)
+          pdf_cache.json          ← PDF scan results (cached)
+          clasificacion.sqlite    ← classification records (SQLite)
+          catalogo_cuentas.json   ← per-client account catalog (JSON)
+    Contabilidades/               ← destination folder for classified PDFs
       {mes}/{client_name}/
         COMPRAS/...
         GASTOS/...
+        ACTIVOS/...
         OGND/...
   CONFIG/
-    client_profiles.json          ← client mappings (App 1 & App 3)
-    settings.json                 ← configuration (App 3)
-  hacienda_cache.db               ← Hacienda API cache (App 2 & App 3)
+    client_profiles.json          ← client mappings
+    settings.json                 ← configuration
+  hacienda_cache.db               ← Hacienda API cache (shared, read-only)
 ```
-
-**Key point:** App 3 reads from files created by App 1, but does not modify them.
 
 ### Threading Rules
 
@@ -129,27 +109,14 @@ Use `Queue` + `.after()` polling pattern (as in App 2's `ui_main.py`).
 
 All SQLite access must use `threading.Lock()`. See `ClassificationDB` in `app3/core/classifier.py` and `StateDB` in `APP 1/facturacion_system/core/gmail_utils.py`.
 
-## Migration Status (App 3)
+## System Status
 
-### ✅ COMPLETED — Full Independence from Apps 1 & 2
-
-**What was migrated/replicated:**
-- XML parsing → `app3/core/xml_manager.py` (native CRXMLManager)
-- PDF scanning & clave extraction → `app3/core/factura_index.py`
-- IVA calculation → `app3/core/iva_utils.py`
-- Classification & file moves → `app3/core/classifier.py`
-- Configuration management → `app3/core/settings.py`
-- Client profiles → `app3/core/client_profiles.py`
-- Hacienda API integration → `app3/core/xml_manager.py`
-
-**What is shared (read-only):**
-- XMLs & PDFs on network drive (created by App 1, read by App 3)
-- Hacienda cache database (preferentially uses App 2's cache if available)
-- Client profiles JSON (created by App 1, read by App 3)
-
-**No code dependencies:**
-- ❌ Does NOT import from App 1 (`facturacion_system`)
-- ❌ Does NOT import from App 2 (`facturacion`)
+**Standalone Application:**
+- ✅ Unified, self-contained codebase in `app3/`
+- ✅ All business logic native (XML parsing, IVA calculation, classification, etc.)
+- ✅ No external code dependencies
+- ✅ Reads from network drive (XMLs, PDFs) for source data
+- ✅ Writes classified files to `Contabilidades/` directory
 
 ---
 
@@ -216,25 +183,13 @@ Some NC (credit notes) PDFs contain **two claves**:
 
 ## Development Rules (App 3)
 
-### 🚨 CRITICAL: App 3 Independence Rule (STRICT ENFORCEMENT)
+### Development Scope
 
-**RULE: ONLY modify files inside `app3/` directory. NEVER touch `APP 1/`, `APP 2/`, or any files outside `app3/`.**
+**RULE: ONLY modify files inside `app3/` directory.**
 
-**If you need logic from App 1 or App 2:**
-1. ✅ **REPLICATE it natively in `app3/core/`**
-2. ❌ **NEVER import from those apps**
-3. ❌ **NEVER modify files outside `app3/`**
-4. ❌ **NEVER use their code directly**
-
-App 3 is 100% independent and will eventually REPLACE App 2. All business logic must be written natively in `app3/` using only standard library/external packages.
-
-### Imports & Dependencies (STRICT)
-- ❌ **NO imports from App 1 (`facturacion_system`)** — VIOLATION = REVERT IMMEDIATELY
-- ❌ **NO imports from App 2 (`facturacion`)** — VIOLATION = REVERT IMMEDIATELY
-- ✅ **All modules must be ONLY in `app3/` or its subdirectories**
+- ✅ **All modules must be in `app3/` or its subdirectories**
 - ✅ **Allowed externals:** pandas, openpyxl, requests, cryptography, customtkinter, pymupdf, etc.
-- ✅ **When you need logic that exists in App 1/2, replicate it natively** (examples: `iva_utils.py`, `xml_manager.py`, `client_profiles.py`)
-- ✅ **You can READ files from other apps to understand logic, but NEVER import or modify them**
+- ✅ **Use standard library + external packages only**
 
 ### File System
 - **Always use `pathlib.Path`** — Windows paths with `Z:/DATA/` notation
@@ -266,10 +221,9 @@ Consistent across all GUI modules:
 
 `https://api.hacienda.go.cr/fe/ae?identificacion={cedula}`
 
-**App 3 Implementation:**
+**Implementation:**
 - `CRXMLManager` in `app3/core/xml_manager.py` handles API calls and caching
-- **Cache preference:** `APP 2/data/hacienda_cache.db` if exists (shared with App 2)
-- **Fallback:** `app3/data/hacienda_cache.db` if App 2 cache not found
+- **Cache location:** `Z:/DATA/hacienda_cache.db` (shared, read-only)
 - **Timeout:** `hacienda_timeout` setting (default 10s)
 - **Retries:** `hacienda_retries` setting (default 2)
 
