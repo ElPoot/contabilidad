@@ -8,13 +8,13 @@ Invoice classification and organization system for a Costa Rican accounting firm
 
 | App | Path | Status | Purpose |
 |-----|------|--------|---------|
-| **Clasificador** | `app3/` | Production | Visual invoice classifier; organizes XMLs/PDFs into accounting structure; exports Excel reports |
+| **Gestor Contable** | `gestor_contable/` | Production | Invoice classification and organization; manages XMLs/PDFs into accounting structure; exports Excel reports |
 
 ## Running the App
 
 ```bash
-# Clasificador (from repo root)
-python app3/main.py
+# Gestor Contable (from repo root)
+python gestor_contable/main.py
 ```
 
 ## Installing Dependencies
@@ -27,12 +27,12 @@ Key packages: `customtkinter`, `pymupdf` (fitz), `pandas`, `openpyxl`, `requests
 
 ## Architecture
 
-### Module Structure (Clasificador)
+### Module Structure (Gestor Contable)
 
 **Core Business Logic:**
 
 ```
-app3/core/
+gestor_contable/core/
   models.py              ← FacturaRecord: all XML fields + IVA + state
   xml_manager.py         ← CRXMLManager: XML parsing, Hacienda API, cache
   factura_index.py       ← FacturaIndexer: loads XMLs, links PDFs, extracts claves
@@ -49,7 +49,7 @@ app3/core/
 **GUI:**
 
 ```
-app3/gui/
+gestor_contable/gui/
   main_window.py         ← App3Window: 3-column layout (invoice list / PDF viewer / classifier)
   session_view.py        ← SessionView: login modal by tax ID (cédula)
   pdf_viewer.py          ← PDFViewer: pymupdf rendering, zoom, right-click text copy
@@ -59,7 +59,7 @@ app3/gui/
 **Entry Points:**
 
 ```
-app3/
+gestor_contable/
   main.py                ← Application entry point
   config.py              ← network_drive(), client_root(), metadata_dir()
   bootstrap.py           ← No-op (legacy)
@@ -107,12 +107,12 @@ Use `Queue` + `.after()` polling pattern (as in App 2's `ui_main.py`).
 
 ### SQLite Thread Safety
 
-All SQLite access must use `threading.Lock()`. See `ClassificationDB` in `app3/core/classifier.py` and `StateDB` in `APP 1/facturacion_system/core/gmail_utils.py`.
+All SQLite access must use `threading.Lock()`. See `ClassificationDB` in `gestor_contable/core/classifier.py` and `StateDB` in `APP 1/facturacion_system/core/gmail_utils.py`.
 
 ## System Status
 
 **Standalone Application:**
-- ✅ Unified, self-contained codebase in `app3/`
+- ✅ Unified, self-contained codebase in `gestor_contable/`
 - ✅ All business logic native (XML parsing, IVA calculation, classification, etc.)
 - ✅ No external code dependencies
 - ✅ Reads from network drive (XMLs, PDFs) for source data
@@ -124,7 +124,7 @@ All SQLite access must use `threading.Lock()`. See `ClassificationDB` in `app3/c
 
 ### Safe File Move (ATOMIC & NEVER SKIP)
 
-Invoices are **fiscal documents**. A failed move that loses the original is critical. The atomic protocol in `app3/core/classifier.py:classify_record()`:
+Invoices are **fiscal documents**. A failed move that loses the original is critical. The atomic protocol in `gestor_contable/core/classifier.py:classify_record()`:
 
 1. Compute SHA256 of original PDF
 2. Create destination folder with `mkdir(parents=True, exist_ok=True)`
@@ -185,22 +185,22 @@ Some NC (credit notes) PDFs contain **two claves**:
 
 ### Development Scope
 
-**RULE: ONLY modify files inside `app3/` directory.**
+**RULE: ONLY modify files inside `gestor_contable/` directory.**
 
-- ✅ **All modules must be in `app3/` or its subdirectories**
+- ✅ **All modules must be in `gestor_contable/` or its subdirectories**
 - ✅ **Allowed externals:** pandas, openpyxl, requests, cryptography, customtkinter, pymupdf, etc.
 - ✅ **Use standard library + external packages only**
 
 ### File System
 - **Always use `pathlib.Path`** — Windows paths with `Z:/DATA/` notation
-- **Never hardcode paths** — use `get_setting('network_drive')` from `app3/core/settings.py`
-- **Folder names may have special characters** — use `_sanitize_folder()` from `app3/core/classifier.py`
+- **Never hardcode paths** — use `get_setting('network_drive')` from `gestor_contable/core/settings.py`
+- **Folder names may have special characters** — use `_sanitize_folder()` from `gestor_contable/core/classifier.py`
 - **`Z:/` may be unavailable** — wrap all disk operations in `try/except` with clear error messages
 
 ### Data Handling
 - **Hacienda numeric key = exactly 50 digits**
 - **Use `pymupdf` (`fitz`) for all PDF work** — `pdfplumber` is no longer used
-- **IVA rates:** see `IVA_TARIFA_CODE_MAP` in `app3/core/iva_utils.py`
+- **IVA rates:** see `IVA_TARIFA_CODE_MAP` in `gestor_contable/core/iva_utils.py`
 - **Decimal parsing:** use `parse_decimal_value()` from `iva_utils.py` (handles EU and US formats)
 
 ### Threading & UI
@@ -222,7 +222,7 @@ Consistent across all GUI modules:
 `https://api.hacienda.go.cr/fe/ae?identificacion={cedula}`
 
 **Implementation:**
-- `CRXMLManager` in `app3/core/xml_manager.py` handles API calls and caching
+- `CRXMLManager` in `gestor_contable/core/xml_manager.py` handles API calls and caching
 - **Cache location:** `Z:/DATA/hacienda_cache.db` (shared, read-only)
 - **Timeout:** `hacienda_timeout` setting (default 10s)
 - **Retries:** `hacienda_retries` setting (default 2)

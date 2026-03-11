@@ -20,17 +20,17 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _resolve_cache_path() -> str:
-    """Prefiere cache de App 2 si existe; si no, usa app3/data/."""
+    """Resuelve la ruta del cache de Hacienda (network drive o local)."""
     repo_root = Path(__file__).resolve().parent.parent.parent
     candidates = [
         Path(os.getenv("HACIENDA_CACHE_DB", "")) if os.getenv("HACIENDA_CACHE_DB") else None,
-        repo_root / "APP 2" / "data" / "hacienda_cache.db",   # reutiliza cache existente
-        repo_root / "app3" / "data" / "hacienda_cache.db",    # fallback propio
+        Path("Z:/DATA/hacienda_cache.db"),  # network drive (shared, read-only)
     ]
     for c in candidates:
         if c and c.exists():
             return str(c)
-    fallback = repo_root / "app3" / "data" / "hacienda_cache.db"
+    # Fallback: cache local en gestor_contable/data/
+    fallback = repo_root / "gestor_contable" / "data" / "hacienda_cache.db"
     fallback.parent.mkdir(parents=True, exist_ok=True)
     return str(fallback)
 
