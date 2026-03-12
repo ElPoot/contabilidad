@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Gestor Contable — Plan de Mejoras</title>
+  <style>
+    :root {
+      --bg:      #0d0f14;
+      --surface: #13161e;
+      --card:    #181c26;
+      --border:  #252a38;
+      --teal:    #2dd4bf;
+      --teal2:   #1a9e8f;
+      --text:    #e8eaf0;
+      --muted:   #6b7280;
+      --danger:  #f87171;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --purple:  #a78bfa;
+      --blue:    #60a5fa;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html, body {
+      height:100%; overflow:hidden;
+      font-family:'Segoe UI', system-ui, sans-serif;
+      background:var(--bg); color:var(--text);
+    }
+
+    /* ── DECK ─────────────────────────────── */
+    .deck { width:100vw; height:100vh; position:relative; }
+    .slide {
+      position:absolute; inset:0;
+      display:flex; flex-direction:column;
+      justify-content:center; align-items:center;
+      padding:52px 64px;
+      opacity:0; pointer-events:none;
+      transition:opacity .5s ease, transform .5s ease;
+      transform:translateX(50px);
+    }
+    .slide.active  { opacity:1; pointer-events:all; transform:translateX(0); }
+    .slide.exit    { opacity:0; transform:translateX(-50px); }
+
+    /* ── CONTROLS ─────────────────────────── */
+    #progress-bar {
+      position:fixed; top:0; left:0; height:3px;
+      background:linear-gradient(90deg,var(--danger),var(--warning),var(--teal));
+      transition:width .4s ease; z-index:100;
+    }
+    #slide-num {
+      position:fixed; top:16px; right:22px;
+      font-size:12px; color:var(--muted); z-index:100;
+    }
+    .nav-btn {
+      position:fixed; top:50%; transform:translateY(-50%);
+      background:var(--surface); border:1px solid var(--border);
+      color:var(--text); width:44px; height:44px; border-radius:50%;
+      font-size:18px; cursor:pointer; z-index:100;
+      display:flex; align-items:center; justify-content:center;
+      transition:background .2s, border-color .2s;
+    }
+    .nav-btn:hover { background:var(--card); border-color:var(--teal); }
+    #btn-prev { left:16px; }
+    #btn-next { right:16px; }
+    #dots {
+      position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+      display:flex; gap:8px; z-index:100; flex-wrap:wrap; justify-content:center;
+      max-width:90vw;
+    }
+    .dot {
+      width:7px; height:7px; border-radius:50%;
+      background:var(--border); cursor:pointer;
+      transition:background .3s, transform .3s;
+    }
+    .dot.active { background:var(--teal); transform:scale(1.5); }
+
+    /* ── TYPOGRAPHY ───────────────────────── */
+    .tag {
+      font-size:11px; font-weight:700; letter-spacing:.12em;
+      text-transform:uppercase; margin-bottom:12px;
+    }
+    .tag-red    { color:var(--danger); }
+    .tag-orange { color:var(--warning); }
+    .tag-yellow { color:#fb923c; }
+    .tag-blue   { color:var(--blue); }
+    .tag-teal   { color:var(--teal); }
+    .tag-purple { color:var(--purple); }
+
+    h1 { font-size:clamp(28px,4.5vw,56px); font-weight:800; line-height:1.1; letter-spacing:-.02em; }
+    h2 { font-size:clamp(20px,3vw,36px); font-weight:700; line-height:1.2; }
+    h3 { font-size:clamp(14px,1.6vw,18px); font-weight:600; }
+    p, li { font-size:clamp(12px,1.2vw,15px); line-height:1.7; color:var(--muted); }
+    strong { color:var(--text); }
+    code {
+      font-family:'Consolas','Cascadia Code',monospace;
+      font-size:.9em; background:#0a0c10;
+      padding:2px 7px; border-radius:5px;
+      color:#67e8f9; border:1px solid var(--border);
+    }
+
+    .divider {
+      width:50px; height:3px; border-radius:2px;
+      margin:16px 0;
+    }
+    .divider-red    { background:linear-gradient(90deg,var(--danger),transparent); }
+    .divider-orange { background:linear-gradient(90deg,var(--warning),transparent); }
+    .divider-yellow { background:linear-gradient(90deg,#fb923c,transparent); }
+    .divider-blue   { background:linear-gradient(90deg,var(--blue),transparent); }
+    .divider-teal   { background:linear-gradient(90deg,var(--teal),transparent); }
+    .divider-purple { background:linear-gradient(90deg,var(--purple),transparent); }
+    .divider-center { margin:16px auto; }
+
+    /* ── CARDS ────────────────────────────── */
+    .card {
+      background:var(--card); border:1px solid var(--border);
+      border-radius:14px; padding:22px; position:relative; overflow:hidden;
+    }
+    .card-red    { border-top:2px solid var(--danger); }
+    .card-orange { border-top:2px solid var(--warning); }
+    .card-yellow { border-top:2px solid #fb923c; }
+    .card-blue   { border-top:2px solid var(--blue); }
+    .card-teal   { border-top:2px solid var(--teal); }
+    .card-purple { border-top:2px solid var(--purple); }
+
+    /* ── GRID ─────────────────────────────── */
+    .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:20px; width:100%; max-width:960px; }
+    .grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; width:100%; max-width:1000px; }
+    .grid-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; width:100%; max-width:1100px; }
+
+    /* ── SEVERITY BADGE ───────────────────── */
+    .sev {
+      display:inline-flex; align-items:center; gap:5px;
+      font-size:11px; font-weight:700; padding:3px 10px;
+      border-radius:20px; text-transform:uppercase; letter-spacing:.06em;
+    }
+    .sev-red    { background:rgba(248,113,113,.15); color:var(--danger);  border:1px solid rgba(248,113,113,.3); }
+    .sev-orange { background:rgba(251,191,36,.15);  color:var(--warning); border:1px solid rgba(251,191,36,.3); }
+    .sev-yellow { background:rgba(251,146,60,.15);  color:#fb923c;        border:1px solid rgba(251,146,60,.3); }
+    .sev-blue   { background:rgba(96,165,250,.15);  color:var(--blue);    border:1px solid rgba(96,165,250,.3); }
+    .sev-purple { background:rgba(167,139,250,.15); color:var(--purple);  border:1px solid rgba(167,139,250,.3); }
+
+    /* ── CODE BLOCK ───────────────────────── */
+    .code-block {
+      background:#080a0e; border:1px solid var(--border);
+      border-radius:10px; padding:16px 20px;
+      font-family:'Consolas','Cascadia Code',monospace;
+      font-size:12px; line-height:1.9; width:100%;
+    }
+    .cm { color:var(--muted); }
+    .kw { color:#c084fc; }
+    .fn { color:#67e8f9; }
+    .st { color:#86efac; }
+    .num{ color:#f9a8d4; }
+    .bad{ color:var(--danger); text-decoration:line-through; }
+    .good{color:var(--success); }
+
+    /* ── ISSUE ROW ────────────────────────── */
+    .issue-row {
+      display:flex; align-items:flex-start; gap:14px;
+      padding:14px 0; border-bottom:1px solid var(--border);
+    }
+    .issue-row:last-child { border-bottom:none; }
+    .issue-icon { font-size:20px; flex-shrink:0; margin-top:2px; }
+    .issue-title { font-size:14px; font-weight:600; color:var(--text); margin-bottom:4px; }
+    .issue-desc  { font-size:13px; color:var(--muted); }
+
+    /* ── METRIC ───────────────────────────── */
+    .metric { text-align:center; padding:22px 16px; }
+    .metric-value {
+      font-size:clamp(24px,3.5vw,42px); font-weight:800;
+      line-height:1; margin-bottom:8px;
+    }
+    .metric-label { font-size:12px; color:var(--muted); }
+
+    /* ── PRIORITY TABLE ───────────────────── */
+    .ptable { width:100%; border-collapse:collapse; max-width:820px; }
+    .ptable th, .ptable td {
+      padding:12px 16px; text-align:left; font-size:13px;
+      border-bottom:1px solid var(--border);
+    }
+    .ptable th {
+      font-size:11px; font-weight:700; letter-spacing:.08em;
+      text-transform:uppercase; color:var(--muted);
+    }
+    .ptable tr:last-child td { border-bottom:none; }
+    .ptable tr:hover td { background:rgba(255,255,255,.02); }
+
+    /* ── BEFORE/AFTER ─────────────────────── */
+    .ba-wrap { display:grid; grid-template-columns:1fr 1fr; gap:16px; width:100%; max-width:960px; }
+    .ba-label {
+      font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
+      margin-bottom:10px;
+    }
+
+    /* ── ROADMAP ITEM ─────────────────────── */
+    .rm-item {
+      display:flex; gap:16px; align-items:flex-start;
+      padding:14px 0; border-bottom:1px solid var(--border);
+    }
+    .rm-item:last-child { border-bottom:none; }
+    .rm-num {
+      width:32px; height:32px; border-radius:50%; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center;
+      font-weight:800; font-size:13px; margin-top:2px;
+    }
+    .rm-num-red    { background:rgba(248,113,113,.2); color:var(--danger);  border:1px solid rgba(248,113,113,.4); }
+    .rm-num-orange { background:rgba(251,191,36,.2);  color:var(--warning); border:1px solid rgba(251,191,36,.4); }
+    .rm-num-blue   { background:rgba(96,165,250,.2);  color:var(--blue);    border:1px solid rgba(96,165,250,.4); }
+    .rm-title { font-size:14px; font-weight:600; color:var(--text); margin-bottom:3px; }
+    .rm-sub   { font-size:12px; color:var(--muted); }
+
+    /* ── GLOW BACKGROUNDS ─────────────────── */
+    .glow-red  { background:radial-gradient(ellipse at 30% 40%, rgba(248,113,113,.05) 0%, transparent 60%), var(--bg); }
+    .glow-teal { background:radial-gradient(ellipse at center, rgba(45,212,191,.06) 0%, transparent 65%), var(--bg); }
+  </style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+<div id="slide-num"></div>
+<button class="nav-btn" id="btn-prev">&#8592;</button>
+<button class="nav-btn" id="btn-next">&#8594;</button>
+<div id="dots"></div>
+
+<div class="deck" id="deck">
+
+  <!-- ══ 0 · PORTADA ══════════════════════════════════════════════════════════ -->
+  <div class="slide" style="background:radial-gradient(ellipse at 25% 50%,rgba(248,113,113,.05),transparent 55%),radial-gradient(ellipse at 80% 20%,rgba(251,191,36,.04),transparent 50%),var(--bg); text-align:center;">
+    <div class="tag tag-red" style="margin-bottom:10px;">Análisis Técnico · Gestor Contable</div>
+    <h1 style="max-width:760px; margin-bottom:18px;">
+      Plan de <span style="color:var(--warning)">Mejoras</span><br/>
+      <span style="color:var(--danger)">16 hallazgos</span> identificados
+    </h1>
+    <p style="max-width:500px; font-size:15px; margin-bottom:32px;">
+      Revisión completa del código fuente.<br/>
+      <strong>Bugs, rendimiento, arquitectura y funcionalidades faltantes.</strong>
+    </p>
+    <div style="display:flex; gap:12px; flex-wrap:wrap; justify-content:center;">
+      <span class="sev sev-red">🔴 3 Bugs críticos</span>
+      <span class="sev sev-orange">🟠 3 Rendimiento</span>
+      <span class="sev sev-yellow">🟡 4 Arquitectura</span>
+      <span class="sev sev-blue">🔵 6 Funcionalidades</span>
+    </div>
+  </div>
+
+  <!-- ══ 1 · RESUMEN EJECUTIVO ════════════════════════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:1060px;">
+      <div class="tag tag-teal">Resumen</div>
+      <h2 style="margin-bottom:8px;">Estado actual del proyecto</h2>
+      <div class="divider divider-teal"></div>
+
+      <div class="grid-4" style="margin-top:28px;">
+        <div class="card card-red metric">
+          <div class="metric-value" style="color:var(--danger)">3</div>
+          <div class="metric-label">Bugs de código<br/>(lógica incorrecta o duplicada)</div>
+        </div>
+        <div class="card card-orange metric">
+          <div class="metric-value" style="color:var(--warning)">3</div>
+          <div class="metric-label">Problemas de<br/>rendimiento</div>
+        </div>
+        <div class="card card-yellow metric">
+          <div class="metric-value" style="color:#fb923c">4</div>
+          <div class="metric-label">Problemas de<br/>arquitectura</div>
+        </div>
+        <div class="card card-blue metric">
+          <div class="metric-value" style="color:var(--blue)">6</div>
+          <div class="metric-label">Funcionalidades<br/>faltantes</div>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:20px; align-items:start;">
+        <div class="card card-red" style="padding:20px;">
+          <h3 style="color:var(--danger); margin-bottom:12px;">⚠ Riesgo inmediato</h3>
+          <div class="issue-row">
+            <span class="issue-icon">💾</span>
+            <div>
+              <div class="issue-title">JSON del caché sin escritura atómica</div>
+              <div class="issue-desc">Si el proceso muere a mitad de guardado, <code>pdf_cache.json</code> queda corrupto y se pierde el caché de todos los PDFs del cliente.</div>
+            </div>
+          </div>
+          <div class="issue-row" style="border-bottom:none;">
+            <span class="issue-icon">🧪</span>
+            <div>
+              <div class="issue-title">Sin suite de tests</div>
+              <div class="issue-desc">El flujo crítico (movimiento atómico de PDF, cálculo de IVA, enlace XML↔PDF) no tiene ninguna cobertura automática.</div>
+            </div>
+          </div>
+        </div>
+        <div class="card card-blue" style="padding:20px;">
+          <h3 style="color:var(--blue); margin-bottom:12px;">💡 Mayor impacto en UX</h3>
+          <div class="issue-row">
+            <span class="issue-icon">⌨️</span>
+            <div>
+              <div class="issue-title">Sin atajos de teclado</div>
+              <div class="issue-desc">La app es 100% mouse. Clasificar 200 facturas requiere cientos de clics que podrían ser teclas.</div>
+            </div>
+          </div>
+          <div class="issue-row" style="border-bottom:none;">
+            <span class="issue-icon">📊</span>
+            <div>
+              <div class="issue-title">Sin progreso detallado en batch</div>
+              <div class="issue-desc">Solo se muestra un spinner. El usuario no sabe si quedan 5 segundos o 5 minutos.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 2 · BUG 1 — CONDICIÓN MUERTA ════════════════════════════════════════ -->
+  <div class="slide glow-red">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-red">Bug #1 · classification_utils.py : 46</div>
+      <h2 style="margin-bottom:8px;">Condición lógica <span style="color:var(--danger)">muerta</span></h2>
+      <div class="divider divider-red"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div>
+          <p style="margin-bottom:16px;">En <code>classify_transaction()</code>, la rama <code>sin_receptor</code> nunca puede ejecutarse con la condición que tiene porque la primera parte es <strong>siempre True</strong> en ese punto del flujo.</p>
+
+          <div class="code-block">
+<span class="cm"># Si emisor == cliente → ya retornó en línea 36</span>
+<span class="kw">if</span> emisor_ced == client_ced:          <span class="cm"># línea 36</span>
+    <span class="kw">return</span> <span class="st">"ingreso"</span>
+
+<span class="kw">if</span> receptor_ced == client_ced:         <span class="cm"># línea 40</span>
+    <span class="kw">return</span> <span class="st">"egreso"</span>
+
+<span class="cm"># ↓ Aquí `not emisor_ced == client_ced` es SIEMPRE True</span>
+<span class="kw">if</span> <span class="bad">not emisor_ced == client_ced</span> <span class="kw">and</span> receptor_empty:
+    <span class="kw">return</span> <span class="st">"sin_receptor"</span>
+
+<span class="cm"># ─────────────────────────────────────</span>
+<span class="cm"># Correcto:</span>
+<span class="kw">if</span> <span class="good">receptor_empty</span>:
+    <span class="kw">return</span> <span class="st">"sin_receptor"</span>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-red">
+            <h3 style="margin-bottom:8px; color:var(--danger)">¿Por qué importa?</h3>
+            <p>Aunque el resultado es el mismo, el código es <strong>engañoso para el siguiente desarrollador</strong>. Si alguien reordena las ramas o refactoriza, puede romper la lógica pensando que la condición extra era necesaria.</p>
+          </div>
+          <div class="card card-orange">
+            <h3 style="margin-bottom:8px; color:var(--warning)">Contexto</h3>
+            <p>Esta función clasifica cada factura como ingreso/egreso/sin_receptor/ors según la perspectiva del cliente. Es llamada por <strong>cada factura en cada pestaña</strong>, así que también tiene impacto en rendimiento si se expande la lógica.</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-red">Severidad: Media</span>
+            <span class="sev sev-orange">Esfuerzo: 5 min</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 3 · BUG 2 — DATEPICKER DUPLICADO ════════════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-red">Bug #2 · main_window.py</div>
+      <h2 style="margin-bottom:8px;">Dos calendarios, <span style="color:var(--danger)">misma lógica</span></h2>
+      <div class="divider divider-red"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div class="card card-red">
+          <h3 style="margin-bottom:12px; color:var(--danger)">Código duplicado</h3>
+          <div class="issue-row">
+            <span class="issue-icon">📅</span>
+            <div>
+              <div class="issue-title">DatePickerPopup (línea ~135)</div>
+              <div class="issue-desc">Modal con barra de título, para edición de fecha en formulario.</div>
+            </div>
+          </div>
+          <div class="issue-row" style="border-bottom:none;">
+            <span class="issue-icon">📅</span>
+            <div>
+              <div class="issue-title">DatePickerDropdown (línea ~244)</div>
+              <div class="issue-desc">Calendario anclado sin barra de título, comportamiento dropdown.</div>
+            </div>
+          </div>
+          <p style="margin-top:14px;">Comparten <strong>~90% del código</strong>: navegación de meses, grilla de días, botones Hoy/Limpiar, parseo de fechas.</p>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-orange">
+            <h3 style="margin-bottom:8px; color:var(--warning)">También: <code>_parse_date_any</code> duplicada</h3>
+            <p>La función que parsea <code>"dd/mm/yyyy"</code> y <code>"yyyy-mm-dd"</code> está definida <strong>dos veces</strong> en el mismo archivo: una dentro de <code>DatePickerPopup</code> como método estático, y otra vez como función suelta en línea ~232.</p>
+          </div>
+          <div class="card card-red">
+            <h3 style="margin-bottom:8px; color:var(--danger)">Consecuencia real</h3>
+            <p>Si se corrige un bug en el calendario (ej: semana empieza en domingo), hay que corregirlo en <strong>dos lugares distintos</strong>. Históricamente estos desfases generan bugs silenciosos.</p>
+          </div>
+          <div class="card" style="padding:16px;">
+            <h3 style="margin-bottom:8px;">Solución</h3>
+            <p>Extraer la lógica del calendario a una clase base <code>_BaseDatePicker</code> y que ambas hereden de ella. Trivial con herencia de CTkToplevel.</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-red">Severidad: Media</span>
+            <span class="sev sev-orange">Esfuerzo: 30 min</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 4 · BUG 3 — JSON CACHE NO ATÓMICO ═══════════════════════════════════ -->
+  <div class="slide glow-red">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-red">Bug #3 · pdf_cache.py : 94</div>
+      <h2 style="margin-bottom:8px;">Cache JSON <span style="color:var(--danger)">no atómico</span></h2>
+      <div class="divider divider-red"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div>
+          <p style="margin-bottom:16px;">La ironía: el sistema tiene un protocolo SHA-256 ultra-seguro para mover PDFs, pero el archivo de caché que acelera toda la carga <strong>puede corromperse con un corte de luz.</strong></p>
+
+          <div class="code-block">
+<span class="cm"># Actualmente — NO atómico</span>
+<span class="kw">def</span> <span class="fn">save_cache</span>(self):
+    <span class="kw">with</span> open(self.cache_file, <span class="st">"w"</span>) <span class="kw">as</span> f:
+        json.dump(self.cache, f)  <span class="cm"># ← si muere aquí: JSON roto</span>
+
+<span class="cm"># ─────────────────────────────────────</span>
+<span class="cm"># Correcto — escritura atómica</span>
+<span class="kw">def</span> <span class="fn">save_cache</span>(self):
+    tmp = self.cache_file.<span class="fn">with_suffix</span>(<span class="st">".tmp"</span>)
+    <span class="kw">with</span> open(tmp, <span class="st">"w"</span>) <span class="kw">as</span> f:
+        json.dump(self.cache, f)
+    tmp.<span class="fn">replace</span>(self.cache_file)   <span class="cm"># ← atómico en Windows/Linux</span>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-red">
+            <h3 style="margin-bottom:8px; color:var(--danger)">¿Qué pasa si se corrompe?</h3>
+            <p>Al iniciar la app, <code>_load_cache</code> falla silenciosamente y devuelve un dict vacío. Resultado: <strong>todos los PDFs se re-escanean desde cero</strong>, lo que puede tomar varios minutos en clientes con cientos de facturas sobre red.</p>
+          </div>
+          <div class="card card-orange">
+            <h3 style="margin-bottom:8px; color:var(--warning)">Escenarios reales de corrupción</h3>
+            <ul style="list-style:none; display:flex; flex-direction:column; gap:6px;">
+              <li style="font-size:13px; color:var(--muted)">⚡ Corte de electricidad durante guardado</li>
+              <li style="font-size:13px; color:var(--muted)">🌐 Pérdida de conexión a la unidad Z: a mitad de escritura</li>
+              <li style="font-size:13px; color:var(--muted)">🔄 Cierre forzado de la app (tarea finalizada)</li>
+            </ul>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-red">Severidad: Alta</span>
+            <span class="sev sev-orange">Esfuerzo: 15 min</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 5 · RENDIMIENTO 1 — get_tab_statistics ═══════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-orange">Rendimiento #1 · classification_utils.py : 137</div>
+      <h2 style="margin-bottom:8px;"><code>get_tab_statistics</code> es <span style="color:var(--warning)">8× más lento</span> de lo necesario</h2>
+      <div class="divider divider-orange"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div>
+          <p style="margin-bottom:16px;">Para calcular los contadores de cada pestaña, llama a <code>filter_records_by_tab</code> <strong>8 veces</strong> — una por pestaña. Cada llamada itera todos los registros y llama a <code>classify_transaction</code> por cada uno.</p>
+
+          <div class="code-block">
+<span class="cm"># Actual: O(8 × n) — itera TODO 8 veces</span>
+tabs = [<span class="st">"todas"</span>, <span class="st">"ingreso"</span>, <span class="st">"egreso"</span>, ...]
+<span class="kw">for</span> tab <span class="kw">in</span> tabs:
+    filtered = <span class="fn">filter_records_by_tab</span>(records, tab, ...)
+    <span class="cm"># ↑ llama classify_transaction por cada record</span>
+
+<span class="cm"># Correcto: O(n) — un solo recorrido</span>
+counters = {tab: {<span class="st">"count"</span>: <span class="num">0</span>, <span class="st">"clasificados"</span>: <span class="num">0</span>} <span class="kw">for</span> tab <span class="kw">in</span> tabs}
+<span class="kw">for</span> r <span class="kw">in</span> records:
+    tab = <span class="fn">classify_transaction</span>(r, cedula)
+    counters[tab][<span class="st">"count"</span>] += <span class="num">1</span>
+    <span class="cm"># ...</span>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-orange">
+            <h3 style="margin-bottom:8px; color:var(--warning)">Impacto real</h3>
+            <p>Esta función se llama <strong>en cada recarga de la lista</strong> (al clasificar una factura, al cambiar de pestaña, al refrescar). Con 500 facturas:</p>
+            <br/>
+            <p>• Actual: <strong style="color:var(--danger)">~4 000 llamadas</strong> a <code>classify_transaction</code></p>
+            <p>• Corregido: <strong style="color:var(--success)">~500 llamadas</strong> a <code>classify_transaction</code></p>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:8px;">Contexto</h3>
+            <p>La función existe porque las pestañas necesitan saber cuántas facturas hay en cada categoría para mostrar los badges con números. Es un cálculo legítimo, solo mal implementado.</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-orange">Severidad: Media</span>
+            <span class="sev sev-orange">Esfuerzo: 45 min</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 6 · RENDIMIENTO 2 — SQLite ═══════════════════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-orange">Rendimiento #2 · classifier.py : 156</div>
+      <h2 style="margin-bottom:8px;">SQLite: <span style="color:var(--warning)">nueva conexión por operación</span></h2>
+      <div class="divider divider-orange"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div>
+          <div class="code-block">
+<span class="cm"># Actual — cada método abre y cierra</span>
+<span class="kw">def</span> <span class="fn">get_estado</span>(self, clave):
+    <span class="kw">with</span> sqlite3.<span class="fn">connect</span>(self.path) <span class="kw">as</span> conn:  <span class="cm"># ←</span>
+        ...
+
+<span class="kw">def</span> <span class="fn">upsert</span>(self, **kwargs):
+    <span class="kw">with</span> sqlite3.<span class="fn">connect</span>(self.path) <span class="kw">as</span> conn:  <span class="cm"># ←</span>
+        ...
+
+<span class="kw">def</span> <span class="fn">get_records_map</span>(self):
+    <span class="kw">with</span> sqlite3.<span class="fn">connect</span>(self.path) <span class="kw">as</span> conn:  <span class="cm"># ←</span>
+        ...
+
+<span class="cm"># Mejor — WAL mode + conexión persistente</span>
+<span class="kw">def</span> <span class="fn">_ensure</span>(self):
+    self._conn = sqlite3.<span class="fn">connect</span>(self.path, check_same_thread=<span class="kw">False</span>)
+    self._conn.<span class="fn">execute</span>(<span class="st">"PRAGMA journal_mode=WAL"</span>)
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-orange">
+            <h3 style="margin-bottom:8px; color:var(--warning)">Overhead en clasificación masiva</h3>
+            <p>Al clasificar 50 facturas en lote, se abren y cierran <strong>50 conexiones SQLite</strong> sobre una ruta de red. Cada <code>connect()</code> sobre Z:/ puede tomar 10–50 ms.</p>
+            <br/>
+            <p>Con conexión persistente + modo WAL: <strong>1 conexión, múltiples escrituras en una transacción.</strong></p>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:8px;">Nota de seguridad</h3>
+            <p>El <code>threading.Lock()</code> existente ya protege el acceso concurrente. Con <code>check_same_thread=False</code> más el Lock, la seguridad se mantiene igual. WAL permite lectura simultánea durante escritura.</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-orange">Severidad: Media</span>
+            <span class="sev sev-orange">Esfuerzo: 1 hora</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 7 · RENDIMIENTO 3 — CHECKSUM CHUNKS ══════════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-orange">Rendimiento #3 · pdf_cache.py vs classifier.py</div>
+      <h2 style="margin-bottom:8px;">Tamaño de chunk <span style="color:var(--warning)">inconsistente</span> en SHA-256</h2>
+      <div class="divider divider-orange"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div>
+          <div class="code-block">
+<span class="cm"># pdf_cache.py — chunks de 8 KB</span>
+<span class="kw">def</span> <span class="fn">_compute_checksum</span>(pdf_file, chunk_size=<span class="num">8192</span>):
+    h = hashlib.sha256()
+    <span class="kw">with</span> open(pdf_file, <span class="st">"rb"</span>) <span class="kw">as</span> f:
+        <span class="kw">for</span> chunk <span class="kw">in</span> iter(<span class="kw">lambda</span>: f.read(<span class="bad">8192</span>), b<span class="st">""</span>):
+            h.update(chunk)
+
+<span class="cm"># classifier.py — chunks de 1 MB (✓ correcto)</span>
+<span class="kw">def</span> <span class="fn">sha256_file</span>(path):
+    digest = hashlib.sha256()
+    <span class="kw">with</span> path.open(<span class="st">"rb"</span>) <span class="kw">as</span> fh:
+        <span class="kw">for</span> chunk <span class="kw">in</span> iter(<span class="kw">lambda</span>: fh.read(<span class="good">1024 * 1024</span>), b<span class="st">""</span>):
+            digest.update(chunk)
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-orange">
+            <h3 style="margin-bottom:8px; color:var(--warning)">Impacto en red</h3>
+            <p>Un PDF de 2 MB con chunks de 8 KB requiere <strong>256 llamadas al sistema</strong> de lectura. Con 1 MB, son solo <strong>2 llamadas</strong>. Sobre una unidad de red (Z:/), cada llamada tiene latencia adicional.</p>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:8px;">Solución</h3>
+            <p>Unificar ambas funciones. <code>PDFCacheManager._compute_checksum</code> debería usar <code>sha256_file</code> de <code>classifier.py</code> directamente, eliminando también la duplicación de lógica.</p>
+          </div>
+          <div class="card card-red">
+            <h3 style="margin-bottom:8px; color:var(--danger)">También: dos funciones con el mismo propósito</h3>
+            <p><code>sha256_file(path)</code> y <code>_compute_checksum(pdf_file)</code> hacen exactamente lo mismo. Innecesario mantener dos implementaciones.</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-orange">Severidad: Baja–Media</span>
+            <span class="sev sev-orange">Esfuerzo: 20 min</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 8 · ARQUITECTURA 1 — factura_index.py GIGANTE ═══════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-yellow">Arquitectura #1 · factura_index.py</div>
+      <h2 style="margin-bottom:8px;">Archivo <span style="color:#fb923c">God File</span> de 78 KB</h2>
+      <div class="divider divider-yellow"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div style="display:flex; flex-direction:column; gap:14px;">
+          <div class="card card-yellow">
+            <h3 style="margin-bottom:10px; color:#fb923c">Un archivo, demasiadas responsabilidades</h3>
+            <div class="issue-row">
+              <span class="issue-icon">🔍</span>
+              <div><div class="issue-title">Indexado de XMLs y PDFs</div><div class="issue-desc">Escanea carpetas y construye la lista de facturas</div></div>
+            </div>
+            <div class="issue-row">
+              <span class="issue-icon">📄</span>
+              <div><div class="issue-title">Extracción de texto de PDFs</div><div class="issue-desc">Múltiples estrategias con PyMuPDF (texto, bytes raw, particionado)</div></div>
+            </div>
+            <div class="issue-row">
+              <span class="issue-icon">🔑</span>
+              <div><div class="issue-title">Detección de claves de Hacienda</div><div class="issue-desc">7 regex precompilados, 5 estrategias de extracción</div></div>
+            </div>
+            <div class="issue-row">
+              <span class="issue-icon">🚫</span>
+              <div><div class="issue-title">Heurísticas de no-factura</div><div class="issue-desc">Detecta catálogos, borradores, documentos no fiscales</div></div>
+            </div>
+            <div class="issue-row" style="border-bottom:none;">
+              <span class="issue-icon">✅</span>
+              <div><div class="issue-title">Validación de IVA</div><div class="issue-desc">Cruza suma de IVA con total del comprobante</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card">
+            <h3 style="margin-bottom:10px;">División sugerida</h3>
+            <div class="code-block" style="font-size:11px;">
+gestor_contable/core/
+  <span class="fn">factura_index.py</span>   <span class="cm">← solo indexado</span>
+  <span class="fn">pdf_extractor.py</span>  <span class="cm">← extracción de texto</span>
+  <span class="fn">clave_finder.py</span>   <span class="cm">← detección de clave</span>
+  <span class="fn">invoice_filter.py</span> <span class="cm">← heurísticas no-factura</span>
+            </div>
+          </div>
+          <div class="card card-orange">
+            <h3 style="margin-bottom:8px; color:var(--warning)">Consecuencia actual</h3>
+            <p>Cualquier cambio en la detección de claves requiere navegar 78 KB de código. Los tests (cuando existan) deben cubrir un módulo enorme en vez de unidades pequeñas.</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-yellow">Severidad: Baja</span>
+            <span class="sev sev-yellow">Esfuerzo: 2–3 h</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 9 · ARQUITECTURA 2 — main_window.py GOD CLASS ══════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-yellow">Arquitectura #2 · main_window.py</div>
+      <h2 style="margin-bottom:8px;"><span style="color:#fb923c">God Class</span> en la ventana principal</h2>
+      <div class="divider divider-yellow"></div>
+
+      <div class="grid-3" style="margin-top:28px;">
+        <div class="card card-yellow">
+          <div style="font-size:30px; margin-bottom:12px;">🗂️</div>
+          <h3 style="margin-bottom:8px;">Vive aquí pero no debería</h3>
+          <ul style="list-style:none; display:flex; flex-direction:column; gap:6px;">
+            <li style="font-size:13px; color:var(--muted)">• <code>DatePickerPopup</code></li>
+            <li style="font-size:13px; color:var(--muted)">• <code>DatePickerDropdown</code></li>
+            <li style="font-size:13px; color:var(--muted)">• Estilos del <code>Treeview</code></li>
+            <li style="font-size:13px; color:var(--muted)">• Formateo de montos</li>
+            <li style="font-size:13px; color:var(--muted)">• Abreviatura de nombres</li>
+            <li style="font-size:13px; color:var(--muted)">• Lógica de exportación Excel</li>
+            <li style="font-size:13px; color:var(--muted)">• Búsqueda de PDFs huérfanos</li>
+          </ul>
+        </div>
+        <div class="card card-orange">
+          <div style="font-size:30px; margin-bottom:12px;">⚠️</div>
+          <h3 style="margin-bottom:8px;">Consecuencias</h3>
+          <p>• Imposible hacer tests unitarios de lógica de negocio sin instanciar toda la ventana</p>
+          <br/>
+          <p>• Cambios en exportación Excel pueden romper la UI accidentalmente</p>
+          <br/>
+          <p>• El archivo crece con cada feature nueva</p>
+        </div>
+        <div class="card">
+          <div style="font-size:30px; margin-bottom:12px;">✂️</div>
+          <h3 style="margin-bottom:8px;">División sugerida</h3>
+          <div class="code-block" style="font-size:11px;">
+gui/
+  <span class="fn">main_window.py</span>    <span class="cm">← solo UI</span>
+  <span class="fn">date_picker.py</span>    <span class="cm">← calendarios</span>
+  <span class="fn">tree_styles.py</span>    <span class="cm">← Treeview</span>
+core/
+  <span class="fn">excel_export.py</span>   <span class="cm">← ya separado</span>
+  <span class="fn">formatters.py</span>     <span class="cm">← _fmt_amount</span>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; margin-top:20px;">
+        <span class="sev sev-yellow">Severidad: Baja</span>
+        <span class="sev sev-yellow">Esfuerzo: 3–4 h</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 10 · ARQUITECTURA 3 — recover_clasificaciones.py ═══════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:900px;">
+      <div class="tag tag-yellow">Arquitectura #3 · Raíz del repo</div>
+      <h2 style="margin-bottom:8px;">Archivo huérfano <span style="color:#fb923c">fuera del scope</span></h2>
+      <div class="divider divider-yellow"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div class="card card-yellow">
+          <h3 style="margin-bottom:12px; color:#fb923c">recover_clasificaciones.py</h3>
+          <p style="margin-bottom:14px;">Archivo sin versionar (<code>??</code> en <code>git status</code>) en la raíz del repositorio. Viola la regla de scope: <strong>todo debe estar dentro de <code>gestor_contable/</code></strong>.</p>
+          <br/>
+          <p>Posibles causas:</p>
+          <br/>
+          <ul style="list-style:none; display:flex; flex-direction:column; gap:8px;">
+            <li style="font-size:13px; color:var(--muted)">📌 Script de recuperación de emergencia creado manualmente</li>
+            <li style="font-size:13px; color:var(--muted)">📌 Prototipo de funcionalidad que nunca se integró</li>
+            <li style="font-size:13px; color:var(--muted)">📌 Herramienta de diagnóstico temporal olvidada</li>
+          </ul>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-red">
+            <h3 style="margin-bottom:8px; color:var(--danger)">Riesgos</h3>
+            <p>• Si accidentalmente se hace <code>git add .</code> y el script tiene credenciales o rutas hardcodeadas, entra al historial público.</p>
+            <br/>
+            <p>• Si el script modifica SQLite o mueve archivos, puede interferir con la app.</p>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:8px;">Acción recomendada</h3>
+            <p>1. Revisar el contenido del script</p>
+            <br/>
+            <p>2. Si es útil → moverlo a <code>gestor_contable/tools/</code> y versionarlo</p>
+            <br/>
+            <p>3. Si es temporal → eliminarlo y agregar <code>*.py</code> a <code>.gitignore</code> solo en raíz</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-yellow">Severidad: Media</span>
+            <span class="sev sev-yellow">Esfuerzo: 15 min</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 11 · ARQUITECTURA 4 — SIN TESTS ════════════════════════════════════ -->
+  <div class="slide glow-red">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-red">Arquitectura #4 · Calidad</div>
+      <h2 style="margin-bottom:8px;">Sin suite de tests — <span style="color:var(--danger)">0% de cobertura</span></h2>
+      <div class="divider divider-red"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-red">
+            <h3 style="margin-bottom:10px; color:var(--danger)">Flujos críticos sin cobertura</h3>
+            <div class="issue-row">
+              <span class="issue-icon">🔒</span>
+              <div><div class="issue-title">Movimiento atómico de PDF</div><div class="issue-desc">El protocolo SHA-256 de integridad fiscal — el más importante del sistema</div></div>
+            </div>
+            <div class="issue-row">
+              <span class="issue-icon">🔑</span>
+              <div><div class="issue-title">Extracción de clave de 50 dígitos</div><div class="issue-desc">5 estrategias diferentes — fácil romper una al ajustar otra</div></div>
+            </div>
+            <div class="issue-row">
+              <span class="issue-icon">💰</span>
+              <div><div class="issue-title">Cálculo de IVA</div><div class="issue-desc">Tasas 1%, 2%, 4%, 8%, 13% — errores tienen impacto fiscal directo</div></div>
+            </div>
+            <div class="issue-row" style="border-bottom:none;">
+              <span class="issue-icon">🔗</span>
+              <div><div class="issue-title">Enlace XML↔PDF</div><div class="issue-desc">Lógica de matching por clave, consecutivo y nombre</div></div>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-orange">
+            <h3 style="margin-bottom:8px; color:var(--warning)">Consecuencia real</h3>
+            <p>Cada cambio en <code>factura_index.py</code>, <code>classifier.py</code> o <code>iva_utils.py</code> requiere <strong>prueba manual completa</strong>. Un bug en IVA o en el movimiento atómico puede causar problemas fiscales reales para los clientes.</p>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:8px;">Plan mínimo de tests</h3>
+            <div class="code-block" style="font-size:11px;">
+tests/
+  <span class="fn">test_classifier.py</span>   <span class="cm">← SHA256, movimiento atómico</span>
+  <span class="fn">test_clave.py</span>        <span class="cm">← extracción de 50 dígitos</span>
+  <span class="fn">test_iva.py</span>          <span class="cm">← tasas y totales</span>
+  <span class="fn">test_filter.py</span>       <span class="cm">← classify_transaction</span>
+            </div>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-red">Severidad: Alta</span>
+            <span class="sev sev-yellow">Esfuerzo: 4–6 h</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 12 · FUNCIONALIDADES 1 — ATAJOS ════════════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-blue">UX #1 · Productividad</div>
+      <h2 style="margin-bottom:8px;">Sin atajos de teclado — <span style="color:var(--blue)">flujo 100% mouse</span></h2>
+      <div class="divider divider-blue"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div class="card card-blue">
+          <h3 style="margin-bottom:14px; color:var(--blue)">Atajos sugeridos de alto impacto</h3>
+          <div style="display:grid; grid-template-columns:auto 1fr; gap:8px 16px; align-items:center;">
+            <code style="text-align:center;">↓ / ↑</code>
+            <span style="font-size:13px; color:var(--muted)">Navegar a siguiente/anterior factura</span>
+            <code style="text-align:center;">Enter</code>
+            <span style="font-size:13px; color:var(--muted)">Confirmar clasificación actual</span>
+            <code style="text-align:center;">Esc</code>
+            <span style="font-size:13px; color:var(--muted)">Cancelar / limpiar formulario</span>
+            <code style="text-align:center;">Ctrl+1..5</code>
+            <span style="font-size:13px; color:var(--muted)">Seleccionar categoría (COMPRAS, GASTOS…)</span>
+            <code style="text-align:center;">Ctrl+Z</code>
+            <span style="font-size:13px; color:var(--muted)">Deshacer última clasificación</span>
+            <code style="text-align:center;">F5</code>
+            <span style="font-size:13px; color:var(--muted)">Recargar lista de facturas</span>
+            <code style="text-align:center;">Ctrl+E</code>
+            <span style="font-size:13px; color:var(--muted)">Exportar Excel</span>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-orange">
+            <h3 style="margin-bottom:8px; color:var(--warning)">Impacto en tiempo de trabajo</h3>
+            <p>Un contador que clasifica 200 facturas/día hace aproximadamente <strong>800–1200 clics</strong>. Con atajos de teclado, ese número baja a <strong>200–400 acciones</strong>.</p>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:8px;">Implementación</h3>
+            <p>CustomTkinter y tkinter soportan <code>bind()</code> para cualquier combinación de teclas. La ventana principal ya tiene el foco apropiado. Implementar los atajos básicos toma menos de 2 horas.</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-blue">Impacto: Alto</span>
+            <span class="sev sev-blue">Esfuerzo: 2 h</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 13 · FUNCIONALIDADES 2 — PROGRESO BATCH ════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-blue">UX #2 · Feedback</div>
+      <h2 style="margin-bottom:8px;">Progreso de carga <span style="color:var(--blue)">sin detalle</span></h2>
+      <div class="divider divider-blue"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-blue">
+            <h3 style="margin-bottom:12px; color:var(--blue)">Situación actual</h3>
+            <div style="background:#0a0c10; border:1px solid var(--border); border-radius:10px; padding:20px; text-align:center;">
+              <div style="font-size:32px; margin-bottom:10px;">⏳</div>
+              <div style="font-size:14px; color:var(--muted);">Cargando facturas...</div>
+              <div style="width:60%; height:3px; background:var(--border); border-radius:2px; margin:14px auto 0;">
+                <div style="width:35%; height:100%; background:var(--teal); border-radius:2px; animation:prog 1.5s ease-in-out infinite;"></div>
+              </div>
+            </div>
+            <p style="margin-top:14px;">El usuario no sabe si hay 10 facturas o 1000. No sabe si tardará 2 segundos o 3 minutos.</p>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-teal">
+            <h3 style="margin-bottom:12px; color:var(--teal)">Propuesta mejorada</h3>
+            <div style="background:#0a0c10; border:1px solid var(--border); border-radius:10px; padding:20px;">
+              <div style="font-size:14px; color:var(--text); margin-bottom:6px; font-weight:600;">Indexando facturas</div>
+              <div style="font-size:13px; color:var(--muted); margin-bottom:12px;">Procesando XMLs: <span style="color:var(--teal)">143 / 612</span></div>
+              <div style="width:100%; height:6px; background:var(--border); border-radius:3px;">
+                <div style="width:23%; height:100%; background:var(--teal); border-radius:3px;"></div>
+              </div>
+              <div style="font-size:11px; color:var(--muted); margin-top:6px;">Vinculando PDFs... 89 encontrados · 12 sin XML</div>
+            </div>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:8px;">Datos que se pueden mostrar</h3>
+            <ul style="list-style:none; display:flex; flex-direction:column; gap:4px;">
+              <li style="font-size:13px; color:var(--muted)">• XMLs leídos / total encontrados</li>
+              <li style="font-size:13px; color:var(--muted)">• PDFs vinculados vs pendientes</li>
+              <li style="font-size:13px; color:var(--muted)">• Consultas a API de Hacienda</li>
+              <li style="font-size:13px; color:var(--muted)">• Errores encontrados en tiempo real</li>
+            </ul>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-blue">Impacto: Medio</span>
+            <span class="sev sev-blue">Esfuerzo: 3 h</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 14 · FUNCIONALIDADES 3 — UNDO ══════════════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:900px;">
+      <div class="tag tag-blue">UX #3 · Corrección de errores</div>
+      <h2 style="margin-bottom:8px;">Sin botón <span style="color:var(--blue)">"Deshacer clasificación"</span></h2>
+      <div class="divider divider-blue"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div class="card card-blue">
+          <h3 style="margin-bottom:12px; color:var(--blue)">Flujo actual para corregir un error</h3>
+          <div class="rm-item">
+            <div class="rm-num" style="background:rgba(248,113,113,.2); color:var(--danger); border:1px solid rgba(248,113,113,.4);">1</div>
+            <div><div class="rm-title">Darse cuenta del error</div><div class="rm-sub">La factura ya fue movida a la carpeta incorrecta</div></div>
+          </div>
+          <div class="rm-item">
+            <div class="rm-num" style="background:rgba(248,113,113,.2); color:var(--danger); border:1px solid rgba(248,113,113,.4);">2</div>
+            <div><div class="rm-title">Ir a pestaña "Clasificadas"</div><div class="rm-sub">Buscar la factura entre todas las clasificadas</div></div>
+          </div>
+          <div class="rm-item">
+            <div class="rm-num" style="background:rgba(248,113,113,.2); color:var(--danger); border:1px solid rgba(248,113,113,.4);">3</div>
+            <div><div class="rm-title">Reclasificar manualmente</div><div class="rm-sub">Seleccionar la categoría correcta otra vez</div></div>
+          </div>
+          <div class="rm-item" style="border-bottom:none;">
+            <div class="rm-num" style="background:rgba(248,113,113,.2); color:var(--danger); border:1px solid rgba(248,113,113,.4);">4</div>
+            <div><div class="rm-title">Esperar que se mueva de nuevo</div><div class="rm-sub">Otra operación atómica SHA-256</div></div>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-teal">
+            <h3 style="margin-bottom:12px; color:var(--teal)">Con Deshacer</h3>
+            <div class="rm-item">
+              <div class="rm-num rm-num-blue">1</div>
+              <div><div class="rm-title">Darse cuenta del error</div><div class="rm-sub">Inmediatamente después de clasificar</div></div>
+            </div>
+            <div class="rm-item" style="border-bottom:none;">
+              <div class="rm-num rm-num-blue">2</div>
+              <div><div class="rm-title">Ctrl+Z o botón "Deshacer"</div><div class="rm-sub">La factura vuelve a su posición original</div></div>
+            </div>
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:8px;">Implementación</h3>
+            <p>La información ya está en SQLite (<code>ruta_origen</code>, <code>sha256</code>). Se necesita una pila de "últimas N operaciones" en memoria y un botón/atajo que revierta la última, aplicando el mismo protocolo atómico en sentido inverso.</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-blue">Impacto: Alto</span>
+            <span class="sev sev-blue">Esfuerzo: 3–4 h</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 15 · FUNCIONALIDADES 4 — CONFIGURACIÓN ═════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:1000px;">
+      <div class="tag tag-blue">UX #4 · Administración</div>
+      <h2 style="margin-bottom:8px;">Configuración solo <span style="color:var(--blue)">editando JSON</span></h2>
+      <div class="divider divider-blue"></div>
+
+      <div class="grid-3" style="margin-top:28px;">
+        <div class="card card-blue">
+          <div style="font-size:28px; margin-bottom:12px;">⚙️</div>
+          <h3 style="margin-bottom:10px; color:var(--blue)">Parámetros actuales</h3>
+          <div class="code-block" style="font-size:11px; line-height:2;">
+{
+  <span class="st">"network_drive"</span>: <span class="st">"Z:/"</span>,
+  <span class="st">"hacienda_timeout"</span>: <span class="num">10</span>,
+  <span class="st">"hacienda_retries"</span>: <span class="num">2</span>
+}
+          </div>
+          <p style="margin-top:12px; font-size:13px;">El usuario debe abrir el JSON con un editor de texto, recordar la sintaxis y no cometer errores de formato.</p>
+        </div>
+        <div class="card card-teal">
+          <div style="font-size:28px; margin-bottom:12px;">🖥️</div>
+          <h3 style="margin-bottom:10px; color:var(--teal)">Panel de configuración</h3>
+          <ul style="list-style:none; display:flex; flex-direction:column; gap:8px;">
+            <li style="font-size:13px; color:var(--muted)">📁 Selector de carpeta para <code>network_drive</code></li>
+            <li style="font-size:13px; color:var(--muted)">⏱ Slider para timeout de Hacienda</li>
+            <li style="font-size:13px; color:var(--muted)">🔄 Campo numérico para reintentos</li>
+            <li style="font-size:13px; color:var(--muted)">🧪 Botón "Probar conexión a red"</li>
+            <li style="font-size:13px; color:var(--muted)">📋 Vista previa de la ruta resultante</li>
+          </ul>
+        </div>
+        <div class="card card-orange">
+          <div style="font-size:28px; margin-bottom:12px;">🚨</div>
+          <h3 style="margin-bottom:10px; color:var(--warning)">Errores comunes actuales</h3>
+          <ul style="list-style:none; display:flex; flex-direction:column; gap:8px;">
+            <li style="font-size:13px; color:var(--muted)">❌ JSON inválido por coma extra</li>
+            <li style="font-size:13px; color:var(--muted)">❌ Ruta de red con backslash incorrecto</li>
+            <li style="font-size:13px; color:var(--muted)">❌ Timeout demasiado bajo → timeouts masivos</li>
+            <li style="font-size:13px; color:var(--muted)">❌ Olvidar guardar el archivo</li>
+          </ul>
+          <div style="margin-top:16px;">
+            <span class="sev sev-blue">Impacto: Medio</span>
+            <span class="sev sev-blue" style="margin-left:8px;">Esfuerzo: 3 h</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 16 · FUNCIONALIDADES 5+6 — LOGS + BÚSQUEDA AVANZADA ════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:1000px;">
+      <div class="tag tag-blue">UX #5 y #6</div>
+      <h2 style="margin-bottom:8px;">Visor de logs y <span style="color:var(--blue)">búsqueda avanzada</span></h2>
+      <div class="divider divider-blue"></div>
+
+      <div class="grid-2" style="margin-top:28px; align-items:start;">
+        <div>
+          <div class="card card-blue" style="margin-bottom:18px;">
+            <div style="font-size:24px; margin-bottom:10px;">📋 Visor de logs en UI</div>
+            <p style="margin-bottom:12px;">Los errores van al logger de Python pero el usuario <strong>nunca los ve</strong>. Si Hacienda falla, si un PDF no se puede leer, o si la red cae, la app simplemente se comporta de forma inesperada sin explicación.</p>
+            <div class="code-block" style="font-size:11px; margin-top:12px;">
+<span class="cm"># Eventos que deberían mostrarse al usuario:</span>
+[10:23] ✓ PDF cargado: 50621060...pdf
+[10:23] ⚠ Hacienda timeout: cédula 3101234567
+[10:24] ✗ PDF corrupto: factura_abc.pdf
+[10:24] ✓ Clasificado: COMPRAS/PROVEEDOR XYZ
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="card card-purple" style="margin-bottom:18px;">
+            <div style="font-size:24px; margin-bottom:10px;">🔍 Búsqueda avanzada</div>
+            <p style="margin-bottom:12px;">La búsqueda actual filtra por texto simple en el Treeview. No hay forma de filtrar por:</p>
+            <ul style="list-style:none; display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+              <li style="font-size:13px; color:var(--muted)">📅 Rango de fechas (ej: enero a marzo)</li>
+              <li style="font-size:13px; color:var(--muted)">💰 Rango de montos (ej: > ₡500 000)</li>
+              <li style="font-size:13px; color:var(--muted)">🏷 Estado de Hacienda (aceptado / rechazado)</li>
+              <li style="font-size:13px; color:var(--muted)">💱 Moneda (CRC / USD)</li>
+              <li style="font-size:13px; color:var(--muted)">📄 Tipo de documento (factura / NC)</li>
+            </ul>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <span class="sev sev-blue">Logs: Esfuerzo 2 h</span>
+            <span class="sev sev-purple">Búsqueda: Esfuerzo 4 h</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 17 · PRIORIDADES + ROADMAP ══════════════════════════════════════════ -->
+  <div class="slide">
+    <div style="width:100%; max-width:960px;">
+      <div class="tag tag-teal">Roadmap</div>
+      <h2 style="margin-bottom:8px;">Plan de implementación <span style="color:var(--teal)">sugerido</span></h2>
+      <div class="divider divider-teal"></div>
+
+      <div class="grid-2" style="margin-top:24px; align-items:start;">
+        <div>
+          <div style="font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--danger); margin-bottom:12px;">Fase 1 — Esta semana (riesgos inmediatos)</div>
+          <div class="rm-item">
+            <div class="rm-num rm-num-red">1</div>
+            <div><div class="rm-title">Escritura atómica del JSON de caché</div><div class="rm-sub">15 min · evita corrupción de datos</div></div>
+          </div>
+          <div class="rm-item">
+            <div class="rm-num rm-num-red">2</div>
+            <div><div class="rm-title">Revisar / limpiar recover_clasificaciones.py</div><div class="rm-sub">15 min · seguridad del repo</div></div>
+          </div>
+          <div class="rm-item" style="border-bottom:none;">
+            <div class="rm-num rm-num-red">3</div>
+            <div><div class="rm-title">Corregir condición muerta en classify_transaction</div><div class="rm-sub">5 min · claridad del código</div></div>
+          </div>
+
+          <div style="font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--warning); margin:20px 0 12px;">Fase 2 — Este mes (productividad)</div>
+          <div class="rm-item">
+            <div class="rm-num rm-num-orange">4</div>
+            <div><div class="rm-title">Atajos de teclado</div><div class="rm-sub">2 h · mayor impacto diario</div></div>
+          </div>
+          <div class="rm-item">
+            <div class="rm-num rm-num-orange">5</div>
+            <div><div class="rm-title">Botón "Deshacer clasificación"</div><div class="rm-sub">3 h · muy solicitado</div></div>
+          </div>
+          <div class="rm-item" style="border-bottom:none;">
+            <div class="rm-num rm-num-orange">6</div>
+            <div><div class="rm-title">Progreso detallado en batch</div><div class="rm-sub">3 h · reducir ansiedad de usuario</div></div>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--blue); margin-bottom:12px;">Fase 3 — Próximo trimestre (calidad)</div>
+          <div class="rm-item">
+            <div class="rm-num rm-num-blue">7</div>
+            <div><div class="rm-title">Suite de tests unitarios</div><div class="rm-sub">4–6 h · flujos críticos</div></div>
+          </div>
+          <div class="rm-item">
+            <div class="rm-num rm-num-blue">8</div>
+            <div><div class="rm-title">Optimizar get_tab_statistics O(n)</div><div class="rm-sub">45 min · rendimiento</div></div>
+          </div>
+          <div class="rm-item">
+            <div class="rm-num rm-num-blue">9</div>
+            <div><div class="rm-title">SQLite: conexión persistente + WAL</div><div class="rm-sub">1 h · rendimiento en lote</div></div>
+          </div>
+          <div class="rm-item">
+            <div class="rm-num rm-num-blue">10</div>
+            <div><div class="rm-title">Unificar DatePicker + checksum</div><div class="rm-sub">30 min · deuda técnica</div></div>
+          </div>
+          <div class="rm-item">
+            <div class="rm-num rm-num-blue">11</div>
+            <div><div class="rm-title">Panel de configuración UI</div><div class="rm-sub">3 h · administración</div></div>
+          </div>
+          <div class="rm-item" style="border-bottom:none;">
+            <div class="rm-num rm-num-blue">12</div>
+            <div><div class="rm-title">Dividir factura_index.py + main_window.py</div><div class="rm-sub">4–5 h · arquitectura</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 18 · CIERRE ═══════════════════════════════════════════════════════════ -->
+  <div class="slide center glow-teal">
+    <div class="tag tag-teal">Conclusión</div>
+    <h1 style="max-width:720px; margin-bottom:18px;">
+      Proyecto <span style="color:var(--success)">sólido</span>,<br/>con mejoras <span style="color:var(--teal)">concretas</span><br/>y alcanzables
+    </h1>
+    <div class="divider divider-teal divider-center"></div>
+
+    <div class="grid-4" style="margin-top:28px; max-width:900px;">
+      <div class="card metric">
+        <div class="metric-value" style="color:var(--danger)">35<span style="font-size:20px;">min</span></div>
+        <div class="metric-label">Para corregir los 3 bugs críticos</div>
+      </div>
+      <div class="card metric">
+        <div class="metric-value" style="color:var(--warning)">8<span style="font-size:20px;">h</span></div>
+        <div class="metric-label">Para mejoras de productividad (fase 2)</div>
+      </div>
+      <div class="card metric">
+        <div class="metric-value" style="color:var(--blue)">~20<span style="font-size:20px;">h</span></div>
+        <div class="metric-label">Para el roadmap completo de 12 puntos</div>
+      </div>
+      <div class="card metric">
+        <div class="metric-value" style="color:var(--success)">16</div>
+        <div class="metric-label">Hallazgos identificados en revisión</div>
+      </div>
+    </div>
+
+    <p style="margin-top:28px; font-size:15px; max-width:560px;">
+      La base del sistema es robusta. El protocolo SHA-256, el modelo de datos y la arquitectura core son correctos.
+      Las mejoras son de <strong>calidad, seguridad y productividad</strong> — no de rediseño.
+    </p>
+  </div>
+
+</div><!-- /deck -->
+
+<style>
+@keyframes prog {
+  0%   { width:0%; margin-left:0; }
+  50%  { width:60%; margin-left:20%; }
+  100% { width:0%; margin-left:100%; }
+}
+</style>
+
+<script>
+  const slides  = document.querySelectorAll('.slide');
+  const TOTAL   = slides.length;
+  const bar     = document.getElementById('progress-bar');
+  const numEl   = document.getElementById('slide-num');
+  const dotsCont= document.getElementById('dots');
+  let current   = 0;
+
+  for (let i = 0; i < TOTAL; i++) {
+    const d = document.createElement('div');
+    d.className = 'dot' + (i === 0 ? ' active' : '');
+    d.addEventListener('click', () => goTo(i));
+    dotsCont.appendChild(d);
+  }
+
+  function goTo(n) {
+    if (n < 0 || n >= TOTAL) return;
+    const prev = slides[current];
+    prev.classList.remove('active');
+    prev.classList.add('exit');
+    setTimeout(() => prev.classList.remove('exit'), 550);
+    current = n;
+    slides[current].style.transform = 'translateX(50px)';
+    slides[current].classList.add('active');
+    document.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('active', i === current));
+    bar.style.width = ((current + 1) / TOTAL * 100) + '%';
+    numEl.textContent = (current + 1) + ' / ' + TOTAL;
+  }
+
+  document.getElementById('btn-next').addEventListener('click', () => goTo(current + 1));
+  document.getElementById('btn-prev').addEventListener('click', () => goTo(current - 1));
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') goTo(current + 1);
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')                    goTo(current - 1);
+  });
+
+  slides[0].classList.add('active');
+  bar.style.width = (1 / TOTAL * 100) + '%';
+  numEl.textContent = '1 / ' + TOTAL;
+</script>
+</body>
+</html>

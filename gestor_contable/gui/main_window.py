@@ -22,7 +22,7 @@ from gestor_contable.core.classification_utils import (
     get_classification_label,
     get_tab_statistics,
 )
-from gestor_contable.core.classifier import ClassificationDB, build_dest_folder, classify_record
+from gestor_contable.core.classifier import ClassificationDB, build_dest_folder, classify_record, heal_classified_path
 from gestor_contable.core.factura_index import FacturaIndexer
 from gestor_contable.core.iva_utils import apply_exchange_rate, parse_decimal_value
 from gestor_contable.core.models import FacturaRecord
@@ -829,11 +829,15 @@ class App3Window(ctk.CTk):
                 logger.info(f"load_period() tardó {load_time:.2f}s para {len(records)} registros")
 
                 # Escanear PDFs huérfanos
-                from gestor_contable.core.classification_utils import find_orphaned_pdfs, create_orphaned_record
+                from gestor_contable.core.classification_utils import find_orphaned_pdfs, create_orphaned_record, find_renamed_client_folders
                 pf_root = session.folder.parent.parent
                 contabilidades_root = pf_root / "Contabilidades"
                 local_db_records = db.get_records_map()
                 client_name = session.folder.name  # Limitar huérfanos al cliente actual
+
+                # Detectar carpetas del cliente renombradas por el contador
+                renames = find_renamed_client_folders(contabilidades_root, client_name, local_db_records)
+
                 orphaned_list = find_orphaned_pdfs(contabilidades_root, local_db_records, client_name)
 
                 # Agregar registros dummy para PDFs huérfanos
@@ -851,7 +855,7 @@ class App3Window(ctk.CTk):
                 total_time = time.perf_counter() - start_total
                 logger.info(f"Worker total: {total_time:.2f}s")
 
-                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors)))
+                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors, renames)))
             except Exception as exc:
                 logger.exception("Error en worker")
                 self._load_queue.put(("error", (generation, str(exc))))
@@ -879,7 +883,7 @@ class App3Window(ctk.CTk):
             self._show_error("Error al cargar cliente", message)
             return
 
-        generation, session, catalog_mgr, db, records, parse_errors = payload
+        generation, session, catalog_mgr, db, records, parse_errors, renames = payload
         if generation != self._load_generation:
             return
         self.session = session
@@ -925,6 +929,9 @@ class App3Window(ctk.CTk):
                 f"XML con error (omitidos): {len(parse_errors)}\n\n"
                 + "\n".join(parse_errors[:5])
             )
+
+        if renames:
+            self.after(100, lambda r=renames: self._show_rename_warning(r))
 
     def _apply_pdf_enrichment(self, generation: int, enriched_records: list[FacturaRecord], parse_errors: list[str]):
         """Ya no se usa (PDFs cargados en _load_session). Mantenido por compatibilidad."""
@@ -1658,6 +1665,9 @@ class App3Window(ctk.CTk):
             db_record = self._db_records.get(r.clave)
             if db_record and db_record.get("ruta_destino"):
                 ruta_destino = Path(db_record["ruta_destino"])
+                if not ruta_destino.exists() and self.session:
+                    cont_root = self.session.folder.parent.parent / "Contabilidades"
+                    ruta_destino = heal_classified_path(ruta_destino, cont_root, self.db, r.clave) or ruta_destino
                 if ruta_destino.exists():
                     pdf_to_load = ruta_destino
                     logger.debug(f"PDF cargado desde ruta clasificada: {ruta_destino}")
@@ -1745,9 +1755,15 @@ class App3Window(ctk.CTk):
                 )
                 self._prev_var.set(f"{crumbs}\n{prev.get('fecha_clasificacion', '')}")
 
-                # Ruta destino
+                # Ruta destino (sanar si el contador renombró la carpeta de mes)
                 ruta_dest = prev.get("ruta_destino", "")
                 if ruta_dest:
+                    ruta_dest_path = Path(ruta_dest)
+                    if not ruta_dest_path.exists() and self.session:
+                        cont_root = self.session.folder.parent.parent / "Contabilidades"
+                        sanada = heal_classified_path(ruta_dest_path, cont_root, self.db, prev.get("clave_numerica"))
+                        if sanada:
+                            ruta_dest = str(sanada)
                     parts = Path(ruta_dest).parts
                     snippet = ("📁 .../" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else f"📁 {ruta_dest}/"
                     self._prev_path_lbl.config(text=snippet)
@@ -2520,6 +2536,103 @@ class App3Window(ctk.CTk):
             self._set_status("Reporte exportado")
         except Exception as exc:
             self._show_error("Error al exportar", str(exc))
+
+    # ── DETECCIÓN DE CARPETAS RENOMBRADAS ─────────────────────────────────────
+    def _show_rename_warning(self, renames: list[dict]):
+        """Avisa al usuario que el contador renombró carpetas del cliente en Contabilidades."""
+        import tkinter as tk
+
+        detail_lines = []
+        total_affected = 0
+        for r in renames:
+            detail_lines.append(f"  {r['mes']}: \"{r['old_name']}\" → \"{r['new_name']}\"  ({r['affected']} registros)")
+            total_affected += r["affected"]
+
+        detail = "\n".join(detail_lines)
+        msg = (
+            f"Se detectaron {len(renames)} carpeta(s) del cliente renombradas en Contabilidades.\n"
+            f"Esto ocurre cuando el contador renombra la carpeta (ej: agrega una 'L').\n\n"
+            f"{detail}\n\n"
+            f"Total de registros con ruta desactualizada: {total_affected}\n\n"
+            f"¿Actualizar los registros en la base de datos con las nuevas rutas?"
+        )
+
+        modal = ctk.CTkToplevel(self)
+        modal.title("⚠️ Carpetas renombradas")
+        modal.geometry("560x320")
+        modal.resizable(False, False)
+        modal.configure(fg_color=CARD)
+        modal.grab_set()
+        modal.lift()
+
+        ctk.CTkLabel(
+            modal, text="⚠️  Carpetas del cliente renombradas",
+            font=F_TITLE(), text_color=WARNING,
+        ).pack(pady=(20, 8), padx=24, anchor="w")
+
+        txt = tk.Text(
+            modal, wrap="word", height=8,
+            bg=SURFACE, fg=TEXT, relief="flat",
+            font=("Consolas", 11), bd=0, padx=10, pady=8,
+        )
+        txt.insert("1.0", msg)
+        txt.config(state="disabled")
+        txt.pack(fill="both", expand=True, padx=24, pady=(0, 16))
+
+        btn_frame = ctk.CTkFrame(modal, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=24, pady=(0, 16))
+
+        def on_ignorar():
+            modal.destroy()
+
+        def on_actualizar():
+            modal.destroy()
+            self._apply_rename_fixes(renames)
+
+        ctk.CTkButton(
+            btn_frame, text="Ignorar", width=120,
+            fg_color=SURFACE, hover_color=BORDER, text_color=MUTED,
+            command=on_ignorar,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            btn_frame, text="✔ Actualizar registros", width=200,
+            fg_color=TEAL, hover_color="#14b8a6", text_color="#0d0f14",
+            command=on_actualizar,
+        ).pack(side="left")
+
+    def _apply_rename_fixes(self, renames: list[dict]):
+        """Actualiza en BD todas las rutas rotas usando heal_classified_path."""
+        if not self.session or not self.db:
+            return
+
+        contabilidades_root = self.session.folder.parent.parent / "Contabilidades"
+
+        def worker():
+            updated = 0
+            db_records = self.db.get_records_map()
+            for clave, rec in db_records.items():
+                ruta = rec.get("ruta_destino", "")
+                if not ruta:
+                    continue
+                from pathlib import Path as _Path
+                if _Path(ruta).exists():
+                    continue
+                new_path = heal_classified_path(ruta, contabilidades_root, self.db, clave)
+                if new_path:
+                    updated += 1
+            self.after(0, lambda: self._on_rename_fixes_done(updated))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_rename_fixes_done(self, updated: int):
+        """Callback cuando terminó la actualización de rutas."""
+        self._db_records = self.db.get_records_map()
+        self._show_info(
+            "Rutas actualizadas",
+            f"Se actualizaron {updated} registro(s) con las nuevas rutas de carpetas.\n"
+            f"Los cambios quedaron guardados en la base de datos."
+        )
 
     # ── SANITIZACIÓN DE CARPETAS VACÍAS ────────────────────────────────────────
     def _sanitize_folders(self):
@@ -3555,6 +3668,9 @@ class App3Window(ctk.CTk):
             return
         try:
             ruta = Path(db_rec["ruta_destino"])
+            if not ruta.exists() and self.session:
+                cont_root = self.session.folder.parent.parent / "Contabilidades"
+                ruta = heal_classified_path(ruta, cont_root, self.db, self.selected.clave) or ruta
             import subprocess
             if ruta.exists():
                 # Seleccionar el archivo en la carpeta

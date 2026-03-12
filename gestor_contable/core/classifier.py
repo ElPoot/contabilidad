@@ -94,6 +94,65 @@ def build_dest_folder(
     return result
 
 
+def heal_classified_path(
+    stored_path: "Path | str",
+    contabilidades_root: Path,
+    db: "ClassificationDB | None" = None,
+    clave: str | None = None,
+) -> "Path | None":
+    """Resuelve una ruta clasificada rota porque el contador renombró la carpeta del cliente.
+
+    Estructura: Contabilidades/{mes}/{cliente}/{cat}/.../{archivo}
+    El mes NO cambia. Solo la carpeta {cliente} puede ser renombrada.
+    Ej: "EMPRESA XYZ" → "EMPRESA XYZ L"
+
+    Busca el archivo en todas las subcarpetas del mes correcto.
+    Si db + clave se proporcionan, actualiza la BD con la ruta nueva.
+    """
+    stored = Path(stored_path)
+    if stored.exists():
+        return stored
+
+    if not contabilidades_root.exists():
+        return None
+
+    # Extraer: mes (intacto) + relativo después del cliente (intacto)
+    # Estructura: .../Contabilidades/{mes}/{cliente}/{cat}/.../{archivo}
+    parts = stored.parts
+    try:
+        cont_idx = next(i for i, p in enumerate(parts) if p == "Contabilidades")
+        # cont_idx+1 = mes, cont_idx+2 = cliente (renombrado), cont_idx+3: = resto
+        if len(parts) <= cont_idx + 3:
+            return None
+        mes_folder = parts[cont_idx + 1]
+        relative_after_client = Path(*parts[cont_idx + 3:])
+    except StopIteration:
+        return None
+
+    month_dir = contabilidades_root / mes_folder
+    if not month_dir.exists():
+        return None
+
+    # Buscar en todas las carpetas de cliente del mes correcto
+    try:
+        for client_dir in month_dir.iterdir():
+            if not client_dir.is_dir():
+                continue
+            candidate = client_dir / relative_after_client
+            if candidate.exists():
+                if db is not None and clave:
+                    db.update_ruta_destino(clave, str(candidate))
+                    logger.info(
+                        "Ruta reparada: cliente renombrado '%s' -> '%s'",
+                        parts[cont_idx + 2], client_dir.name,
+                    )
+                return candidate
+    except OSError:
+        pass
+
+    return None
+
+
 class ClassificationDB:
     def __init__(self, metadata_dir: Path) -> None:
         self.path = metadata_dir / "clasificacion.sqlite"
@@ -181,6 +240,14 @@ class ClassificationDB:
                   {update_sql}
                 """,
                 payload,
+            )
+
+    def update_ruta_destino(self, clave: str, nueva_ruta: str) -> None:
+        """Actualiza SOLO ruta_destino sin tocar ningún otro campo del registro."""
+        with self._lock, sqlite3.connect(self.path) as conn:
+            conn.execute(
+                "UPDATE clasificaciones SET ruta_destino=? WHERE clave_numerica=?",
+                (nueva_ruta, clave),
             )
 
 

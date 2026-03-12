@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import customtkinter as ctk
 
@@ -74,7 +77,8 @@ def _load_saved_clients(year: int) -> list[dict]:
                 ced = _digits(str(profile.get("cedula", "")))
                 if ced:
                     profile_ced_by_folder[folder_name.strip()] = ced
-    except Exception:
+    except Exception as exc:
+        logger.warning("No se pudieron cargar perfiles de clientes: %s", exc)
         profile_ced_by_folder = {}
 
     clients = []
@@ -96,8 +100,8 @@ def _load_saved_clients(year: int) -> list[dict]:
                         "SELECT COUNT(*) FROM clasificaciones WHERE estado != 'clasificado'"
                     ).fetchone()
                     pendientes = row2[0] if row2 else 0
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("No se pudo leer BD de clasificaciones de %s: %s", folder.name, exc)
 
         clients.append({
             "nombre": folder.name,

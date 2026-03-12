@@ -263,16 +263,16 @@ class PDFCacheManager:
 
     @staticmethod
     def _compute_checksum(pdf_file: Path, chunk_size: int = 8192) -> str:
-        """Computar checksum MD5 del archivo."""
+        """Computar checksum SHA-256 del archivo."""
         if not pdf_file.exists():
             return ""
 
-        hash_md5 = hashlib.md5()
+        h = hashlib.sha256()
         try:
             with open(pdf_file, "rb") as f:
                 for chunk in iter(lambda: f.read(chunk_size), b""):
-                    hash_md5.update(chunk)
-            return hash_md5.hexdigest()
+                    h.update(chunk)
+            return h.hexdigest()
         except Exception as exc:
             logger.debug(f"No se pudo computar checksum de {pdf_file.name}: {exc}")
             return ""

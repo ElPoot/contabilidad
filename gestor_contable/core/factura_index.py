@@ -1118,7 +1118,7 @@ class FacturaIndexer:
                         "intento": 1,
                         "tiempo_ms": int((time.perf_counter() - started) * 1000),
                         "size_mb": size_mb,
-                        "checksum": hashlib.md5(pdf_data).hexdigest()[:8],
+                        "checksum": hashlib.sha256(pdf_data).hexdigest()[:8],
                     }
             except Exception:
                 pass  # Si falla la lectura de raw bytes, descartar normalmente
@@ -1179,8 +1179,8 @@ class FacturaIndexer:
                 "size_mb": size_mb,
             }
 
-        # Compute MD5 from in-memory bytes (cost: ~0ms, avoids re-read from Z:/)
-        pdf_checksum = hashlib.md5(pdf_data).hexdigest()
+        # Compute SHA-256 from in-memory bytes (cost: ~0ms, avoids re-read from Z:/)
+        pdf_checksum = hashlib.sha256(pdf_data).hexdigest()
 
         # ── RAW BYTES PRE-SCAN: search for 506+47 digits in raw PDF stream ──
         # Claves often appear as literal ASCII text in PDF content streams.

@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🌐 Communication Preference
+
+**ALWAYS respond first in Spanish (Español)** before any other language. This is the primary communication language for this project.
+
+---
+
 ## Project Overview
 
 Invoice classification and organization system for a Costa Rican accounting firm.

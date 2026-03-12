@@ -7,6 +7,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from gestor_contable.core.models import FacturaRecord
+from gestor_contable.core.classifier import heal_classified_path
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,12 @@ def find_orphaned_pdfs(
         ruta_esperada = db_record.get("ruta_destino")
         ruta_origen = db_record.get("ruta_origen")
 
+        # Si la ruta esperada no existe, intentar sanarla (contador pudo renombrar carpeta de mes)
+        if ruta_esperada and not Path(ruta_esperada).exists():
+            sanada = heal_classified_path(ruta_esperada, contabilidades_root)
+            if sanada:
+                ruta_esperada = str(sanada)
+
         # Caso 1: PDF en ubicación antigua, copia también en ubicación nueva (duplicado)
         if ruta_esperada and str(pdf_path) != ruta_esperada and Path(ruta_esperada).exists():
             orphaned.append({
@@ -531,3 +538,92 @@ def find_duplicate_xmls_in_origin(
 
     logger.info(f"Total: {len(duplicados)} grupo(s) de XMLs duplicados en origen")
     return duplicados
+
+
+def find_renamed_client_folders(
+    contabilidades_root: Path,
+    session_client_name: str,
+    db_records: dict,
+) -> list[dict]:
+    """Detecta carpetas del cliente renombradas en Contabilidades por el contador.
+
+    El contador puede renombrar Z:/DATA/PF-2026/Contabilidades/02-FEBRERO/EMPRESA XYZ
+    a EMPRESA XYZ L (u otro sufijo). Esto rompe todas las rutas guardadas en SQLite.
+
+    Returns lista de dicts:
+        {
+            "mes": str,           # ej: "02-FEBRERO"
+            "old_name": str,      # nombre original en BD
+            "new_name": str,      # nombre actual en disco
+            "affected": int,      # cantidad de registros afectados
+        }
+    """
+    if not contabilidades_root.exists():
+        return []
+
+    # Recolectar una muestra de rutas por mes (sin p.exists() masivo en red)
+    # Estructura esperada: Contabilidades/{mes}/{cliente}/{cat}/...
+    sample_by_month: dict[str, list[Path]] = {}
+    for rec in db_records.values():
+        ruta = rec.get("ruta_destino", "")
+        if not ruta:
+            continue
+        p = Path(ruta)
+        parts = p.parts
+        try:
+            cont_idx = next(i for i, pp in enumerate(parts) if pp == "Contabilidades")
+            if len(parts) <= cont_idx + 3:
+                continue
+            mes = parts[cont_idx + 1]
+            relative_after_client = Path(*parts[cont_idx + 3:])
+            bucket = sample_by_month.setdefault(mes, [])
+            if len(bucket) < 8:   # muestra pequeña por mes, no iterar todo
+                bucket.append(relative_after_client)
+        except (StopIteration, Exception):
+            continue
+
+    if not sample_by_month:
+        return []
+
+    # Filtrar solo meses donde la carpeta del cliente YA NO existe
+    broken_by_month: dict[str, list[Path]] = {}
+    for mes, relatives in sample_by_month.items():
+        month_dir = contabilidades_root / mes
+        if not month_dir.exists():
+            continue
+        if (month_dir / session_client_name).exists():
+            continue   # carpeta del cliente intacta, sin renombrado
+        broken_by_month[mes] = relatives
+
+    if not broken_by_month:
+        return []
+
+    renames = []
+    for mes, relatives in broken_by_month.items():
+        month_dir = contabilidades_root / mes
+        if not month_dir.exists():
+            continue
+
+        # Si la carpeta con el nombre original del cliente todavía existe, no hay renombrado
+        if (month_dir / session_client_name).exists():
+            continue
+
+        # Buscar qué carpeta de cliente tiene los archivos esperados
+        sample = relatives[:5]
+        try:
+            for client_dir in month_dir.iterdir():
+                if not client_dir.is_dir() or client_dir.name == session_client_name:
+                    continue
+                matches = sum(1 for r in sample if (client_dir / r).exists())
+                if matches > 0:
+                    renames.append({
+                        "mes": mes,
+                        "old_name": session_client_name,
+                        "new_name": client_dir.name,
+                        "affected": len(relatives),
+                    })
+                    break
+        except OSError:
+            continue
+
+    return renames

@@ -514,7 +514,7 @@ class PDFViewer(ctk.CTkFrame):
         if abs(self._zoom - self._fit_zoom) < 0.05:
             if hasattr(self, '_resize_id'):
                 try: self.after_cancel(self._resize_id)
-                except: pass
+                except Exception: pass
             self._resize_id = self.after(60, self._recalc_fit_and_render)
 
     # ── RENDERIZADO ───────────────────────────────────────────────────────────
