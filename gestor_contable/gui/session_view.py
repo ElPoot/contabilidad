@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -11,6 +13,7 @@ import customtkinter as ctk
 
 from gestor_contable.config import client_root, metadata_dir
 from gestor_contable.core.client_profiles import load_profiles
+from gestor_contable.version import __version__
 from gestor_contable.core.session import ClientSession, resolve_client_session
 from gestor_contable.core.settings import get_setting
 
@@ -46,7 +49,6 @@ def F_META()    -> ctk.CTkFont: return _f("meta",    11)
 
 
 def _digits(text: str) -> str:
-    import re
     return re.sub(r"\D", "", text or "")
 
 
@@ -57,16 +59,38 @@ def _initials(name: str) -> str:
     return name[:2].upper() if name else "??"
 
 
+def _read_client_counts(folder: Path) -> tuple[int, int]:
+    """Lee pendientes y clasificadas de un cliente. Seguro para llamar en paralelo."""
+    db_path = folder / ".metadata" / "clasificacion.sqlite"
+    if not db_path.exists():
+        return 0, 0
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM clasificaciones WHERE estado='clasificado'"
+            ).fetchone()
+            clasificadas = row[0] if row else 0
+            row2 = conn.execute(
+                "SELECT COUNT(*) FROM clasificaciones WHERE estado != 'clasificado'"
+            ).fetchone()
+            pendientes = row2[0] if row2 else 0
+            return pendientes, clasificadas
+    except Exception as exc:
+        logger.debug("No se pudo leer BD de %s: %s", folder.name, exc)
+        return 0, 0
+
+
 def _load_saved_clients(year: int) -> list[dict]:
     """
     Lee las carpetas de clientes del disco y sus conteos de clasificacion.
     Retorna lista de dicts con: nombre, cedula, pendientes, clasificadas, year.
+    Las consultas SQLite se hacen en paralelo para mejorar rendimiento.
     """
     base = client_root(year)
     if not base.exists():
         return []
 
-    # Intentar enriquecer accesos rápidos con cédula real desde perfiles de App 1.
+    # Cédulas por nombre de carpeta desde perfiles
     profile_ced_by_folder: dict[str, str] = {}
     try:
         profiles = load_profiles()
@@ -79,30 +103,23 @@ def _load_saved_clients(year: int) -> list[dict]:
                     profile_ced_by_folder[folder_name.strip()] = ced
     except Exception as exc:
         logger.warning("No se pudieron cargar perfiles de clientes: %s", exc)
-        profile_ced_by_folder = {}
+
+    folders = [
+        f for f in sorted(base.iterdir())
+        if f.is_dir() and not f.name.startswith(".")
+    ]
+
+    # Leer SQLite en paralelo (I/O bound)
+    counts: dict[str, tuple[int, int]] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(folders) or 1)) as pool:
+        future_to_folder = {pool.submit(_read_client_counts, f): f for f in folders}
+        for future in as_completed(future_to_folder):
+            folder = future_to_folder[future]
+            counts[folder.name] = future.result()
 
     clients = []
-    for folder in sorted(base.iterdir()):
-        if not folder.is_dir() or folder.name.startswith("."):
-            continue
-
-        pendientes = 0
-        clasificadas = 0
-        db_path = folder / ".metadata" / "clasificacion.sqlite"
-        if db_path.exists():
-            try:
-                with sqlite3.connect(db_path) as conn:
-                    row = conn.execute(
-                        "SELECT COUNT(*) FROM clasificaciones WHERE estado='clasificado'"
-                    ).fetchone()
-                    clasificadas = row[0] if row else 0
-                    row2 = conn.execute(
-                        "SELECT COUNT(*) FROM clasificaciones WHERE estado != 'clasificado'"
-                    ).fetchone()
-                    pendientes = row2[0] if row2 else 0
-            except Exception as exc:
-                logger.debug("No se pudo leer BD de clasificaciones de %s: %s", folder.name, exc)
-
+    for folder in folders:
+        pendientes, clasificadas = counts.get(folder.name, (0, 0))
         clients.append({
             "nombre": folder.name,
             "cedula": profile_ced_by_folder.get(folder.name, ""),
@@ -118,7 +135,6 @@ def _load_saved_clients(year: int) -> list[dict]:
 # ── TARJETA DE CLIENTE ─────────────────────────────────────────────────────────
 class ClientCard(ctk.CTkFrame):
     def __init__(self, parent, client: dict, on_click, **kwargs):
-        # Frame exterior = borde
         super().__init__(
             parent,
             fg_color=BORDER,
@@ -127,9 +143,7 @@ class ClientCard(ctk.CTkFrame):
         )
         self._client = client
         self._on_click = on_click
-        self._hovered = False
 
-        # Frame interior = fondo de la tarjeta
         self._inner = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12)
         self._inner.pack(fill="both", expand=True, padx=1, pady=1)
         self._inner.grid_columnconfigure(1, weight=1)
@@ -153,7 +167,6 @@ class ClientCard(ctk.CTkFrame):
         pills_frame = ctk.CTkFrame(self._inner, fg_color="transparent")
         pills_frame.grid(row=1, column=1, sticky="nw", pady=(0, 12))
 
-        # Pill pendientes
         if client["pendientes"] > 0:
             pill_color = "#2d2010"
             pill_text_color = WARNING
@@ -161,7 +174,7 @@ class ClientCard(ctk.CTkFrame):
         else:
             pill_color = "#0d2a1e"
             pill_text_color = SUCCESS
-            pill_text = "✓ Al día"
+            pill_text = "Al dia"
 
         ctk.CTkLabel(pills_frame, text=pill_text, font=F_SMALL(),
                      fg_color=pill_color, text_color=pill_text_color,
@@ -176,7 +189,7 @@ class ClientCard(ctk.CTkFrame):
                                     text_color=MUTED)
         self._arrow.grid(row=0, column=2, rowspan=2, padx=(0, 14))
 
-        # Hover -- bind en todos los widgets internos
+        # Hover
         for w in [self, self._inner, avatar, self._arrow, pills_frame]:
             w.bind("<Enter>", self._on_enter)
             w.bind("<Leave>", self._on_leave)
@@ -208,8 +221,9 @@ class SessionView(ctk.CTkFrame):
         super().__init__(parent, fg_color=BG, **kwargs)
         self._on_resolved = on_session_resolved
         self._on_cancel = on_cancel
-        self._debounce_id = None
-        self._resolve_thread = None
+        self._debounce_id: str | None = None
+        self._pending_session: ClientSession | None = None
+        self._all_clients: list[dict] = []
 
         self._build()
         self._load_clients_async()
@@ -218,20 +232,20 @@ class SessionView(ctk.CTkFrame):
     def _build(self):
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(1, weight=0)  # divisor
+        self.grid_columnconfigure(2, weight=1)
 
         self._build_header()
         self._build_left()
-        self._build_right()
         self._build_divider()
+        self._build_right()
 
     def _build_header(self):
         header = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=56)
-        header.grid(row=0, column=0, columnspan=2, sticky="ew")
+        header.grid(row=0, column=0, columnspan=3, sticky="ew")
         header.grid_propagate(False)
         header.grid_columnconfigure(1, weight=1)
 
-        # Logo
         logo_icon = ctk.CTkLabel(header, text="📊",
                                   fg_color="#1a3a36", corner_radius=8,
                                   width=32, height=32, font=ctk.CTkFont(size=16))
@@ -245,7 +259,7 @@ class SessionView(ctk.CTkFrame):
         ).grid(row=0, column=1, sticky="w")
 
         ctk.CTkLabel(
-            header, text="APP 3 · v1.0",
+            header, text=f"v{__version__}",
             font=F_SMALL(), text_color=MUTED,
             fg_color=CARD, corner_radius=20,
         ).grid(row=0, column=2, padx=16, pady=12, ipadx=10, ipady=3)
@@ -256,15 +270,13 @@ class SessionView(ctk.CTkFrame):
         left.grid_columnconfigure(0, weight=1)
         left.grid_rowconfigure(2, weight=1)
 
-        # Título
-        ctk.CTkLabel(left, text="Iniciar sesión",
+        ctk.CTkLabel(left, text="Iniciar sesion",
                       font=F_TITLE(), text_color=TEXT).grid(
             row=0, column=0, sticky="w")
-        ctk.CTkLabel(left, text="Ingresa la cédula del cliente para cargar\nsu carpeta de documentos",
+        ctk.CTkLabel(left, text="Ingresa la cedula del cliente para cargar\nsu carpeta de documentos",
                       font=F_LABEL(), text_color=MUTED, justify="left").grid(
             row=1, column=0, sticky="w", pady=(6, 28))
 
-        # Tarjeta
         card_border = ctk.CTkFrame(left, fg_color=BORDER, corner_radius=20)
         card_border.grid(row=2, column=0, sticky="new")
 
@@ -272,12 +284,12 @@ class SessionView(ctk.CTkFrame):
         card.pack(fill="both", expand=True, padx=1, pady=1)
         card.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(card, text="NUEVA SESIÓN",
+        ctk.CTkLabel(card, text="NUEVA SESION",
                       font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
                       text_color=TEAL).grid(row=0, column=0, sticky="w",
                                             padx=24, pady=(22, 0))
 
-        ctk.CTkLabel(card, text="Cédula jurídica o física",
+        ctk.CTkLabel(card, text="Cedula juridica o fisica",
                       font=F_SMALL(), text_color=MUTED).grid(
             row=1, column=0, sticky="w", padx=24, pady=(14, 4))
 
@@ -294,6 +306,7 @@ class SessionView(ctk.CTkFrame):
         )
         self._cedula_entry.grid(row=2, column=0, sticky="ew", padx=24)
         self._cedula_entry.bind("<KeyRelease>", self._on_cedula_change)
+        self._cedula_entry.bind("<Return>", self._on_enter_key)
 
         # Preview del nombre
         self._preview_frame = ctk.CTkFrame(
@@ -309,7 +322,7 @@ class SessionView(ctk.CTkFrame):
         self._preview_dot.grid(row=0, column=0, padx=(14, 6), pady=10)
 
         self._preview_name = ctk.CTkLabel(
-            self._preview_frame, text="Ingresa una cédula para buscar",
+            self._preview_frame, text="Ingresa una cedula para buscar",
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color=MUTED, anchor="w")
         self._preview_name.grid(row=0, column=1, sticky="ew", pady=10)
@@ -319,7 +332,6 @@ class SessionView(ctk.CTkFrame):
             font=F_SMALL(), text_color=MUTED)
         self._preview_status.grid(row=0, column=2, padx=(0, 14), pady=10)
 
-        # Botón continuar
         self._btn_continuar = ctk.CTkButton(
             card,
             text="Continuar  ->",
@@ -335,15 +347,22 @@ class SessionView(ctk.CTkFrame):
         self._btn_continuar.grid(row=4, column=0, sticky="ew",
                                   padx=24, pady=(14, 24))
 
+        # Auto-foco al abrir
+        self.after(100, lambda: self._cedula_entry.focus_set())
+
+    def _build_divider(self):
+        div = ctk.CTkFrame(self, fg_color=BORDER, width=1, corner_radius=0)
+        div.grid(row=1, column=1, sticky="ns", pady=40)
+
     def _build_right(self):
         right = ctk.CTkFrame(self, fg_color="transparent")
-        right.grid(row=1, column=1, sticky="nsew", padx=(40, 60), pady=50)
+        right.grid(row=1, column=2, sticky="nsew", padx=(40, 60), pady=50)
         right.grid_columnconfigure(0, weight=1)
-        right.grid_rowconfigure(1, weight=1)
+        right.grid_rowconfigure(2, weight=1)
 
         # Header
         header_row = ctk.CTkFrame(right, fg_color="transparent")
-        header_row.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        header_row.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         header_row.grid_columnconfigure(0, weight=1)
 
         title_row = ctk.CTkFrame(header_row, fg_color="transparent")
@@ -351,7 +370,7 @@ class SessionView(ctk.CTkFrame):
 
         ctk.CTkLabel(title_row, text="⚡", font=F_HEADING(),
                       text_color=TEAL).pack(side="left")
-        ctk.CTkLabel(title_row, text=" Accesos rápidos",
+        ctk.CTkLabel(title_row, text=" Accesos rapidos",
                       font=F_HEADING(), text_color=TEXT).pack(side="left")
 
         self._count_badge = ctk.CTkLabel(
@@ -366,27 +385,36 @@ class SessionView(ctk.CTkFrame):
                       text="Clientes con carpeta activa en este equipo",
                       font=F_SMALL(), text_color=MUTED).pack(anchor="w", padx=(22, 0))
 
+        # Buscador de clientes
+        self._search_entry = ctk.CTkEntry(
+            right,
+            placeholder_text="Filtrar clientes...",
+            fg_color=SURFACE,
+            border_color=BORDER,
+            text_color=TEXT,
+            placeholder_text_color="#3a4055",
+            font=F_SMALL(),
+            height=36,
+            corner_radius=10,
+        )
+        self._search_entry.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        self._search_entry.bind("<KeyRelease>", self._on_search_change)
+
         # Lista scrollable
         self._client_scroll = ctk.CTkScrollableFrame(
             right, fg_color="transparent",
             scrollbar_button_color=BORDER,
             scrollbar_button_hover_color=MUTED,
         )
-        self._client_scroll.grid(row=1, column=0, sticky="nsew")
+        self._client_scroll.grid(row=2, column=0, sticky="nsew")
         self._client_scroll.grid_columnconfigure(0, weight=1)
 
-        # Estado inicial mientras carga
         self._loading_label = ctk.CTkLabel(
             self._client_scroll,
             text="Cargando clientes...",
             font=F_LABEL(), text_color=MUTED,
         )
         self._loading_label.grid(row=0, column=0, pady=40)
-
-    def _build_divider(self):
-        div = ctk.CTkFrame(self, fg_color=BORDER, width=1, corner_radius=0)
-        div.grid(row=1, column=0, columnspan=2, sticky="ns",
-                  padx=(self.winfo_reqwidth() // 2, 0), pady=40)
 
     # ── CARGA ASÍNCRONA DE CLIENTES ───────────────────────────────────────────
     def _load_clients_async(self):
@@ -396,16 +424,19 @@ class SessionView(ctk.CTkFrame):
                 clients = _load_saved_clients(year)
             except Exception:
                 clients = []
-            self.after(0, lambda: self._render_clients(clients))
+            self.after(0, lambda: self._on_clients_loaded(clients))
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _on_clients_loaded(self, clients: list[dict]):
+        self._all_clients = clients
+        self._render_clients(clients)
+
     def _render_clients(self, clients: list[dict]):
-        # Limpiar loading
         for w in self._client_scroll.winfo_children():
             w.destroy()
 
-        self._count_badge.configure(text=str(len(clients)))
+        self._count_badge.configure(text=str(len(self._all_clients)))
 
         if not clients:
             empty = ctk.CTkFrame(
@@ -417,8 +448,13 @@ class SessionView(ctk.CTkFrame):
             empty.grid(row=0, column=0, sticky="ew", pady=20, padx=4)
             ctk.CTkLabel(empty, text="📂", font=ctk.CTkFont(size=32),
                           text_color=MUTED).pack(pady=(28, 8))
-            ctk.CTkLabel(empty,
-                          text="No hay clientes registrados\nen este equipo todavía.",
+
+            if self._all_clients:
+                msg = "Sin resultados para la busqueda."
+            else:
+                msg = "No hay clientes registrados\nen este equipo todavia."
+
+            ctk.CTkLabel(empty, text=msg,
                           font=F_LABEL(), text_color=MUTED,
                           justify="center").pack(pady=(0, 28))
             return
@@ -431,7 +467,19 @@ class SessionView(ctk.CTkFrame):
             )
             card.grid(row=i, column=0, sticky="ew", pady=(0, 8), padx=4)
 
-    # ── LÓGICA DE BÚSQUEDA ────────────────────────────────────────────────────
+    # ── FILTRO DE BÚSQUEDA ────────────────────────────────────────────────────
+    def _on_search_change(self, _event=None):
+        query = self._search_entry.get().strip().lower()
+        if not query:
+            self._render_clients(self._all_clients)
+        else:
+            filtered = [
+                c for c in self._all_clients
+                if query in c["nombre"].lower() or query in c["cedula"]
+            ]
+            self._render_clients(filtered)
+
+    # ── LÓGICA DE BÚSQUEDA POR CÉDULA ─────────────────────────────────────────
     def _on_cedula_change(self, _event=None):
         if self._debounce_id:
             self.after_cancel(self._debounce_id)
@@ -439,9 +487,15 @@ class SessionView(ctk.CTkFrame):
         if len(raw) < 9:
             self._set_preview_idle()
             self._btn_continuar.configure(state="disabled")
+            self._pending_session = None
             return
         self._set_preview_searching()
         self._debounce_id = self.after(500, self._resolve_cedula)
+
+    def _on_enter_key(self, _event=None):
+        """Enter en el campo de cédula: confirmar si ya hay sesión resuelta."""
+        if self._pending_session:
+            self._on_continuar()
 
     def _resolve_cedula(self):
         cedula = self._cedula_entry.get().strip()
@@ -466,56 +520,48 @@ class SessionView(ctk.CTkFrame):
         self._btn_continuar.configure(state="disabled")
 
     def _on_client_card_click(self, client: dict):
-        """Clic en acceso rápido -- resuelve sesión directo desde la carpeta."""
+        """Clic en acceso rápido — resuelve sesión y entra directamente."""
         folder: Path = client["folder"]
         year: int = client["year"]
         nombre: str = client["nombre"]
         cedula: str = _digits(str(client.get("cedula", "")))
 
-        # Mantener el input de cédula limpio: acceso rápido no debe escribir nombres.
         self._cedula_entry.delete(0, "end")
-
         self._set_preview_searching()
         self._btn_continuar.configure(state="disabled")
 
         def worker():
             try:
-                session: ClientSession
                 if len(cedula) >= 9:
                     try:
-                        # Preferir resolución completa para mantener consistencia con sesión manual.
                         session = resolve_client_session(cedula, year=year)
                     except Exception:
                         session = ClientSession(
-                            cedula=cedula,
-                            nombre=nombre,
-                            folder=folder,
-                            year=year,
+                            cedula=cedula, nombre=nombre,
+                            folder=folder, year=year,
                         )
                 else:
                     session = ClientSession(
-                        cedula=cedula,
-                        nombre=nombre,
-                        folder=folder,
-                        year=year,
+                        cedula=cedula, nombre=nombre,
+                        folder=folder, year=year,
                     )
-                self.after(0, lambda s=session: self._on_resolve_ok(s))
+                # Login directo: sin paso extra de "Continuar"
+                self.after(0, lambda s=session: self._on_resolved(s))
             except Exception as exc:
                 self.after(0, lambda e=exc: self._on_resolve_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_continuar(self):
-        if hasattr(self, "_pending_session") and self._pending_session:
-            session = self._pending_session
-            self._on_resolved(session)
+        if self._pending_session:
+            self._on_resolved(self._pending_session)
 
     # ── ESTADOS DEL PREVIEW ───────────────────────────────────────────────────
     def _set_preview_idle(self):
         self._preview_frame.configure(fg_color="#1a1e2a")
         self._preview_dot.configure(text_color=MUTED)
         self._preview_name.configure(
-            text="Ingresa una cédula para buscar", text_color=MUTED)
+            text="Ingresa una cedula para buscar", text_color=MUTED)
         self._preview_status.configure(text="")
 
     def _set_preview_searching(self):

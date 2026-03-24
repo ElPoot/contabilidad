@@ -14,3 +14,6 @@ requests>=2.31
 # Security — encryption and credential storage
 cryptography>=42.0
 keyring>=24.0
+
+# Build — empaquetar como .exe (solo en entorno de desarrollo)
+pyinstaller>=6.0

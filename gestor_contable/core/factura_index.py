@@ -13,6 +13,7 @@ from .models import FacturaRecord
 from .xml_manager import CRXMLManager
 from .pdf_cache import PDFCacheManager
 from .iva_utils import validate_iva_sum, validate_total_comprobante
+from gestor_contable.config import is_onedrive_placeholder
 
 try:
     import fitz
@@ -1041,6 +1042,19 @@ class FacturaIndexer:
     ) -> dict[str, Any]:
         started = time.perf_counter()
         clave = _extract_clave_from_filename(pdf_file.name)
+
+        # Detectar placeholder de OneDrive (archivo no descargado localmente).
+        # Si lo intentamos leer causará un timeout o PermissionError confuso.
+        if is_onedrive_placeholder(pdf_file):
+            logger.warning("PDF es placeholder de OneDrive (no descargado): %s", pdf_file.name)
+            return {
+                "clave": None,
+                "razon": "onedrive_placeholder",
+                "error": "Archivo no descargado localmente (OneDrive Files On-Demand)",
+                "intento": 1,
+                "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                "size_mb": 0.0,
+            }
 
         try:
             size_bytes = pdf_file.stat().st_size

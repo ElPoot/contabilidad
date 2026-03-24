@@ -8,6 +8,8 @@ from typing import Optional
 
 import customtkinter as ctk
 
+from gestor_contable.config import is_onedrive_placeholder
+
 try:
     import fitz  # pymupdf >= 1.24
     PYMUPDF_OK = True
@@ -211,6 +213,12 @@ class PDFViewer(ctk.CTkFrame):
             return
         if not pdf_path or not pdf_path.exists():
             self._show_placeholder(f"PDF no encontrado:\n{pdf_path}")
+            return
+        if is_onedrive_placeholder(pdf_path):
+            self._show_placeholder(
+                f"El archivo no está descargado localmente.\n\n"
+                f"Abre OneDrive y descarga:\n{pdf_path.name}"
+            )
             return
         try:
             self._doc = fitz.open(str(pdf_path))
