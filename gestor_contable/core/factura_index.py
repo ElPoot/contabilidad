@@ -12,7 +12,7 @@ from typing import Any
 from .models import FacturaRecord
 from .xml_manager import CRXMLManager
 from .pdf_cache import PDFCacheManager
-from .iva_utils import validate_iva_sum, validate_total_comprobante
+from .iva_utils import parse_decimal_value as _pdv_global
 from gestor_contable.config import is_onedrive_placeholder
 
 try:
@@ -221,6 +221,7 @@ class FacturaIndexer:
         self.pdf_cache: PDFCacheManager | None = None  # Se inicializa en load_period()
         self.duplicate_xml_count: int = 0
         self.duplicate_xml_files: list[dict] = []  # [{archivo, original, hash}, ...]
+        self.failed_xml_files: list[str] = []  # Nombres de XML que fallaron el parseo
 
     def load_period(
         self,
@@ -232,6 +233,7 @@ class FacturaIndexer:
     ) -> list[FacturaRecord]:
         self.parse_errors = []
         self.audit_report = {}
+        self.failed_xml_files = []
 
         start_total = time.perf_counter()
 
@@ -249,10 +251,20 @@ class FacturaIndexer:
         self.pdf_cache = PDFCacheManager(cache_file, pdf_root=pdf_root)
 
         # ── PASO 1: XML ──
+        # Cargar lista de XMLs ignorados por el usuario
+        import json as _json
+        _ignored_path = metadata_dir / "ignored_xml_errors.json"
+        _ignored_filenames: set[str] = set()
+        if _ignored_path.exists():
+            try:
+                _ignored_filenames = set(_json.loads(_ignored_path.read_text(encoding="utf-8")).get("ignored", []))
+            except Exception:
+                pass
+
         start_xml = time.perf_counter()
         if xml_root.exists():
             try:
-                df, audit = self.xml_manager.load_xml_folder(xml_root)
+                df, audit = self.xml_manager.load_xml_folder(xml_root, ignored_filenames=_ignored_filenames)
                 self.audit_report = audit
 
                 # Capturar duplicados XML
@@ -266,8 +278,16 @@ class FacturaIndexer:
                     )
 
                 for failed in audit.get("failed_files", []):
+                    nombre = failed.get('archivo', '?')
+                    self.failed_xml_files.append(nombre)
                     self.parse_errors.append(
-                        f"{failed.get('archivo', '?')}: {failed.get('error', 'error desconocido')}"
+                        f"{nombre}: {failed.get('error', 'error desconocido')}"
+                    )
+
+                for rf in audit.get("respuesta_failed_files", []):
+                    nombre = rf.get('archivo', '?')
+                    self.parse_errors.append(
+                        f"[respuesta_irrecuperable] {nombre}"
                     )
 
                 if not df.empty:
@@ -301,6 +321,7 @@ class FacturaIndexer:
                             iva_otros=str(row.get("iva_otros") or ""),
                             impuesto_total=str(row.get("impuesto_total") or ""),
                             total_comprobante=str(row.get("total_comprobante") or ""),
+                            otros_cargos=str(row.get("otros_cargos") or ""),
                             moneda=str(row.get("moneda") or ""),
                             tipo_cambio=str(row.get("tipo_cambio") or ""),
                             estado_hacienda=str(row.get("estado_hacienda") or ""),
@@ -309,30 +330,52 @@ class FacturaIndexer:
                             estado="pendiente",
                         )
 
-                        # ── Validaciones de IVA (no bloquean la carga, solo reportan) ──
+                        # ── Validaciones de montos (no bloquean la carga, solo reportan) ──
+                        # Umbral: <₡1.00 → siempre silencio; ≥₡1.00 → solo si ≥0.10% del total
+                        from decimal import Decimal as _D
+                        _pdv = _pdv_global
+                        _UMBRAL_ABS = _D("1.00")
+                        _UMBRAL_PCT = _D("0.10")   # 0.10% del total
+
+                        _tot = _pdv(record.total_comprobante) or _D(0)
+
+                        # Validar suma de IVAs (solo si no hay iva_otros)
                         iva_otros_val = record.iva_otros.strip()
                         has_iva_otros = iva_otros_val and iva_otros_val not in ("0", "0,00", "0.00", "")
-
-                        # Validar suma de IVAs (solo si no hay iva_otros, que puede hacer que no cuadre legítimamente)
                         if not has_iva_otros:
-                            iva_dict = {
-                                "iva_1": record.iva_1,
-                                "iva_2": record.iva_2,
-                                "iva_4": record.iva_4,
-                                "iva_8": record.iva_8,
-                                "iva_13": record.iva_13,
-                                "impuesto_total": record.impuesto_total,
-                            }
-                            if not validate_iva_sum(iva_dict):
-                                self.parse_errors.append(
-                                    f"Factura {clave[:12]}... suma de IVAs no cuadra con impuesto_total"
-                                )
+                            _iva_cols = ["iva_1", "iva_2", "iva_4", "iva_8", "iva_13"]
+                            _suma_ivas = sum((_pdv(getattr(record, c) or "0") or _D(0)) for c in _iva_cols)
+                            _imp_t = _pdv(record.impuesto_total) or _D(0)
+                            _diff_iva = _suma_ivas - _imp_t
+                            _abs_iva = abs(_diff_iva)
+                            if _abs_iva >= _UMBRAL_ABS:
+                                _pct_iva = (_abs_iva / abs(_tot) * 100) if _tot else _D("100")
+                                if _pct_iva >= _UMBRAL_PCT:
+                                    self.parse_errors.append(
+                                        f"Factura {clave[:12]}... (emisor {record.emisor_cedula}) "
+                                        f"IVAs no cuadran: suma_ivas={_suma_ivas:.2f} "
+                                        f"impuesto_total={_imp_t:.2f} "
+                                        f"diferencia={_diff_iva:+.2f} ({_pct_iva:.3f}% del total) "
+                                        f"| moneda={record.moneda}"
+                                    )
 
-                        # Validar total = subtotal + impuesto
-                        if not validate_total_comprobante(record.subtotal, record.impuesto_total, record.total_comprobante):
-                            self.parse_errors.append(
-                                f"Factura {clave[:12]}... total_comprobante no cuadra (subtotal + impuesto ≠ total)"
-                            )
+                        # Validar total = subtotal + impuesto + otros_cargos
+                        _sub = _pdv(record.subtotal) or _D(0)
+                        _imp = _pdv(record.impuesto_total) or _D(0)
+                        _oc  = _pdv(record.otros_cargos) or _D(0)
+                        _diff_tot = (_sub + _imp + _oc) - _tot
+                        _abs_tot = abs(_diff_tot)
+                        if _abs_tot >= _UMBRAL_ABS:
+                            _pct_tot = (_abs_tot / abs(_tot) * 100) if _tot else _D("100")
+                            if _pct_tot >= _UMBRAL_PCT:
+                                _oc_txt = f" + otros_cargos={_oc:.2f}" if _oc else ""
+                                self.parse_errors.append(
+                                    f"Factura {clave[:12]}... (emisor {record.emisor_cedula}) "
+                                    f"total no cuadra: {_sub:.2f} + {_imp:.2f}{_oc_txt} "
+                                    f"= {_sub+_imp+_oc:.2f} ≠ total={_tot:.2f} "
+                                    f"| diferencia={_diff_tot:+.2f} ({_pct_tot:.3f}%) "
+                                    f"| moneda={record.moneda}"
+                                )
 
                         records[clave] = record
             except Exception as exc:

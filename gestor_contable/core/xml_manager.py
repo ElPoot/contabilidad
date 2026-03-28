@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
@@ -126,14 +127,15 @@ class CRXMLManager:
         flat_data["consecutivo"] = self.pick_doc_value(flat_data, root_name, "NumeroConsecutivo")
         flat_data["subtotal"] = self.pick_doc_value(flat_data, root_name, "ResumenFactura_TotalVentaNeta")
         flat_data["total_comprobante"] = self.pick_doc_value(flat_data, root_name, "ResumenFactura_TotalComprobante")
+        flat_data["otros_cargos"] = self.pick_doc_value(flat_data, root_name, "ResumenFactura_TotalOtrosCargos")
         impuestos = self.extract_iva_breakdown(flat_data, root_name, xml_path=xml_path)
         flat_data.update(impuestos)
-        for amount_col in ["subtotal", "tipo_cambio", "iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros", "impuesto_total", "total_comprobante"]:
+        for amount_col in ["subtotal", "tipo_cambio", "iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros", "impuesto_total", "total_comprobante", "otros_cargos"]:
             default_zero = amount_col.startswith("iva_")
             flat_data[amount_col] = self.normalize_amount_text(flat_data.get(amount_col), default_zero=default_zero)
 
         if root_name == "NotaCreditoElectronica":
-            for amount_col in ["subtotal", "iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros", "impuesto_total", "total_comprobante"]:
+            for amount_col in ["subtotal", "iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros", "impuesto_total", "total_comprobante", "otros_cargos"]:
                 flat_data[amount_col] = self.ensure_negative_amount(flat_data.get(amount_col))
 
         # Compatibilidad con filtros existentes de UI.
@@ -530,7 +532,7 @@ class CRXMLManager:
             stack.pop()
             elem.clear()
         return output, root_name
-    def load_xml_folder(self, folder_path: str | Path) -> tuple[pd.DataFrame, dict[str, Any]]:
+    def load_xml_folder(self, folder_path: str | Path, ignored_filenames: set[str] | None = None) -> tuple[pd.DataFrame, dict[str, Any]]:
         """Carga XML de forma segura y retorna DataFrame junto a reporte de auditoría."""
         started_at = time.perf_counter()
         folder = Path(folder_path)
@@ -538,6 +540,8 @@ class CRXMLManager:
             raise FileNotFoundError(f"La carpeta no existe o no es válida: {folder}")
 
         xml_files = sorted(folder.rglob("*.xml"))
+        if ignored_filenames:
+            xml_files = [f for f in xml_files if f.name not in ignored_filenames]
         rows: list[dict[str, Any]] = []
         if not xml_files:
             report = self._build_audit_report(
@@ -579,6 +583,50 @@ class CRXMLManager:
             row["_process_status"] = "ok"
             return row
         except ET.ParseError as exc:
+            # Hacienda genera _respuesta.xml con encoding="UTF-8" declarado pero
+            # bytes Latin-1 en el DetalleMensaje (tildes, ñ, etc.). Reintentamos
+            # reemplazando la declaración a ISO-8859-1 para recuperar estado_hacienda.
+            if xml_file.name.endswith("_respuesta.xml"):
+                try:
+                    raw = xml_file.read_bytes()
+                    fixed = raw.replace(b'encoding="UTF-8"', b'encoding="ISO-8859-1"', 1)
+                    root = ET.fromstring(fixed)
+                    flat: dict[str, str] = {}
+                    stack: list[str] = []
+                    for event, elem in ET.iterparse(io.BytesIO(fixed), events=("start", "end")):
+                        tag = self.local_name(elem.tag)
+                        if event == "start":
+                            stack.append(tag)
+                            continue
+                        text = self.normalize_text(elem.text)
+                        if text and len(elem) == 0:
+                            key = "_".join(stack)
+                            flat[key] = f"{flat[key]} | {text}" if key in flat else text
+                        stack.pop()
+                        elem.clear()
+                    root_name = self.local_name(root.tag)
+                    row = {
+                        "archivo": xml_file.name,
+                        "ruta": str(xml_file),
+                        "carpeta": str(xml_file.parent),
+                        "xml_hash": self.compute_file_hash(xml_file),
+                        "documento_root": root_name,
+                        "tipo_documento": self.DOCUMENT_TYPES.get(root_name, f"Desconocido ({root_name})"),
+                    }
+                    row.update(flat)
+                    row["clave_numerica"] = flat.get("MensajeHacienda_Clave", "")
+                    row["_process_status"] = "ok"
+                    LOGGER.debug("MensajeHacienda recuperado con re-encoding: %s", xml_file.name)
+                    return row
+                except Exception as inner:
+                    LOGGER.warning("MensajeHacienda irrecuperable %s: %s", xml_file.name, inner)
+                    return {
+                        "archivo": xml_file.name,
+                        "ruta": str(xml_file),
+                        "carpeta": str(xml_file.parent),
+                        "documento_root": "",
+                        "_process_status": "skipped",
+                    }
             LOGGER.warning("XML inválido en %s: %s", xml_file, exc)
             return {
                 "archivo": xml_file.name,
@@ -651,6 +699,14 @@ class CRXMLManager:
             for row in rows
             if str(row.get("_process_status", "")).lower() in {"failed", "invalid_xml"}
         ]
+        respuesta_failed_files = [
+            {
+                "archivo": str(row.get("archivo", "")),
+                "ruta": str(row.get("ruta", "")),
+            }
+            for row in rows
+            if str(row.get("_process_status", "")).lower() == "skipped"
+        ]
         invalid_xml_files = sum(1 for row in rows if str(row.get("_process_status", "")).lower() == "invalid_xml")
         successfully_processed = sum(1 for row in rows if str(row.get("_process_status", "")).lower() == "ok")
 
@@ -663,6 +719,7 @@ class CRXMLManager:
             "total_files_found": total_files_found,
             "successfully_processed": successfully_processed,
             "failed_files": failed_files,
+            "respuesta_failed_files": respuesta_failed_files,
             "duplicate_files": duplicates,
             "invalid_xml_files": invalid_xml_files,
             "processing_time_seconds": processing_time_seconds,
@@ -670,6 +727,7 @@ class CRXMLManager:
             "files_by_status": {
                 "ok": successfully_processed,
                 "failed": len(failed_files),
+                "respuesta_failed": len(respuesta_failed_files),
                 "duplicates": len(duplicates),
                 "invalid_xml": invalid_xml_files,
             },

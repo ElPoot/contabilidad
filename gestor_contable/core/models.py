@@ -21,6 +21,7 @@ class FacturaRecord:
     subtotal: str = ""
     impuesto_total: str = ""
     total_comprobante: str = ""
+    otros_cargos: str = ""   # TotalOtrosCargos del XML (IEBL, IDA, recargas, etc.)
     moneda: str = ""
     tipo_cambio: str = ""
 

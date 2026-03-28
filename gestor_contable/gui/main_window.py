@@ -855,7 +855,7 @@ class App3Window(ctk.CTk):
                 total_time = time.perf_counter() - start_total
                 logger.info(f"Worker total: {total_time:.2f}s")
 
-                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors, renames)))
+                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors, indexer.failed_xml_files, renames)))
             except Exception as exc:
                 logger.exception("Error en worker")
                 self._load_queue.put(("error", (generation, str(exc))))
@@ -883,7 +883,7 @@ class App3Window(ctk.CTk):
             self._show_error("Error al cargar cliente", message)
             return
 
-        generation, session, catalog_mgr, db, records, parse_errors, renames = payload
+        generation, session, catalog_mgr, db, records, parse_errors, failed_xml_files, renames = payload
         if generation != self._load_generation:
             return
         self.session = session
@@ -923,11 +923,11 @@ class App3Window(ctk.CTk):
         self._set_status("Listo")
 
         if parse_errors:
-            self._show_warning(
+            self._show_parse_errors_modal(
                 "Advertencias al cargar",
-                f"Facturas cargadas: {len(records)}\n"
-                f"XML con error (omitidos): {len(parse_errors)}\n\n"
-                + "\n".join(parse_errors[:5])
+                parse_errors,
+                records_count=len(records),
+                failed_xml_files=failed_xml_files,
             )
 
         if renames:
@@ -2557,13 +2557,30 @@ class App3Window(ctk.CTk):
             f"¿Actualizar los registros en la base de datos con las nuevas rutas?"
         )
 
+        self.update_idletasks()
+        mx, my = self.winfo_rootx(), self.winfo_rooty()
+        mw, mh = self.winfo_width(), self.winfo_height()
+
+        # ── Overlay oscuro semitransparente ───────────────────────────────────
+        overlay = ctk.CTkToplevel(self)
+        overlay.overrideredirect(True)
+        overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
+        overlay.configure(fg_color="#0d0f14")
+        overlay.wm_attributes("-alpha", 0.72)
+        overlay.lift()
+
+        # ── Card centrada ─────────────────────────────────────────────────────
+        card_w, card_h = 580, 360
+        cx = mx + (mw - card_w) // 2
+        cy = my + (mh - card_h) // 2
+
         modal = ctk.CTkToplevel(self)
-        modal.title("⚠️ Carpetas renombradas")
-        modal.geometry("560x320")
-        modal.resizable(False, False)
+        modal.overrideredirect(True)
+        modal.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
         modal.configure(fg_color=CARD)
-        modal.grab_set()
         modal.lift()
+        modal.grab_set()
+        self._round_corners(modal)
 
         ctk.CTkLabel(
             modal, text="⚠️  Carpetas del cliente renombradas",
@@ -2583,9 +2600,13 @@ class App3Window(ctk.CTk):
         btn_frame.pack(fill="x", padx=24, pady=(0, 16))
 
         def on_ignorar():
+            modal.grab_release()
+            overlay.destroy()
             modal.destroy()
 
         def on_actualizar():
+            modal.grab_release()
+            overlay.destroy()
             modal.destroy()
             self._apply_rename_fixes(renames)
 
@@ -2627,6 +2648,8 @@ class App3Window(ctk.CTk):
 
     def _on_rename_fixes_done(self, updated: int):
         """Callback cuando terminó la actualización de rutas."""
+        if not self.session or not self.db:
+            return   # sesión cambió mientras corría el worker
         self._db_records = self.db.get_records_map()
         self._show_info(
             "Rutas actualizadas",
@@ -3047,7 +3070,7 @@ class App3Window(ctk.CTk):
                 "Esta acción no se puede deshacer."
             )
 
-        if not self._ask("Borrar PDFs", msg):
+        if not self._ask("Borrar PDFs", msg, confirm_text="Sí, borrar"):
             return
 
         # Ejecutar borrado en worker
@@ -3386,42 +3409,359 @@ class App3Window(ctk.CTk):
                        command=win.destroy).pack()
 
     def _show_warning(self, title: str, msg: str):
-        win = ctk.CTkToplevel(self)
-        win.title(title)
-        win.geometry("440x220")
-        win.configure(fg_color=CARD)
-        win.grab_set()
-        ctk.CTkLabel(win, text=f"⚠  {title}", font=F_BTN(),
+        self.update_idletasks()
+        mx, my = self.winfo_rootx(), self.winfo_rooty()
+        mw, mh = self.winfo_width(), self.winfo_height()
+
+        overlay = ctk.CTkToplevel(self)
+        overlay.overrideredirect(True)
+        overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
+        overlay.configure(fg_color="#0d0f14")
+        overlay.wm_attributes("-alpha", 0.72)
+        overlay.lift()
+
+        card_w, card_h = 480, 250
+        cx = mx + (mw - card_w) // 2
+        cy = my + (mh - card_h) // 2
+
+        card_win = ctk.CTkToplevel(self)
+        card_win.overrideredirect(True)
+        card_win.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
+        card_win.configure(fg_color=CARD)
+        card_win.lift()
+        card_win.grab_set()
+        self._round_corners(card_win)
+
+        ctk.CTkLabel(card_win, text=f"⚠  {title}", font=F_BTN(),
                       text_color=WARNING).pack(pady=(24, 8))
-        ctk.CTkLabel(win, text=msg, font=F_SMALL(), text_color=TEXT,
-                      wraplength=400, justify="center").pack(pady=(0, 16))
-        ctk.CTkButton(win, text="Entendido", fg_color=SURFACE,
+        ctk.CTkLabel(card_win, text=msg, font=F_SMALL(), text_color=TEXT,
+                      wraplength=440, justify="center").pack(
+                          padx=20, pady=(0, 0), fill="both", expand=True)
+
+        def close():
+            card_win.grab_release()
+            overlay.destroy()
+            card_win.destroy()
+
+        ctk.CTkButton(card_win, text="Entendido", fg_color=SURFACE,
                        hover_color=BORDER, text_color=TEXT,
-                       command=win.destroy).pack()
+                       command=close).pack(pady=(0, 20))
 
-    def _ask(self, title: str, msg: str) -> bool:
+    def _show_parse_errors_modal(self, title: str, parse_errors: list[str], records_count: int = 0, failed_xml_files: list[str] | None = None):
+        """Modal in-app con lista scrollable de advertencias y botón de exportar."""
+        import tkinter as tk
+
+        self.update_idletasks()
+        mx, my = self.winfo_rootx(), self.winfo_rooty()
+        mw, mh = self.winfo_width(), self.winfo_height()
+
+        overlay = ctk.CTkToplevel(self)
+        overlay.overrideredirect(True)
+        overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
+        overlay.configure(fg_color="#0d0f14")
+        overlay.wm_attributes("-alpha", 0.72)
+        overlay.lift()
+
+        card_w, card_h = 660, 500
+        cx = mx + (mw - card_w) // 2
+        cy = my + (mh - card_h) // 2
+
+        card_win = ctk.CTkToplevel(self)
+        card_win.overrideredirect(True)
+        card_win.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
+        card_win.configure(fg_color=CARD)
+        card_win.lift()
+        card_win.grab_set()
+        self._round_corners(card_win)
+
+        # ── Header ───────────────────────────────────────────────────────────
+        hdr = ctk.CTkFrame(card_win, fg_color=SURFACE, corner_radius=0)
+        hdr.pack(fill="x")
+        ctk.CTkLabel(hdr, text=f"⚠  {title}", font=F_BTN(),
+                      text_color=WARNING).pack(side="left", padx=16, pady=12)
+        ctk.CTkLabel(hdr,
+                      text=f"{len(parse_errors)} advertencias  ·  {records_count} facturas cargadas",
+                      font=F_SMALL(), text_color=MUTED).pack(side="right", padx=16, pady=12)
+
+        # ── Lista scrollable ─────────────────────────────────────────────────
+        txt_frame = ctk.CTkFrame(card_win, fg_color=SURFACE, corner_radius=6)
+        txt_frame.pack(fill="both", expand=True, padx=16, pady=(12, 8))
+
+        sb = tk.Scrollbar(txt_frame)
+        sb.pack(side="right", fill="y")
+        txt = tk.Text(txt_frame, wrap="word", bg=SURFACE, fg=TEXT, relief="flat",
+                       font=("Consolas", 10), bd=0, padx=10, pady=8,
+                       yscrollcommand=sb.set)
+        txt.pack(fill="both", expand=True)
+        sb.config(command=txt.yview)
+
+        for i, err in enumerate(parse_errors, 1):
+            txt.insert("end", f"[{i:03d}] {err}\n")
+        txt.config(state="disabled")
+
+        # ── Botones ──────────────────────────────────────────────────────────
+        btns = ctk.CTkFrame(card_win, fg_color="transparent")
+        btns.pack(pady=(0, 16))
+
+        def close():
+            card_win.grab_release()
+            overlay.destroy()
+            card_win.destroy()
+
+        def ignore_failed_xml():
+            """Guarda los XML fallidos en ignored_xml_errors.json y cierra el modal."""
+            import json as _json
+            if not self.session:
+                return
+            meta = self.session.folder / ".metadata"
+            meta.mkdir(parents=True, exist_ok=True)
+            ignored_path = meta / "ignored_xml_errors.json"
+            existing: list[str] = []
+            if ignored_path.exists():
+                try:
+                    existing = _json.loads(ignored_path.read_text(encoding="utf-8")).get("ignored", [])
+                except Exception:
+                    pass
+            new_list = list(dict.fromkeys(existing + (failed_xml_files or [])))
+            ignored_path.write_text(
+                _json.dumps({"ignored": new_list}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            close()
+
+        ctk.CTkButton(
+            btns, text="⬇ Exportar errores", width=160,
+            fg_color=SURFACE, hover_color=BORDER,
+            text_color=TEAL, border_width=1, border_color=TEAL,
+            command=lambda: self._export_parse_errors_txt(parse_errors, records_count),
+        ).pack(side="left", padx=8)
+        if failed_xml_files:
+            ctk.CTkButton(
+                btns, text=f"✖ Ignorar {len(failed_xml_files)} XML fallido{'s' if len(failed_xml_files) != 1 else ''}", width=190,
+                fg_color=SURFACE, hover_color=BORDER,
+                text_color=WARNING, border_width=1, border_color=WARNING,
+                command=ignore_failed_xml,
+            ).pack(side="left", padx=8)
+        ctk.CTkButton(
+            btns, text="Entendido", width=120,
+            fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
+            command=close,
+        ).pack(side="left", padx=8)
+
+    def _export_parse_errors_txt(self, parse_errors: list[str], records_count: int):
+        """Genera TXT estructurado optimizado para análisis por IA."""
+        from tkinter import filedialog
+        from datetime import datetime
+        from pathlib import Path as _Path
+
+        ts = datetime.now()
+        client = self.session.folder.name if self.session else "sin_cliente"
+        default_name = f"errores_{client}_{ts.strftime('%Y%m%d_%H%M%S')}.txt"
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Texto", "*.txt")],
+            initialfile=default_name,
+            title="Exportar reporte de errores",
+        )
+        if not path:
+            return
+
+        # ── Categorizar ──────────────────────────────────────────────────────
+        cats: dict[str, list[str]] = {
+            "total_mismatch":       [],
+            "iva_mismatch":         [],
+            "xml_duplicate":        [],
+            "xml_failed":           [],
+            "respuesta_failed":     [],
+            "pdf_duplicate":        [],
+            "other":                [],
+        }
+        for err in parse_errors:
+            if "total no cuadra" in err:
+                cats["total_mismatch"].append(err)
+            elif "IVAs no cuadra" in err or "suma de IVA" in err:
+                cats["iva_mismatch"].append(err)
+            elif "duplicados descartados" in err or "XML(s) duplicados" in err:
+                cats["xml_duplicate"].append(err)
+            elif "[respuesta_irrecuperable]" in err:
+                cats["respuesta_failed"].append(err)
+            elif "Error cargando carpeta XML" in err or (
+                ": " in err and "factura" not in err.lower() and "pdf" not in err.lower()
+            ):
+                cats["xml_failed"].append(err)
+            elif "PDF" in err or "pdf" in err.lower():
+                cats["pdf_duplicate"].append(err)
+            else:
+                cats["other"].append(err)
+
+        label_map = {
+            "total_mismatch":   "total_comprobante no cuadra  (subtotal + IVA ≠ total)",
+            "iva_mismatch":     "suma de IVAs no cuadra con impuesto_total",
+            "xml_duplicate":    "XML duplicados (descartados automáticamente)",
+            "xml_failed":       "XML fallidos / error de parseo",
+            "respuesta_failed": "MensajeHacienda irrecuperable (requiere revisión manual)",
+            "pdf_duplicate":    "PDF duplicado resuelto automáticamente",
+            "other":            "otros / sin categoría",
+        }
+
+        SEP = "=" * 80
+
+        lines: list[str] = [
+            SEP,
+            "GESTOR CONTABLE — REPORTE DE ERRORES DE CARGA",
+            "Optimizado para análisis por IA (Claude)",
+            SEP,
+            f"TIMESTAMP         : {ts.strftime('%Y-%m-%d %H:%M:%S')}",
+        ]
+
+        if self.session:
+            lines += [
+                f"CLIENTE           : {self.session.folder.name}",
+                f"AÑO_FISCAL        : PF-{self.session.year}",
+                f"CARPETA_CLIENTE   : {self.session.folder}",
+                f"CARPETA_XML       : {self.session.folder / 'XML'}",
+                f"CARPETA_PDF       : {self.session.folder / 'PDF'}",
+            ]
+
+        lines += [
+            f"FACTURAS_CARGADAS : {records_count}",
+            f"TOTAL_ADVERTENCIAS: {len(parse_errors)}",
+            "",
+            SEP,
+            "RESUMEN POR TIPO",
+            SEP,
+        ]
+        for cat, errs in cats.items():
+            if errs:
+                lines.append(f"  [{len(errs):>4}]  {label_map[cat]}")
+
+        lines += [
+            "",
+            SEP,
+            "CONTEXTO PARA IA — significado y acción recomendada por tipo",
+            SEP,
+            "  total_mismatch : ADVERTENCIA — factura SÍ cargada y válida.",
+            "                   XML declara subtotal + impuesto_total ≠ total_comprobante.",
+            "                   Causas: redondeo del emisor, descuentos no separados.",
+            "                   Acción: clasificar normalmente. Si auditoría lo exige, revisar XML.",
+            "",
+            "  iva_mismatch   : ADVERTENCIA — factura SÍ cargada.",
+            "                   Suma iva_1+iva_2+iva_4+iva_8+iva_13 ≠ impuesto_total del XML.",
+            "                   Puede ignorarse salvo auditoría estricta.",
+            "",
+            "  xml_duplicate  : DOS archivos XML con la misma clave de 50 dígitos.",
+            "                   Se conservó el primero encontrado; el duplicado se descartó.",
+            "                   Verificar si ambos son idénticos o si hay discrepancia de montos.",
+            "",
+            "  xml_failed     : XML no parseado — factura NO cargada.",
+            "                   El archivo está corrupto o tiene formato inválido.",
+            "                   Acción: revisión manual del archivo XML indicado.",
+            "",
+            "  respuesta_failed: MensajeHacienda (_respuesta.xml) irrecuperable.",
+            "                   La factura SÍ cargó desde su XML principal.",
+            "                   No se pudo determinar si Hacienda la aceptó o rechazó.",
+            "                   Acción: revisar manualmente el archivo indicado y",
+            "                   verificar en el portal de Hacienda el estado de la clave.",
+            "",
+            "  pdf_duplicate  : Dos PDFs apuntaban a la misma clave.",
+            "                   Sistema conservó el más pesado (más bytes = más contenido).",
+            "",
+            SEP,
+            "DETALLE COMPLETO",
+            SEP,
+        ]
+
+        for cat, errs in cats.items():
+            if not errs:
+                continue
+            lines.append("")
+            lines.append(f"  ── {label_map[cat].upper()} ({len(errs)}) ──")
+            for i, err in enumerate(errs, 1):
+                lines.append(f"  [{i:03d}] {err}")
+
+        lines += ["", SEP, "FIN DEL REPORTE", SEP]
+
+        try:
+            _Path(path).write_text("\n".join(lines), encoding="utf-8")
+            self._show_info(
+                "Reporte exportado",
+                f"Guardado en:\n{path}\n\nPuede enviarlo a Claude para análisis.",
+            )
+        except Exception as exc:
+            self._show_warning("Error al exportar", f"No se pudo guardar el archivo:\n{exc}")
+
+    @staticmethod
+    def _round_corners(win):
+        """Aplica esquinas redondeadas (Windows 11) a un CTkToplevel via DWM."""
+        try:
+            import ctypes
+            DWMWA_WINDOW_CORNER_PREFERENCE = 33
+            DWMWCP_ROUNDSMALL = 3
+            win.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(ctypes.c_int(DWMWCP_ROUNDSMALL)),
+                ctypes.sizeof(ctypes.c_int),
+            )
+        except Exception:
+            pass
+
+    def _ask(self, title: str, msg: str, confirm_text: str = "Sí, reclasificar") -> bool:
+        import tkinter as tk
         result = [False]
-        win = ctk.CTkToplevel(self)
-        win.title(title)
-        win.geometry("380x180")
-        win.configure(fg_color=CARD)
-        win.grab_set()
-        ctk.CTkLabel(win, text=msg, font=F_LABEL(), text_color=TEXT,
-                      wraplength=340, justify="center").pack(pady=(28, 16))
-        btns = ctk.CTkFrame(win, fg_color="transparent")
-        btns.pack()
+        done = tk.BooleanVar(value=False)
 
-        def yes():
-            result[0] = True
-            win.destroy()
+        self.update_idletasks()
+        mx, my = self.winfo_rootx(), self.winfo_rooty()
+        mw, mh = self.winfo_width(), self.winfo_height()
 
-        ctk.CTkButton(btns, text="Sí, reclasificar", fg_color=TEAL,
+        # ── Overlay oscuro semitransparente (alpha real) ─────────────────────
+        overlay = ctk.CTkToplevel(self)
+        overlay.overrideredirect(True)
+        overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
+        overlay.configure(fg_color="#0d0f14")
+        overlay.wm_attributes("-alpha", 0.72)
+        overlay.lift()
+
+        # ── Card centrada encima del overlay ─────────────────────────────────
+        card_w, card_h = 440, 260
+        cx = mx + (mw - card_w) // 2
+        cy = my + (mh - card_h) // 2
+
+        card_win = ctk.CTkToplevel(self)
+        card_win.overrideredirect(True)
+        card_win.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
+        card_win.configure(fg_color=CARD)
+        card_win.lift()
+        card_win.grab_set()
+        self._round_corners(card_win)
+
+        ctk.CTkLabel(card_win, text=title, font=("", 13, "bold"),
+                      text_color=TEXT).pack(pady=(24, 0))
+        ctk.CTkLabel(card_win, text=msg, font=F_LABEL(), text_color=TEXT,
+                      wraplength=400, justify="center").pack(
+                          padx=20, pady=(10, 0), fill="both", expand=True)
+
+        btns = ctk.CTkFrame(card_win, fg_color="transparent")
+        btns.pack(pady=(0, 22))
+
+        def _close(ok: bool):
+            result[0] = ok
+            card_win.grab_release()
+            overlay.destroy()
+            card_win.destroy()
+            done.set(True)
+
+        ctk.CTkButton(btns, text=confirm_text, fg_color=TEAL,
                        hover_color=TEAL_DIM, text_color="#0d1a18",
-                       command=yes).pack(side="left", padx=8)
+                       command=lambda: _close(True)).pack(side="left", padx=8)
         ctk.CTkButton(btns, text="Cancelar", fg_color=SURFACE,
                        hover_color=BORDER, text_color=TEXT,
-                       command=win.destroy).pack(side="left", padx=8)
-        win.wait_window()
+                       command=lambda: _close(False)).pack(side="left", padx=8)
+
+        self.wait_variable(done)
         return result[0]
 
     # ── DETECCIÓN DE DUPLICADOS POR SHA256 ─────────────────────────────────────────

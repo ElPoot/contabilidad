@@ -163,17 +163,20 @@ def validate_iva_sum(iva_dict: dict[str, str]) -> bool:
 
 
 def validate_total_comprobante(
-    subtotal_str: str, impuesto_total_str: str, total_comprobante_str: str
+    subtotal_str: str, impuesto_total_str: str, total_comprobante_str: str,
+    otros_cargos_str: str = "0",
 ) -> bool:
-    """Valida que subtotal + impuesto_total = total_comprobante.
+    """Valida que subtotal + impuesto_total + otros_cargos = total_comprobante.
 
+    otros_cargos cubre TotalOtrosCargos del XML (ej: IEBL, IDA, recargas Kölbi).
     Retorna True si es consistente (tolerancia: ±0.01).
     """
-    subtotal = parse_decimal_value(subtotal_str) or Decimal("0")
-    impuesto = parse_decimal_value(impuesto_total_str) or Decimal("0")
-    total = parse_decimal_value(total_comprobante_str) or Decimal("0")
+    subtotal      = parse_decimal_value(subtotal_str)      or Decimal("0")
+    impuesto      = parse_decimal_value(impuesto_total_str) or Decimal("0")
+    total         = parse_decimal_value(total_comprobante_str) or Decimal("0")
+    otros_cargos  = parse_decimal_value(otros_cargos_str)  or Decimal("0")
 
-    suma = subtotal + impuesto
+    suma = subtotal + impuesto + otros_cargos
     diferencia = abs(suma - total)
 
     return diferencia <= Decimal("0.01")

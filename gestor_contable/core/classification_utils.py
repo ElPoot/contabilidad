@@ -563,7 +563,9 @@ def find_renamed_client_folders(
 
     # Recolectar una muestra de rutas por mes (sin p.exists() masivo en red)
     # Estructura esperada: Contabilidades/{mes}/{cliente}/{cat}/...
-    sample_by_month: dict[str, list[Path]] = {}
+    # Guardamos (ruta_completa, relativa_post_cliente) para poder verificar existencia
+    sample_by_month: dict[str, list[tuple[Path, Path]]] = {}
+    count_by_month: dict[str, int] = {}   # conteo real de registros por mes
     for rec in db_records.values():
         ruta = rec.get("ruta_destino", "")
         if not ruta:
@@ -576,9 +578,10 @@ def find_renamed_client_folders(
                 continue
             mes = parts[cont_idx + 1]
             relative_after_client = Path(*parts[cont_idx + 3:])
+            count_by_month[mes] = count_by_month.get(mes, 0) + 1
             bucket = sample_by_month.setdefault(mes, [])
             if len(bucket) < 8:   # muestra pequeña por mes, no iterar todo
-                bucket.append(relative_after_client)
+                bucket.append((p, relative_after_client))
         except (StopIteration, Exception):
             continue
 
@@ -587,13 +590,16 @@ def find_renamed_client_folders(
 
     # Filtrar solo meses donde la carpeta del cliente YA NO existe
     broken_by_month: dict[str, list[Path]] = {}
-    for mes, relatives in sample_by_month.items():
+    for mes, samples in sample_by_month.items():
         month_dir = contabilidades_root / mes
         if not month_dir.exists():
             continue
         if (month_dir / session_client_name).exists():
             continue   # carpeta del cliente intacta, sin renombrado
-        broken_by_month[mes] = relatives
+        # Si las rutas en BD ya existen (fueron corregidas previamente), no reportar
+        if any(full_path.exists() for full_path, _ in samples[:3]):
+            continue   # rutas ya válidas — BD fue sanada en sesión anterior
+        broken_by_month[mes] = [rel for _, rel in samples]
 
     if not broken_by_month:
         return []
@@ -620,7 +626,7 @@ def find_renamed_client_folders(
                         "mes": mes,
                         "old_name": session_client_name,
                         "new_name": client_dir.name,
-                        "affected": len(relatives),
+                        "affected": count_by_month.get(mes, len(relatives)),
                     })
                     break
         except OSError:
