@@ -383,7 +383,7 @@ def classify_record(
     # (2) Copiar con metadata preservada
     try:
         shutil.copy2(str(original), str(target))
-        logger.info(f"PDF copiado: {original.name} → {target.name}")
+        logger.info(f"PDF copiado: {original.name} -> {target.name}")
     except Exception as err:
         raise RuntimeError(
             f"No se pudo copiar el PDF a la carpeta de destino.\n"

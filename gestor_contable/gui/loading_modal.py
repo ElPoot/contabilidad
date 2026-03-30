@@ -1,6 +1,7 @@
 """Overlay de carga integrado (no ventana separada)."""
 
 import customtkinter as ctk
+from gestor_contable.gui.icons import get_icon
 
 # ── PALETA ────────────────────────────────────────────────────────────────
 BG = "#0d0f14"
@@ -26,14 +27,22 @@ class LoadingOverlay(ctk.CTkFrame):
         center_frame = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12, width=500, height=280)
         center_frame.place(relx=0.5, rely=0.5, anchor="center")
 
-        # Icono + título
+        # Icono de carga
+        _loading_icon = get_icon("loading", 40)
+        ctk.CTkLabel(
+            center_frame,
+            text="",
+            image=_loading_icon,
+        ).pack(pady=(30, 4))
+
+        # Título
         title_lbl = ctk.CTkLabel(
             center_frame,
-            text="⏳ Cargando facturas...",
+            text="Cargando facturas...",
             font=("Segoe UI", 16, "bold"),
             text_color=TEXT,
         )
-        title_lbl.pack(pady=(30, 15))
+        title_lbl.pack(pady=(0, 15))
 
         # Mensaje de estado (actualizable)
         self.status_var = ctk.StringVar(value="Iniciando...")

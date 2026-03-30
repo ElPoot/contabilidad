@@ -22,7 +22,7 @@ def _digits(text: str) -> str:
     return re.sub(r"\D", "", text or "")
 
 
-def resolve_client_session(cedula: str, year: int | None = None) -> ClientSession:
+def resolve_client_session(cedula: str, year: int | None = None, allow_missing: bool = False) -> ClientSession:
     clean = _digits(cedula)
     if len(clean) < 9:
         raise ValueError("La cédula no parece válida.")
@@ -63,6 +63,9 @@ def resolve_client_session(cedula: str, year: int | None = None) -> ClientSessio
                 return ClientSession(
                     cedula=clean, nombre=nombre, folder=folder, year=year
                 )
+
+    if allow_missing:
+        return ClientSession(cedula=clean, nombre=nombre, folder=expected, year=year)
 
     raise FileNotFoundError(
         f"No existe carpeta de cliente para '{nombre}' en:\n{base}\n\n"

@@ -2,12 +2,14 @@
 
 import threading
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import ttk
 
 import customtkinter as ctk
 
 from gestor_contable.core.classifier import ClassificationDB, recover_orphaned_pdf
 from gestor_contable.core.classification_utils import find_orphaned_pdfs
+from gestor_contable.gui.icons import get_icon
+from gestor_contable.gui.modal_overlay import ModalOverlay
 
 # ── PALETA ─────────────────────────────────────────────────────────────────
 BG = "#0d0f14"
@@ -56,7 +58,9 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             header,
-            text="🔍 Escanear PDFs Inconsistentes",
+            text="Escanear PDFs Inconsistentes",
+            image=get_icon("filter", 18),
+            compound="left",
             font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
@@ -224,7 +228,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
         count = len(self.orphaned)
         if count == 0:
             self._status_label.configure(
-                text="✓ No se encontraron PDFs inconsistentes", text_color=SUCCESS
+                text="No se encontraron PDFs inconsistentes", text_color=SUCCESS
             )
             self._info_label.configure(text="")
         else:
@@ -246,52 +250,54 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
         """Recupera los PDFs seleccionados."""
         selected = self._tree.selection()
         if not selected:
-            messagebox.showwarning("Advertencia", "Selecciona al menos un PDF para recuperar")
+            ModalOverlay.show_warning(self, "Advertencia", "Selecciona al menos un PDF para recuperar")
             return
 
-        # Confirmar
         count = len(selected)
-        if not messagebox.askyesno(
+
+        def _do_recovery():
+            def worker():
+                recovered = 0
+                failed = 0
+
+                for item_id in selected:
+                    idx = int(item_id)
+                    if idx < len(self.orphaned):
+                        orphaned_info = self.orphaned[idx]
+                        if recover_orphaned_pdf(orphaned_info, self.db):
+                            recovered += 1
+                        else:
+                            failed += 1
+
+                # Actualizar UI
+                self.after(
+                    0,
+                    lambda: self._show_recovery_result(recovered, failed, count),
+                )
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        ModalOverlay.show_confirm(
+            self,
             "Confirmar recuperación",
             f"¿Recuperar {count} PDF(s)?\n\nLos archivos se moverán a su ubicación correcta.",
-        ):
-            return
-
-        # Ejecutar recuperación en thread
-        def worker():
-            recovered = 0
-            failed = 0
-
-            for item_id in selected:
-                idx = int(item_id)
-                if idx < len(self.orphaned):
-                    orphaned_info = self.orphaned[idx]
-                    if recover_orphaned_pdf(orphaned_info, self.db):
-                        recovered += 1
-                    else:
-                        failed += 1
-
-            # Actualizar UI
-            self.after(
-                0,
-                lambda: self._show_recovery_result(recovered, failed, count),
-            )
-
-        threading.Thread(target=worker, daemon=True).start()
+            on_yes=_do_recovery,
+            confirm_text="Recuperar",
+        )
 
     def _show_recovery_result(self, recovered: int, failed: int, total: int):
         """Muestra el resultado de la recuperación."""
         message = f"Recuperados: {recovered}\nFallidos: {failed}\nTotal: {total}"
 
         if failed == 0:
-            messagebox.showinfo("✓ Recuperación completada", message)
+            ModalOverlay.show_success(self, "Recuperación completada", message)
             self._status_label.configure(
-                text=f"✓ {recovered} PDF(s) recuperados exitosamente", text_color=SUCCESS
+                text=f"{recovered} PDF(s) recuperados exitosamente", text_color=SUCCESS
             )
         else:
-            messagebox.showwarning("⚠ Recuperación parcial", message)
+            ModalOverlay.show_warning(self, "Recuperación parcial", message)
             self._status_label.configure(
-                text=f"⚠ {recovered} recuperados, {failed} fallaron", text_color=WARNING
+                text=f"{recovered} recuperados, {failed} fallaron", text_color=WARNING
             )
 
         # Limpiar árbol (borrar items recuperados)
@@ -301,6 +307,5 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
         self._tree.selection_remove(self._tree.selection())
 
     def _show_error(self, title: str, message: str):
-        """Muestra un error."""
-        messagebox.showerror(title, message)
-        self._status_label.configure(text=f"❌ Error: {message}", text_color=DANGER)
+        ModalOverlay.show_error(self, title, message)
+        self._status_label.configure(text=f"Error: {message}", text_color=DANGER)

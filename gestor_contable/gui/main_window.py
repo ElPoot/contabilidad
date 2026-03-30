@@ -10,11 +10,11 @@ from pathlib import Path
 from queue import Queue
 
 import customtkinter as ctk
-from tkinter import filedialog, messagebox, ttk  # Treeview + diálogos
+from tkinter import filedialog, ttk
 
 import logging
 
-from gestor_contable.config import metadata_dir
+from gestor_contable.config import metadata_dir, network_drive
 from gestor_contable.core.catalog import CatalogManager
 from gestor_contable.core.classification_utils import (
     classify_transaction,
@@ -27,7 +27,9 @@ from gestor_contable.core.factura_index import FacturaIndexer
 from gestor_contable.core.iva_utils import apply_exchange_rate, parse_decimal_value
 from gestor_contable.core.models import FacturaRecord
 from gestor_contable.core.session import ClientSession
+from gestor_contable.gui.icons import get_icon
 from gestor_contable.gui.loading_modal import LoadingOverlay
+from gestor_contable.gui.modal_overlay import ModalOverlay
 from gestor_contable.gui.pdf_viewer import PDFViewer
 from gestor_contable.gui.session_view import SessionView
 
@@ -60,7 +62,7 @@ def F_SMALL()  -> ctk.CTkFont: return _f("mw_small",  11)
 def F_BTN()    -> ctk.CTkFont: return _f("mw_btn",    13, "bold")
 
 ESTADO_ICON = {
-    "clasificado":   "✓",
+    "clasificado":   "OK",
     "pendiente":     "·",
     "pendiente_pdf": "!",
     "sin_xml":       "--",
@@ -168,11 +170,11 @@ class DatePickerPopup(ctk.CTkToplevel):
 
         top = ctk.CTkFrame(self._body, fg_color="transparent")
         top.pack(fill="x", padx=4, pady=(2, 8))
-        ctk.CTkButton(top, text="◀", width=32, height=28, fg_color=SURFACE,
+        ctk.CTkButton(top, text="<", width=32, height=28, fg_color=SURFACE,
                       hover_color=BORDER, command=self._prev_month).pack(side="left")
         ctk.CTkLabel(top, text=f"{calendar.month_name[self._month]} {self._year}",
                       text_color=TEXT, font=F_LABEL()).pack(side="left", expand=True)
-        ctk.CTkButton(top, text="▶", width=32, height=28, fg_color=SURFACE,
+        ctk.CTkButton(top, text=">", width=32, height=28, fg_color=SURFACE,
                       hover_color=BORDER, command=self._next_month).pack(side="right")
 
         grid = ctk.CTkFrame(self._body, fg_color="transparent")
@@ -712,6 +714,7 @@ class App3Window(ctk.CTk):
         self.records: list[FacturaRecord] = []
         self.all_records: list[FacturaRecord] = []
         self._db_records: dict[str, dict] = {}
+        self._pdf_duplicates_rejected: dict = {}  # {path_rechazado: path_ganador} — del último load
         self.selected: FacturaRecord | None = None
         self.selected_records: list[FacturaRecord] = []  # Multi-selección
         self._load_queue: Queue = Queue()
@@ -792,7 +795,7 @@ class App3Window(ctk.CTk):
             self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self._loading_overlay.update_status("Iniciando...")
 
-        # 🔥 CRÍTICO: Forzar actualización visual del overlay
+        # CRITICO: Forzar actualización visual del overlay
         # Sin esto, el overlay no se ve en pantalla durante el worker thread
         self.update_idletasks()
         self.update()
@@ -803,18 +806,18 @@ class App3Window(ctk.CTk):
 
                 # Fase 1: Setup
                 mdir = metadata_dir(session.folder)
-                self.after(0, lambda: self._loading_overlay.update_status("📂 Preparando cliente..."))
+                self.after(0, lambda: self._loading_overlay.update_status("Preparando cliente..."))
                 self.after(0, lambda: self._loading_overlay.update_progress(10, 100))
                 catalog = CatalogManager(mdir).load()
                 db = ClassificationDB(mdir)
                 indexer = FacturaIndexer()
 
                 # Fase 2: Load (XML + PDF)
-                self.after(0, lambda: self._loading_overlay.update_status("📄 Leyendo XMLs..."))
+                self.after(0, lambda: self._loading_overlay.update_status("Leyendo XMLs..."))
                 self.after(0, lambda: self._loading_overlay.update_progress(20, 100))
 
                 # La fase larga: XML + PDF
-                self.after(0, lambda: self._loading_overlay.update_status("🔍 Escaneando PDFs (esto toma ~40s)..."))
+                self.after(0, lambda: self._loading_overlay.update_status("Escaneando PDFs (esto toma ~40s)..."))
                 self.after(0, lambda: self._loading_overlay.update_progress(30, 100))
 
                 start_load = time.perf_counter()
@@ -849,13 +852,13 @@ class App3Window(ctk.CTk):
                     logger.info(f"Agregados {len(orphaned_list)} registros huérfanos")
 
                 # Casi listo
-                self.after(0, lambda: self._loading_overlay.update_status("✅ Finalizando..."))
+                self.after(0, lambda: self._loading_overlay.update_status("Finalizando..."))
                 self.after(0, lambda: self._loading_overlay.update_progress(90, 100))
 
                 total_time = time.perf_counter() - start_total
                 logger.info(f"Worker total: {total_time:.2f}s")
 
-                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors, indexer.failed_xml_files, renames)))
+                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors, indexer.failed_xml_files, renames, indexer.pdf_duplicates_rejected)))
             except Exception as exc:
                 logger.exception("Error en worker")
                 self._load_queue.put(("error", (generation, str(exc))))
@@ -883,7 +886,7 @@ class App3Window(ctk.CTk):
             self._show_error("Error al cargar cliente", message)
             return
 
-        generation, session, catalog_mgr, db, records, parse_errors, failed_xml_files, renames = payload
+        generation, session, catalog_mgr, db, records, parse_errors, failed_xml_files, renames, pdf_duplicates_rejected = payload
         if generation != self._load_generation:
             return
         self.session = session
@@ -891,6 +894,7 @@ class App3Window(ctk.CTk):
         self.db = db
         self.all_records = records
         self._db_records = db.get_records_map()
+        self._pdf_duplicates_rejected: dict = pdf_duplicates_rejected  # {path_rechazado: path_ganador}
         self.records = self._apply_filters()
         self.selected = None
         self.selected_records = []
@@ -966,9 +970,9 @@ class App3Window(ctk.CTk):
         hdr.grid_columnconfigure(2, weight=1)
 
         # Logo
-        ctk.CTkLabel(hdr, text="📊", fg_color="#1a3a36", corner_radius=8,
-                      width=32, height=32,
-                      font=ctk.CTkFont(size=16)).grid(row=0, column=0, padx=(16,8), pady=14)
+        ctk.CTkLabel(hdr, text="", image=get_icon("report", 28),
+                      fg_color="#1a3a36", corner_radius=8,
+                      width=32, height=32).grid(row=0, column=0, padx=(16,8), pady=14)
         ctk.CTkLabel(hdr, text="Clasificador  Contable",
                       font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
                       text_color=TEXT).grid(row=0, column=1, sticky="w", padx=(0, 12))
@@ -1008,7 +1012,7 @@ class App3Window(ctk.CTk):
             corner_radius=8,
         )
         self._from_entry.pack(side="left")
-        ctk.CTkButton(date_frame, text="📅", width=30, height=32,
+        ctk.CTkButton(date_frame, text="...", width=30, height=32,
                       fg_color=SURFACE, hover_color=BORDER, command=lambda: self._open_date_picker("from")).pack(side="left", padx=(4, 8))
 
         ctk.CTkLabel(date_frame, text="Hasta:", font=F_SMALL(),
@@ -1027,7 +1031,7 @@ class App3Window(ctk.CTk):
             corner_radius=8,
         )
         self._to_entry.pack(side="left")
-        ctk.CTkButton(date_frame, text="📅", width=30, height=32,
+        ctk.CTkButton(date_frame, text="...", width=30, height=32,
                       fg_color=SURFACE, hover_color=BORDER, command=lambda: self._open_date_picker("to")).pack(side="left", padx=(4, 8))
 
         ctk.CTkButton(date_frame, text="Filtrar", width=70, height=32,
@@ -1036,14 +1040,14 @@ class App3Window(ctk.CTk):
                        command=self._on_filter).pack(side="left", padx=(8,0))
 
         # Botón limpiar cache y recargar
-        ctk.CTkButton(date_frame, text="🔄  Limpiar cache", width=130, height=32,
+        ctk.CTkButton(date_frame, text="Limpiar cache", width=130, height=32,
                        fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
                        border_color=WARNING, border_width=1,
                        font=F_SMALL(), corner_radius=8,
                        command=self._clear_cache_and_reload).pack(side="left", padx=(8,0))
 
         # Botón cambiar cliente
-        ctk.CTkButton(hdr, text="⇄  Cambiar cliente", width=150, height=32,
+        ctk.CTkButton(hdr, text="Cambiar cliente", width=150, height=32,
                        fg_color=CARD, hover_color=SURFACE, text_color=MUTED,
                        border_color=BORDER, border_width=1,
                        font=F_SMALL(), corner_radius=8,
@@ -1068,9 +1072,9 @@ class App3Window(ctk.CTk):
             ("sin_receptor", "Sin Receptor"),
             ("ors", "ORS"),
             ("pendiente", "Pendientes"),
-            ("sin_clave", "📄 Sin clave"),
-            ("omitidos", "⊘ Omitidos"),
-            ("huerfanos", "🔍 Huérfanos"),
+            ("sin_clave", "Sin clave"),
+            ("omitidos", "Omitidos"),
+            ("huerfanos", "Huerfanos"),
         ]
 
         for tab_id, tab_label in tab_configs:
@@ -1133,15 +1137,23 @@ class App3Window(ctk.CTk):
                       font=F_SMALL(), corner_radius=8,
                       command=self._export_report).grid(row=0, column=2, sticky="e", padx=(0, 5))
 
-        ctk.CTkButton(top, text="🧹 Sanitizar", width=100, height=30,
+        ctk.CTkButton(top, text="Sanitizar", width=100, height=30,
+                      image=get_icon("broom", 16), compound="left",
                       fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
                       font=F_SMALL(), corner_radius=8,
                       command=self._sanitize_folders).grid(row=0, column=3, sticky="e", padx=(0, 5))
 
-        ctk.CTkButton(top, text="🔍 Dupl.", width=100, height=30,
+        ctk.CTkButton(top, text="Dupl.", width=100, height=30,
+                      image=get_icon("duplicate", 16), compound="left",
                       fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
                       font=F_SMALL(), corner_radius=8,
-                      command=self._find_duplicate_pdfs).grid(row=0, column=4, sticky="e", padx=(0, 10))
+                      command=self._find_duplicate_pdfs).grid(row=0, column=4, sticky="e", padx=(0, 5))
+
+        ctk.CTkButton(top, text="Corte", width=100, height=30,
+                      image=get_icon("report", 16), compound="left",
+                      fg_color=TEAL, hover_color=TEAL_DIM, text_color=BG,
+                      font=F_SMALL(), corner_radius=8,
+                      command=self._generar_corte).grid(row=0, column=5, sticky="e", padx=(0, 10))
 
         self._progress_var = ctk.StringVar(value="")
         ctk.CTkLabel(top, textvariable=self._progress_var,
@@ -1290,7 +1302,7 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(header_frame, text="Cuenta", font=F_SMALL(),
                       text_color=MUTED).grid(row=0, column=0, sticky="w")
         ctk.CTkButton(
-            header_frame, text="➕", width=30, height=28,
+            header_frame, text="+", width=30, height=28,
             fg_color=TEAL, hover_color=TEAL_DIM,
             font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
             text_color="#0d1a18",
@@ -1347,7 +1359,7 @@ class App3Window(ctk.CTk):
 
         # row 7 -- Botón Recuperar (para PDFs huérfanos)
         self._btn_recover = ctk.CTkButton(
-            clf, text="🔧  Recuperar PDF",
+            clf, text="Recuperar PDF",
             font=F_BTN(), fg_color=WARNING, hover_color="#e8a61c",
             text_color="#0d1a18", corner_radius=10, height=40,
             state="disabled",
@@ -1357,7 +1369,8 @@ class App3Window(ctk.CTk):
 
         # row 7 -- Botón Vincular (para PDFs omitidos)
         self._btn_link = ctk.CTkButton(
-            clf, text="🔗  Vincular a XML",
+            clf, text="Vincular a XML",
+            image=get_icon("link", 18), compound="left",
             font=F_BTN(), fg_color="#8b5cf6", hover_color="#7c3aed",
             text_color="#0d1a18", corner_radius=10, height=40,
             state="disabled",
@@ -1367,7 +1380,8 @@ class App3Window(ctk.CTk):
 
         # row 7 -- Botón Borrar PDF (para PDFs omitidos)
         self._btn_delete = ctk.CTkButton(
-            clf, text="🗑️  Borrar PDF",
+            clf, text="Borrar PDF",
+            image=get_icon("trash", 18), compound="left",
             font=F_BTN(), fg_color=DANGER, hover_color="#dc2626",
             text_color="#0d1a18", corner_radius=10, height=40,
             state="disabled",
@@ -1377,7 +1391,8 @@ class App3Window(ctk.CTk):
 
         # row 7 -- Botón Crear PDF (para XMLs sin PDF)
         self._btn_create_pdf = ctk.CTkButton(
-            clf, text="📄  Crear PDF",
+            clf, text="Crear PDF",
+            image=get_icon("file_pdf", 18), compound="left",
             font=F_BTN(), fg_color="#3b82f6", hover_color="#2563eb",
             text_color="#0d1a18", corner_radius=10, height=40,
             state="disabled",
@@ -1387,7 +1402,7 @@ class App3Window(ctk.CTk):
 
         # row 8 -- Botón Auto-clasificar (para Ingresos y Sin Receptor)
         self._btn_auto_classify = ctk.CTkButton(
-            clf, text="⚡  Clasificar todos",
+            clf, text="Clasificar todos",
             font=F_BTN(), fg_color="#10b981", hover_color="#059669",
             text_color="#0d1a18", corner_radius=10, height=40,
             state="disabled",
@@ -1397,7 +1412,8 @@ class App3Window(ctk.CTk):
 
         # row 9 -- Botón Clasificar
         self._btn_classify = ctk.CTkButton(
-            clf, text="✔  Clasificar",
+            clf, text="Clasificar",
+            image=get_icon("modal_success", 18), compound="left",
             font=F_BTN(), fg_color=TEAL, hover_color=TEAL_DIM,
             text_color="#0d1a18", corner_radius=10, height=40,
             state="disabled",
@@ -1645,7 +1661,7 @@ class App3Window(ctk.CTk):
             esh = r.estado_hacienda.strip()
             color = SUCCESS if "aceptado" in esh.lower() else WARNING
             bg    = "#0d2a1e" if color == SUCCESS else "#2d2010"
-            icon  = "✓" if color == SUCCESS else "⚠"
+            icon  = "" 
             self._hacienda_lbl.configure(
                 text=f"{icon}  Hacienda: {esh}",
                 text_color=color, fg_color=bg,
@@ -1679,7 +1695,7 @@ class App3Window(ctk.CTk):
             # Si es un registro sin PDF, mostrar mensaje específico
             if r.estado == "pendiente_pdf":
                 self.pdf_viewer.show_message(
-                    "📄 XML sin PDF\n\nPresiona «Crear PDF» para generar\n"
+                    "XML sin PDF\n\nPresiona «Crear PDF» para generar\n"
                     "una factura a partir de los datos del XML."
                 )
             elif r.razon_omisión:
@@ -1728,7 +1744,7 @@ class App3Window(ctk.CTk):
                 self._btn_create_pdf.configure(state="normal")
                 self._btn_auto_classify.grid_remove()
                 self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
-                self._btn_classify.configure(state="normal", text="✔  Clasificar sin PDF")
+                self._btn_classify.configure(state="normal", text="Clasificar sin PDF")
             else:
                 self._btn_create_pdf.grid_remove()
                 # Mostrar botón auto-clasificar solo en Ingresos o Sin Receptor
@@ -1739,7 +1755,7 @@ class App3Window(ctk.CTk):
                 else:
                     self._btn_auto_classify.grid_remove()
                     self._btn_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
-                self._btn_classify.configure(state="normal", text="✔  Clasificar")
+                self._btn_classify.configure(state="normal", text="Clasificar")
 
         # Clasificación previa
         if self.db:
@@ -1765,7 +1781,7 @@ class App3Window(ctk.CTk):
                         if sanada:
                             ruta_dest = str(sanada)
                     parts = Path(ruta_dest).parts
-                    snippet = ("📁 .../" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else f"📁 {ruta_dest}/"
+                    snippet = (".../" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else f"{ruta_dest}/"
                     self._prev_path_lbl.config(text=snippet)
                 else:
                     self._prev_path_lbl.config(text="")
@@ -2005,7 +2021,7 @@ class App3Window(ctk.CTk):
 
     def _export_report(self):
         if not self.records:
-            messagebox.showinfo("Exportar", "No hay registros para exportar.")
+            ModalOverlay.show_info(self, "Exportar", "No hay registros para exportar.")
             return
 
         default_name = _default_export_filename(
@@ -2532,10 +2548,172 @@ class App3Window(ctk.CTk):
 
                         ws.freeze_panes = ws["A6"]
 
-            messagebox.showinfo("Exportar", f"Reporte guardado en:\n{target}")
+            ModalOverlay.show_info(self, "Exportar", f"Reporte guardado en:\n{target}")
             self._set_status("Reporte exportado")
         except Exception as exc:
             self._show_error("Error al exportar", str(exc))
+
+    # ── CORTE MENSUAL ──────────────────────────────────────────────────────────
+    def _generar_corte(self) -> None:
+        """Orquesta el flujo completo del corte mensual:
+        run_corte → resolver_ambiguos → generar_corte_excel.
+        """
+        if not self.session or not self.all_records:
+            ModalOverlay.show_info(self, "Corte", "No hay datos cargados para generar el corte.")
+            return
+
+        from gestor_contable.core.corte_engine import run_corte
+        from gestor_contable.core.corte_excel import generar_corte_excel, default_filename
+        from gestor_contable.gui.corte_ambiguo_modal import resolver_ambiguos
+        from gestor_contable.core.classification_utils import classify_transaction
+
+        client_name   = self.session.folder.name
+        client_cedula = self._get_client_cedula()
+        mdir          = metadata_dir(self.session.folder)
+
+        # Registros del período: excluir omitidos y ORS (terceros — ni emisor ni receptor es el cliente)
+        # sin_receptor SÍ entra: son facturas sin cédula receptor pero válidas para el cliente
+        period_records = [
+            r for r in self._apply_date_filter(self.all_records)
+            if not r.razon_omisión
+            and classify_transaction(r, client_cedula) != "ors"
+            and r.estado_hacienda != "Rechazada"
+        ]
+        if not period_records:
+            ModalOverlay.show_info(self, "Corte", "No hay facturas válidas en el período seleccionado.")
+            return
+
+        # Detectar mes/año del período para el nombre de archivo sugerido
+        mes_actual = datetime.now().month
+        anio_actual = datetime.now().year
+        for r in period_records:
+            try:
+                dt = datetime.strptime((r.fecha_emision or "").strip(), "%d/%m/%Y")
+                mes_actual = dt.month
+                anio_actual = dt.year
+                break
+            except ValueError:
+                pass
+
+        _meses_folder = {
+            1:"ENERO", 2:"FEBRERO", 3:"MARZO", 4:"ABRIL", 5:"MAYO", 6:"JUNIO",
+            7:"JULIO", 8:"AGOSTO", 9:"SEPTIEMBRE", 10:"OCTUBRE", 11:"NOVIEMBRE", 12:"DICIEMBRE",
+        }
+        mes_folder  = _meses_folder.get(mes_actual, f"{mes_actual:02d}")
+        cortes_dir  = network_drive() / f"PF-{anio_actual}" / "CORTES" / mes_folder
+        try:
+            cortes_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self._show_error("Error al guardar", f"No se pudo crear la carpeta de cortes:\n{cortes_dir}\n\n{exc}")
+            return
+
+        filename    = default_filename(client_name, mes_actual, anio_actual)
+        target_path = cortes_dir / filename
+        if target_path.exists():
+            try:
+                target_path.unlink()
+            except PermissionError:
+                self._show_error(
+                    "Error al guardar",
+                    f"El archivo está abierto en otro programa.\nCiérralo e intenta de nuevo:\n{target_path}",
+                )
+                return
+
+        self._set_status("Generando corte...")
+        self._progress_var.set("Clasificando facturas...")
+
+        def worker():
+            try:
+                from gestor_contable.core.xml_manager import CRXMLManager
+
+                xml_manager = CRXMLManager()
+
+                def on_progress(current: int, total: int):
+                    pct = f"{current}/{total}" if total else ""
+                    self.after(0, lambda p=pct: self._progress_var.set(f"Clasificando {p}"))
+
+                resultados = run_corte(
+                    records           = period_records,
+                    client_cedula     = client_cedula,
+                    client_name       = client_name,
+                    metadata_dir      = mdir,
+                    xml_manager       = xml_manager,
+                    progress_callback = on_progress,
+                )
+
+                self.after(0, lambda: self._on_corte_done(
+                    resultados, target_path, client_name, mes_actual, anio_actual
+                ))
+            except Exception as exc:
+                logger.exception("Error al generar corte")
+                self.after(0, lambda e=str(exc): (
+                    self._progress_var.set(""),
+                    self._set_status("Error en corte"),
+                    self._show_error("Error al generar corte", e),
+                ))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_corte_done(
+        self,
+        resultados,
+        target_path: Path,
+        client_name: str,
+        mes: int,
+        anio: int,
+    ) -> None:
+        """Llamado desde el worker cuando run_corte termina. Hilo principal."""
+        from gestor_contable.core.corte_engine import CATEGORIA_AMBIGUO
+        from gestor_contable.core.corte_engine import CorteEngine
+        from gestor_contable.core.corte_excel import generar_corte_excel
+        from gestor_contable.gui.corte_ambiguo_modal import resolver_ambiguos
+
+        ambiguos = [i for i in resultados if i.categoria == CATEGORIA_AMBIGUO]
+        self._progress_var.set(
+            f"Clasificadas | {len(resultados) - len(ambiguos)} auto · {len(ambiguos)} AMBIGUO"
+        )
+
+        mdir = metadata_dir(self.session.folder)
+        client_cedula = self._get_client_cedula()
+
+        # Necesitamos un engine para el modal (guardar decisiones de proveedor)
+        from gestor_contable.core.client_profiles import get_or_fetch_activities
+        actividades = get_or_fetch_activities(client_name=client_name, cedula=client_cedula)
+        engine = CorteEngine(
+            client_cedula = client_cedula,
+            client_name   = client_name,
+            actividades   = actividades,
+            metadata_dir  = mdir,
+            xml_manager   = None,
+        )
+
+        def _escribir_excel(items_finales):
+            try:
+                generar_corte_excel(
+                    resultados  = items_finales,
+                    client_name = client_name,
+                    output_path = target_path,
+                    mes         = mes,
+                    anio        = anio,
+                )
+                self._progress_var.set("")
+                self._set_status("Corte generado")
+                ModalOverlay.show_success(
+                    self, "Corte Mensual",
+                    f"Corte generado exitosamente.\n\n{target_path}"
+                )
+            except Exception as exc:
+                logger.exception("Error al escribir Excel del corte")
+                self._progress_var.set("")
+                self._set_status("Error en corte")
+                self._show_error("Error al guardar el corte", str(exc))
+
+        resolver_ambiguos(
+            parent      = self,
+            resultados  = resultados,
+            engine      = engine,
+            on_complete = _escribir_excel,
+        )
 
     # ── DETECCIÓN DE CARPETAS RENOMBRADAS ─────────────────────────────────────
     def _show_rename_warning(self, renames: list[dict]):
@@ -2557,33 +2735,10 @@ class App3Window(ctk.CTk):
             f"¿Actualizar los registros en la base de datos con las nuevas rutas?"
         )
 
-        self.update_idletasks()
-        mx, my = self.winfo_rootx(), self.winfo_rooty()
-        mw, mh = self.winfo_width(), self.winfo_height()
-
-        # ── Overlay oscuro semitransparente ───────────────────────────────────
-        overlay = ctk.CTkToplevel(self)
-        overlay.overrideredirect(True)
-        overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
-        overlay.configure(fg_color="#0d0f14")
-        overlay.wm_attributes("-alpha", 0.72)
-        overlay.lift()
-
-        # ── Card centrada ─────────────────────────────────────────────────────
-        card_w, card_h = 580, 360
-        cx = mx + (mw - card_w) // 2
-        cy = my + (mh - card_h) // 2
-
-        modal = ctk.CTkToplevel(self)
-        modal.overrideredirect(True)
-        modal.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
-        modal.configure(fg_color=CARD)
-        modal.lift()
-        modal.grab_set()
-        self._round_corners(modal)
+        _overlay, modal, close_fn = ModalOverlay.build(self)
 
         ctk.CTkLabel(
-            modal, text="⚠️  Carpetas del cliente renombradas",
+            modal, text="Carpetas del cliente renombradas",
             font=F_TITLE(), text_color=WARNING,
         ).pack(pady=(20, 8), padx=24, anchor="w")
 
@@ -2600,14 +2755,10 @@ class App3Window(ctk.CTk):
         btn_frame.pack(fill="x", padx=24, pady=(0, 16))
 
         def on_ignorar():
-            modal.grab_release()
-            overlay.destroy()
-            modal.destroy()
+            close_fn()
 
         def on_actualizar():
-            modal.grab_release()
-            overlay.destroy()
-            modal.destroy()
+            close_fn()
             self._apply_rename_fixes(renames)
 
         ctk.CTkButton(
@@ -2617,7 +2768,7 @@ class App3Window(ctk.CTk):
         ).pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
-            btn_frame, text="✔ Actualizar registros", width=200,
+            btn_frame, text="Actualizar registros", width=200,
             fg_color=TEAL, hover_color="#14b8a6", text_color="#0d0f14",
             command=on_actualizar,
         ).pack(side="left")
@@ -2661,7 +2812,7 @@ class App3Window(ctk.CTk):
     def _sanitize_folders(self):
         """Detecta y elimina carpetas vacías (manual, con confirmación)."""
         if not self.session:
-            messagebox.showinfo("Sanitizar", "No hay sesión activa")
+            ModalOverlay.show_info(self, "Sanitizar", "No hay sesión activa")
             return
 
         # Detectar carpetas vacías en thread
@@ -2678,28 +2829,23 @@ class App3Window(ctk.CTk):
     def _show_sanitization_modal(self, empty_folders: list[Path]):
         """Muestra modal de confirmación con carpetas a eliminar."""
         if not empty_folders:
-            messagebox.showinfo("Sanitizar", "✓ No hay carpetas vacías\n\nTodas las carpetas de clasificación tienen contenido.")
+            ModalOverlay.show_info(self, "Sanitizar", "No hay carpetas vacias\n\nTodas las carpetas de clasificación tienen contenido.")
             return
 
-        # Crear ventana modal
-        modal = ctk.CTkToplevel(self)
-        modal.title("Sanitizar carpetas vacías")
-        modal.geometry("700x500")
-        modal.resizable(True, True)
-        modal.configure(fg_color=BG)
+        overlay, card, close_fn = ModalOverlay.build(self)
 
         # Header
-        header = ctk.CTkFrame(modal, fg_color=SURFACE, corner_radius=0)
+        header = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=0)
         header.pack(fill="x")
         ctk.CTkLabel(
             header,
-            text=f"🧹 Se encontraron {len(empty_folders)} carpeta(s) vacía(s)",
+            text=f"Se encontraron {len(empty_folders)} carpeta(s) vacias",
             font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
 
         # Body con listado
-        body = ctk.CTkFrame(modal, fg_color=BG)
+        body = ctk.CTkFrame(card, fg_color=BG)
         body.pack(fill="both", expand=True, padx=12, pady=12)
         body.grid_rowconfigure(0, weight=1)
         body.grid_columnconfigure(0, weight=1)
@@ -2716,7 +2862,7 @@ class App3Window(ctk.CTk):
                 rel_path = folder.relative_to(contabilidades_root.parent)
             except ValueError:
                 rel_path = folder
-            label_text = f"  📁 {rel_path}"
+            label_text = f"  {rel_path}"
             ctk.CTkLabel(
                 list_frame,
                 text=label_text,
@@ -2733,14 +2879,14 @@ class App3Window(ctk.CTk):
         # Info y advertencia
         ctk.CTkLabel(
             footer,
-            text="⚠ Solo se eliminarán carpetas COMPLETAMENTE vacías",
+            text="Solo se eliminaran carpetas COMPLETAMENTE vacias",
             font=ctk.CTkFont(size=10),
             text_color=WARNING,
         ).pack(anchor="w")
 
         ctk.CTkLabel(
             footer,
-            text="💡 Si hay error de acceso: Cierra Explorador Windows si está abierto en estas carpetas",
+            text="Si hay error de acceso: Cierra Explorador Windows si esta abierto en estas carpetas",
             font=ctk.CTkFont(size=9),
             text_color=MUTED,
         ).pack(anchor="w", pady=(4, 0))
@@ -2758,7 +2904,7 @@ class App3Window(ctk.CTk):
             hover_color=BORDER,
             text_color=TEXT,
             corner_radius=8,
-            command=modal.destroy,
+            command=close_fn,
         ).pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
@@ -2770,12 +2916,12 @@ class App3Window(ctk.CTk):
             hover_color="#f56565",
             text_color="white",
             corner_radius=8,
-            command=lambda: self._execute_sanitization(empty_folders, modal),
+            command=lambda: self._execute_sanitization(empty_folders, close_fn),
         ).pack(side="left")
 
-    def _execute_sanitization(self, empty_folders: list[Path], modal):
+    def _execute_sanitization(self, empty_folders: list[Path], close_fn):
         """Ejecuta la eliminación de carpetas vacías en thread."""
-        modal.destroy()
+        close_fn()
 
         def worker():
             from gestor_contable.core.folder_sanitizer import delete_empty_folders
@@ -2789,16 +2935,16 @@ class App3Window(ctk.CTk):
 
     def _show_sanitization_result(self, deleted: int, errors: list[str]):
         """Muestra resultado de la sanitización."""
-        message = f"✓ {deleted} carpeta(s) eliminada(s)"
+        message = f"{deleted} carpeta(s) eliminada(s)"
         if errors:
-            message += f"\n\n⚠ {len(errors)} error(es):\n" + "\n".join(f"  • {e}" for e in errors[:5])
+            message += f"\n\n{len(errors)} error(es):\n" + "\n".join(f"  • {e}" for e in errors[:5])
             # Detectar si hay errores de permisos
             has_perm_errors = any("Permisos" in e or "administrativo" in e.lower() for e in errors)
             if has_perm_errors:
-                message += "\n\n💡 SOLUCIÓN:\n  1. Cierra App3\n  2. Ejecuta App3 como ADMINISTRADOR\n  3. Intenta de nuevo"
-            messagebox.showwarning("Sanitización completada", message)
+                message += "\n\nSOLUCION:\n  1. Cierra la app\n  2. Ejecuta como ADMINISTRADOR\n  3. Intenta de nuevo"
+            ModalOverlay.show_warning(self, "Sanitización completada", message)
         else:
-            messagebox.showinfo("Sanitización completada", message)
+            ModalOverlay.show_success(self, "Sanitización completada", message)
         self._set_status(f"Sanitización: {deleted} carpeta(s) eliminada(s)")
 
     # ── RECUPERACIÓN DE PDFs HUÉRFANOS ────────────────────────────────────────
@@ -2838,7 +2984,7 @@ class App3Window(ctk.CTk):
             try:
                 from gestor_contable.core.classifier import recover_orphaned_pdf
                 if recover_orphaned_pdf(orphaned_info, self.db):
-                    self.after(0, lambda: self._show_info("✓ Recuperado", "PDF movido exitosamente"))
+                    self.after(0, lambda: self._show_info("Recuperado", "PDF movido exitosamente"))
                     self.after(0, self._load_session, self.session)
                 else:
                     self.after(0, lambda: self._show_error("Error", "No se pudo recuperar el PDF"))
@@ -2866,18 +3012,15 @@ class App3Window(ctk.CTk):
             )
             return
 
-        # Crear diálogo de selección con Toplevel para mejor UX
-        selection_window = ctk.CTkToplevel(self)
-        selection_window.title("Vincular PDF a XML")
-        selection_window.geometry("600x400")
-        selection_window.configure(fg_color=BG)
+        # Diálogo de selección embebido
+        _ov, selection_window, _close_sel = ModalOverlay.build(self)
 
         # Header
         header = ctk.CTkFrame(selection_window, fg_color=SURFACE, corner_radius=0)
         header.pack(fill="x")
         ctk.CTkLabel(
             header,
-            text="🔗 Seleccionar XML para vincular",
+            text="Seleccionar XML para vincular",
             font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
@@ -2942,7 +3085,7 @@ class App3Window(ctk.CTk):
         button_frame.pack(fill="x")
 
         def on_cancel():
-            selection_window.destroy()
+            _close_sel()
 
         def on_select():
             selection = tree.selection()
@@ -2953,7 +3096,7 @@ class App3Window(ctk.CTk):
             idx = int(selection[0])
             selected_xml = xmls_without_pdf[idx]
 
-            selection_window.destroy()
+            _close_sel()
 
             # Confirmar vinculación
             if not self._ask(
@@ -2984,7 +3127,7 @@ class App3Window(ctk.CTk):
                         )
 
                     self.after(0, lambda: self._show_info(
-                        "✓ Vinculación completada",
+                        "Vinculacion completada",
                         f"PDF vinculado al XML de {selected_xml.emisor_nombre}"
                     ))
                     self.after(0, self._load_session, self.session)
@@ -3035,8 +3178,8 @@ class App3Window(ctk.CTk):
             self._on_select_single(r)  # Re-trigger para actualizar botones
 
         def _on_error(err):
-            self._btn_create_pdf.configure(state="normal", text="📄  Crear PDF")
-            messagebox.showerror("Error al generar PDF", f"No se pudo generar el PDF:\n{err}", parent=self)
+            self._btn_create_pdf.configure(state="normal", text="Crear PDF")
+            ModalOverlay.show_error(self, "Error al generar PDF", f"No se pudo generar el PDF:\n{err}")
 
         threading.Thread(target=_do_generate, daemon=True).start()
 
@@ -3101,9 +3244,9 @@ class App3Window(ctk.CTk):
                 self.after(0, self.pdf_viewer._close_doc)
 
                 if deleted == 1:
-                    self.after(0, lambda: self._show_info("✓ PDF borrado", f"Archivo eliminado exitosamente"))
+                    self.after(0, lambda: self._show_info("PDF borrado", f"Archivo eliminado exitosamente"))
                 else:
-                    self.after(0, lambda: self._show_info("✓ PDFs borrados", f"{deleted} archivos eliminados exitosamente"))
+                    self.after(0, lambda: self._show_info("PDFs borrados", f"{deleted} archivos eliminados exitosamente"))
 
             if errors:
                 msg_error = "Errores en el borrado:\n\n" + "\n".join(errors[:5])
@@ -3114,8 +3257,7 @@ class App3Window(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_info(self, title: str, message: str):
-        """Muestra un mensaje de información."""
-        messagebox.showinfo(title, message)
+        ModalOverlay.show_info(self, title, message)
 
     # ── CLASIFICACIÓN ─────────────────────────────────────────────────────────
     def _classify_selected(self):
@@ -3224,7 +3366,7 @@ class App3Window(ctk.CTk):
             if updated:
                 self._db_records[self.selected.clave] = updated
         saved_clave = self.selected.clave if self.selected else None
-        self._btn_classify.configure(state="normal", text="✔  Clasificar")
+        self._btn_classify.configure(state="normal", text="Clasificar")
         self._refresh_tree()
         self._update_progress()
         # Auto-avance: seleccionar el siguiente registro si existe
@@ -3387,7 +3529,7 @@ class App3Window(ctk.CTk):
         return filtered
 
     def _on_classify_error(self, msg: str):
-        self._btn_classify.configure(state="normal", text="✔  Clasificar")
+        self._btn_classify.configure(state="normal", text="Clasificar")
         self._show_error("Error al clasificar", msg)
 
     # ── HELPERS ───────────────────────────────────────────────────────────────
@@ -3395,96 +3537,28 @@ class App3Window(ctk.CTk):
         self._status_var.set(text)
 
     def _show_error(self, title: str, msg: str):
-        win = ctk.CTkToplevel(self)
-        win.title(title)
-        win.geometry("420x200")
-        win.configure(fg_color=CARD)
-        win.grab_set()
-        ctk.CTkLabel(win, text=f"✗  {title}", font=F_BTN(),
-                      text_color=DANGER).pack(pady=(24, 8))
-        ctk.CTkLabel(win, text=msg, font=F_SMALL(), text_color=TEXT,
-                      wraplength=380, justify="center").pack(pady=(0, 16))
-        ctk.CTkButton(win, text="Cerrar", fg_color=SURFACE,
-                       hover_color=BORDER, text_color=TEXT,
-                       command=win.destroy).pack()
+        ModalOverlay.show_error(self, title, msg)
 
     def _show_warning(self, title: str, msg: str):
-        self.update_idletasks()
-        mx, my = self.winfo_rootx(), self.winfo_rooty()
-        mw, mh = self.winfo_width(), self.winfo_height()
-
-        overlay = ctk.CTkToplevel(self)
-        overlay.overrideredirect(True)
-        overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
-        overlay.configure(fg_color="#0d0f14")
-        overlay.wm_attributes("-alpha", 0.72)
-        overlay.lift()
-
-        card_w, card_h = 480, 250
-        cx = mx + (mw - card_w) // 2
-        cy = my + (mh - card_h) // 2
-
-        card_win = ctk.CTkToplevel(self)
-        card_win.overrideredirect(True)
-        card_win.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
-        card_win.configure(fg_color=CARD)
-        card_win.lift()
-        card_win.grab_set()
-        self._round_corners(card_win)
-
-        ctk.CTkLabel(card_win, text=f"⚠  {title}", font=F_BTN(),
-                      text_color=WARNING).pack(pady=(24, 8))
-        ctk.CTkLabel(card_win, text=msg, font=F_SMALL(), text_color=TEXT,
-                      wraplength=440, justify="center").pack(
-                          padx=20, pady=(0, 0), fill="both", expand=True)
-
-        def close():
-            card_win.grab_release()
-            overlay.destroy()
-            card_win.destroy()
-
-        ctk.CTkButton(card_win, text="Entendido", fg_color=SURFACE,
-                       hover_color=BORDER, text_color=TEXT,
-                       command=close).pack(pady=(0, 20))
+        ModalOverlay.show_warning(self, title, msg)
 
     def _show_parse_errors_modal(self, title: str, parse_errors: list[str], records_count: int = 0, failed_xml_files: list[str] | None = None):
         """Modal in-app con lista scrollable de advertencias y botón de exportar."""
         import tkinter as tk
 
-        self.update_idletasks()
-        mx, my = self.winfo_rootx(), self.winfo_rooty()
-        mw, mh = self.winfo_width(), self.winfo_height()
-
-        overlay = ctk.CTkToplevel(self)
-        overlay.overrideredirect(True)
-        overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
-        overlay.configure(fg_color="#0d0f14")
-        overlay.wm_attributes("-alpha", 0.72)
-        overlay.lift()
-
-        card_w, card_h = 660, 500
-        cx = mx + (mw - card_w) // 2
-        cy = my + (mh - card_h) // 2
-
-        card_win = ctk.CTkToplevel(self)
-        card_win.overrideredirect(True)
-        card_win.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
-        card_win.configure(fg_color=CARD)
-        card_win.lift()
-        card_win.grab_set()
-        self._round_corners(card_win)
+        overlay, card, close_fn = ModalOverlay.build(self)
 
         # ── Header ───────────────────────────────────────────────────────────
-        hdr = ctk.CTkFrame(card_win, fg_color=SURFACE, corner_radius=0)
+        hdr = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=0)
         hdr.pack(fill="x")
-        ctk.CTkLabel(hdr, text=f"⚠  {title}", font=F_BTN(),
+        ctk.CTkLabel(hdr, text=f"{title}", font=F_BTN(),
                       text_color=WARNING).pack(side="left", padx=16, pady=12)
         ctk.CTkLabel(hdr,
                       text=f"{len(parse_errors)} advertencias  ·  {records_count} facturas cargadas",
                       font=F_SMALL(), text_color=MUTED).pack(side="right", padx=16, pady=12)
 
         # ── Lista scrollable ─────────────────────────────────────────────────
-        txt_frame = ctk.CTkFrame(card_win, fg_color=SURFACE, corner_radius=6)
+        txt_frame = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=6)
         txt_frame.pack(fill="both", expand=True, padx=16, pady=(12, 8))
 
         sb = tk.Scrollbar(txt_frame)
@@ -3500,13 +3574,10 @@ class App3Window(ctk.CTk):
         txt.config(state="disabled")
 
         # ── Botones ──────────────────────────────────────────────────────────
-        btns = ctk.CTkFrame(card_win, fg_color="transparent")
+        btns = ctk.CTkFrame(card, fg_color="transparent")
         btns.pack(pady=(0, 16))
 
-        def close():
-            card_win.grab_release()
-            overlay.destroy()
-            card_win.destroy()
+        close = close_fn
 
         def ignore_failed_xml():
             """Guarda los XML fallidos en ignored_xml_errors.json y cierra el modal."""
@@ -3530,14 +3601,14 @@ class App3Window(ctk.CTk):
             close()
 
         ctk.CTkButton(
-            btns, text="⬇ Exportar errores", width=160,
+            btns, text="Exportar errores", image=get_icon("download", 16), compound="left", width=160,
             fg_color=SURFACE, hover_color=BORDER,
             text_color=TEAL, border_width=1, border_color=TEAL,
             command=lambda: self._export_parse_errors_txt(parse_errors, records_count),
         ).pack(side="left", padx=8)
         if failed_xml_files:
             ctk.CTkButton(
-                btns, text=f"✖ Ignorar {len(failed_xml_files)} XML fallido{'s' if len(failed_xml_files) != 1 else ''}", width=190,
+                btns, text=f"Ignorar {len(failed_xml_files)} XML fallido{'s' if len(failed_xml_files) != 1 else ''}", width=190,
                 fg_color=SURFACE, hover_color=BORDER,
                 text_color=WARNING, border_width=1, border_color=WARNING,
                 command=ignore_failed_xml,
@@ -3709,66 +3780,14 @@ class App3Window(ctk.CTk):
             pass
 
     def _ask(self, title: str, msg: str, confirm_text: str = "Sí, reclasificar") -> bool:
-        import tkinter as tk
-        result = [False]
-        done = tk.BooleanVar(value=False)
+        return ModalOverlay.ask_sync(self, title, msg, confirm_text=confirm_text)
 
-        self.update_idletasks()
-        mx, my = self.winfo_rootx(), self.winfo_rooty()
-        mw, mh = self.winfo_width(), self.winfo_height()
-
-        # ── Overlay oscuro semitransparente (alpha real) ─────────────────────
-        overlay = ctk.CTkToplevel(self)
-        overlay.overrideredirect(True)
-        overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
-        overlay.configure(fg_color="#0d0f14")
-        overlay.wm_attributes("-alpha", 0.72)
-        overlay.lift()
-
-        # ── Card centrada encima del overlay ─────────────────────────────────
-        card_w, card_h = 440, 260
-        cx = mx + (mw - card_w) // 2
-        cy = my + (mh - card_h) // 2
-
-        card_win = ctk.CTkToplevel(self)
-        card_win.overrideredirect(True)
-        card_win.geometry(f"{card_w}x{card_h}+{cx}+{cy}")
-        card_win.configure(fg_color=CARD)
-        card_win.lift()
-        card_win.grab_set()
-        self._round_corners(card_win)
-
-        ctk.CTkLabel(card_win, text=title, font=("", 13, "bold"),
-                      text_color=TEXT).pack(pady=(24, 0))
-        ctk.CTkLabel(card_win, text=msg, font=F_LABEL(), text_color=TEXT,
-                      wraplength=400, justify="center").pack(
-                          padx=20, pady=(10, 0), fill="both", expand=True)
-
-        btns = ctk.CTkFrame(card_win, fg_color="transparent")
-        btns.pack(pady=(0, 22))
-
-        def _close(ok: bool):
-            result[0] = ok
-            card_win.grab_release()
-            overlay.destroy()
-            card_win.destroy()
-            done.set(True)
-
-        ctk.CTkButton(btns, text=confirm_text, fg_color=TEAL,
-                       hover_color=TEAL_DIM, text_color="#0d1a18",
-                       command=lambda: _close(True)).pack(side="left", padx=8)
-        ctk.CTkButton(btns, text="Cancelar", fg_color=SURFACE,
-                       hover_color=BORDER, text_color=TEXT,
-                       command=lambda: _close(False)).pack(side="left", padx=8)
-
-        self.wait_variable(done)
-        return result[0]
 
     # ── DETECCIÓN DE DUPLICADOS POR SHA256 ─────────────────────────────────────────
     def _find_duplicate_pdfs(self):
         """Detecta duplicados: PDFs origen vs clasificados + XMLs duplicados en origen."""
         if not self.session or not self.db:
-            messagebox.showinfo("Limpiar duplicados", "No hay sesión activa")
+            ModalOverlay.show_info(self, "Limpiar duplicados", "No hay sesión activa")
             return
 
         # Detectar duplicados en thread
@@ -3776,6 +3795,7 @@ class App3Window(ctk.CTk):
             from gestor_contable.core.classification_utils import (
                 find_duplicates_pdf_origin_vs_classified,
                 find_duplicate_xmls_in_origin,
+                find_duplicate_pdfs_within_origin,
             )
             try:
                 # Tipo 1: PDFs descargados que ya fueron clasificados
@@ -3787,35 +3807,38 @@ class App3Window(ctk.CTk):
                 # Tipo 2: XMLs duplicados en la carpeta XML/
                 xml_duplicados = find_duplicate_xmls_in_origin(self.session.folder)
 
+                # Tipo 3: PDFs con contenido idéntico en múltiples rutas dentro de PDF/
+                pdf_duplicados_origen = find_duplicate_pdfs_within_origin(self.session.folder)
+
+                # Tipo 4: PDFs rechazados por el indexador (misma clave, peor candidato)
+                pdf_dup_rejected = dict(self._pdf_duplicates_rejected)
+
                 self.after(
                     0,
-                    lambda: self._show_cleanup_modal(pdf_redundantes, xml_duplicados)
+                    lambda: self._show_cleanup_modal(pdf_redundantes, xml_duplicados, pdf_duplicados_origen, pdf_dup_rejected)
                 )
             except Exception as e:
                 self.after(0, lambda error=e: self._show_error("Error al escanear", str(error)))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_cleanup_modal(self, pdf_redundantes: list[dict], xml_duplicados: list[dict]):
-        """Muestra modal con duplicados a limpiar: PDFs redundantes + XMLs duplicados."""
-        total = len(pdf_redundantes) + len(xml_duplicados)
+    def _show_cleanup_modal(self, pdf_redundantes: list[dict], xml_duplicados: list[dict], pdf_duplicados_origen: list[dict] | None = None, pdf_dup_rejected: dict | None = None):
+        """Muestra modal con duplicados a limpiar: PDFs redundantes + XMLs + duplicados en origen + rechazados por indexador."""
+        pdf_duplicados_origen = pdf_duplicados_origen or []
+        pdf_dup_rejected = {k: v for k, v in (pdf_dup_rejected or {}).items() if k.exists()}  # solo los que aún están en disco
+        total = len(pdf_redundantes) + len(xml_duplicados) + sum(len(g["a_eliminar"]) for g in pdf_duplicados_origen) + len(pdf_dup_rejected)
         if total == 0:
-            messagebox.showinfo("Limpiar duplicados", "✓ No hay duplicados detectados")
+            ModalOverlay.show_info(self, "Limpiar duplicados", "No hay duplicados detectados")
             return
 
-        # Crear ventana modal
-        modal = ctk.CTkToplevel(self)
-        modal.title("Limpiar duplicados: PDFs + XMLs")
-        modal.geometry("1000x650")
-        modal.resizable(True, True)
-        modal.configure(fg_color=BG)
+        overlay, modal, close_fn = ModalOverlay.build(self)
 
         # Header
         header = ctk.CTkFrame(modal, fg_color=SURFACE, corner_radius=0)
         header.pack(fill="x")
         ctk.CTkLabel(
             header,
-            text=f"🧹 Se encontraron {total} archivo(s) redundante(s)",
+            text=f"Se encontraron {total} archivo(s) redundante(s)",
             font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
@@ -3857,12 +3880,14 @@ class App3Window(ctk.CTk):
         tree.grid(row=0, column=0, sticky="nsew")
 
         # Listas para ejecutar eliminación
-        to_delete_pdf = []  # PDFs a eliminar
-        to_delete_xml = []  # XMLs a eliminar
+        to_delete_pdf = []              # PDFs ya clasificados redundantes en origen
+        to_delete_xml = []              # XMLs duplicados
+        to_delete_pdf_origen = []       # PDFs duplicados dentro de PDF/
+        to_delete_pdf_dup_rejected = [] # PDFs rechazados por indexador (misma clave)
 
         # ─ SECCIÓN 1: PDFs redundantes (descargados que ya fueron clasificados)
         if pdf_redundantes:
-            parent_pdf = tree.insert("", "end", text="", values=("📥 PDFs en origen (redundantes)", "", ""))
+            parent_pdf = tree.insert("", "end", text="", values=("PDFs en origen (redundantes)", "", ""))
             for pdf_item in pdf_redundantes:
                 en_pdf = pdf_item["en_pdf"]
                 en_clasificado = pdf_item["en_clasificado"]
@@ -3876,19 +3901,19 @@ class App3Window(ctk.CTk):
                     values=(
                         f"SHA256: {sha256}",
                         en_pdf.name[:60],
-                        "🗑️ ELIMINAR"
+                        "ELIMINAR"
                     )
                 )
                 tree.insert(
                     parent_pdf,
                     "end",
                     text="",
-                    values=("", f"  → Ya clasificado en: {en_clasificado.parent.name}", "📁 Mantener")
+                    values=("", f"  → Ya clasificado en: {en_clasificado.parent.name}", "Mantener")
                 )
 
         # ─ SECCIÓN 2: XMLs duplicados (copias innecesarias)
         if xml_duplicados:
-            parent_xml = tree.insert("", "end", text="", values=("📄 XMLs duplicados en origen", "", ""))
+            parent_xml = tree.insert("", "end", text="", values=("XMLs duplicados en origen", "", ""))
             for xml_group in xml_duplicados:
                 mantener = xml_group["mantener"]
                 a_eliminar = xml_group["a_eliminar"]
@@ -3901,35 +3926,73 @@ class App3Window(ctk.CTk):
                     parent_xml,
                     "end",
                     text="",
-                    values=(f"SHA256: {sha256}", mantener.name[:60], "📁 Mantener")
+                    values=(f"SHA256: {sha256}", mantener.name[:60], "Mantener")
                 )
                 for xml_dup in a_eliminar:
                     tree.insert(
                         parent_xml,
                         "end",
                         text="",
-                        values=("", xml_dup.name[:60], "🗑️ ELIMINAR")
+                        values=("", xml_dup.name[:60], "ELIMINAR")
                     )
 
-        tree.pack(fill="both", expand=True)
+        # ─ SECCIÓN 3: PDFs duplicados físicamente dentro de PDF/
+        if pdf_duplicados_origen:
+            parent_dup = tree.insert("", "end", text="", values=("PDFs duplicados en PDF/", "", ""))
+            for grupo in pdf_duplicados_origen:
+                mantener = grupo["mantener"]
+                sha256 = grupo["sha256"][:8] + "..."
+                tree.insert(
+                    parent_dup, "end", text="",
+                    values=(f"SHA256: {sha256}", f"{mantener.name[:50]}  ({mantener.parent.name}/)", "Mantener")
+                )
+                for dup_path in grupo["a_eliminar"]:
+                    to_delete_pdf_origen.append(dup_path)
+                    tree.insert(
+                        parent_dup, "end", text="",
+                        values=("", f"  {dup_path.name[:50]}  ({dup_path.parent.name}/)", "ELIMINAR")
+                    )
+
+        # ─ SECCIÓN 4: PDFs rechazados por indexador (misma clave, peor candidato)
+        if pdf_dup_rejected:
+            parent_rej = tree.insert("", "end", text="", values=("PDFs descartados por clave duplicada", "", ""))
+            for rej_path, winner_path in pdf_dup_rejected.items():
+                to_delete_pdf_dup_rejected.append(rej_path)
+                rej_size = rej_path.stat().st_size if rej_path.exists() else 0
+                tree.insert(
+                    parent_rej, "end", text="",
+                    values=(
+                        f"({rej_size} B)",
+                        f"{rej_path.name[:50]}  ({rej_path.parent.name}/)",
+                        "ELIMINAR"
+                    )
+                )
+                tree.insert(
+                    parent_rej, "end", text="",
+                    values=(
+                        "",
+                        f"  Ganador: {winner_path.name[:50]}  ({winner_path.parent.name}/)",
+                        "Mantener"
+                    )
+                )
 
         # Footer con botones
         footer = ctk.CTkFrame(modal, fg_color=BG)
         footer.pack(fill="x", padx=12, pady=12)
 
         def proceed():
-            modal.destroy()
-            if to_delete_pdf or to_delete_xml:
-                self._execute_cleanup(to_delete_pdf, to_delete_xml)
+            close_fn()
+            if to_delete_pdf or to_delete_xml or to_delete_pdf_origen or to_delete_pdf_dup_rejected:
+                self._execute_cleanup(to_delete_pdf, to_delete_xml, to_delete_pdf_origen, to_delete_pdf_dup_rejected)
             else:
-                messagebox.showinfo("Limpiar", "No hay archivos para eliminar")
+                ModalOverlay.show_info(self, "Limpiar", "No hay archivos para eliminar")
 
         def cancel():
-            modal.destroy()
+            close_fn()
 
         ctk.CTkButton(
             footer,
-            text="✓ Eliminar redundantes",
+            text="Eliminar redundantes",
             fg_color=DANGER,
             hover_color="#dc2626",
             text_color=TEXT,
@@ -3945,21 +4008,18 @@ class App3Window(ctk.CTk):
             command=cancel
         ).pack(side="left", padx=8)
 
-    def _execute_cleanup(self, to_delete_pdf: list[Path], to_delete_xml: list[Path]):
-        """Ejecuta eliminación de archivos redundantes (PDFs + XMLs con re-verificación)."""
+    def _execute_cleanup(self, to_delete_pdf: list[Path], to_delete_xml: list[Path], to_delete_pdf_origen: list[Path] | None = None, to_delete_pdf_dup_rejected: list[Path] | None = None):
+        """Ejecuta eliminación de archivos redundantes (PDFs + XMLs + PDFs duplicados en origen)."""
         deleted = []
         errors = []
 
         def worker():
-            from gestor_contable.core.classifier import sha256_file
-
             # Eliminar PDFs redundantes (descargados que ya fueron clasificados)
             for pdf_path in to_delete_pdf:
                 try:
                     if not pdf_path.exists():
                         logger.warning(f"Archivo no existe: {pdf_path}")
                         continue
-
                     pdf_path.unlink()
                     deleted.append(f"PDF: {pdf_path.name}")
                     logger.info(f"PDF redundante eliminado: {pdf_path}")
@@ -3972,12 +4032,35 @@ class App3Window(ctk.CTk):
                     if not xml_path.exists():
                         logger.warning(f"Archivo no existe: {xml_path}")
                         continue
-
                     xml_path.unlink()
                     deleted.append(f"XML: {xml_path.name}")
                     logger.info(f"XML duplicado eliminado: {xml_path}")
                 except Exception as e:
                     errors.append(f"Error eliminando XML {xml_path.name}: {e}")
+
+            # Eliminar PDFs duplicados dentro de PDF/ (mismo contenido, distinta ruta)
+            for pdf_path in (to_delete_pdf_origen or []):
+                try:
+                    if not pdf_path.exists():
+                        logger.warning(f"Archivo no existe: {pdf_path}")
+                        continue
+                    pdf_path.unlink()
+                    deleted.append(f"PDF dup: {pdf_path.name}")
+                    logger.info(f"PDF duplicado en origen eliminado: {pdf_path}")
+                except Exception as e:
+                    errors.append(f"Error eliminando PDF {pdf_path.name}: {e}")
+
+            # Eliminar PDFs rechazados por indexador (misma clave, peor candidato)
+            for pdf_path in (to_delete_pdf_dup_rejected or []):
+                try:
+                    if not pdf_path.exists():
+                        logger.warning(f"Archivo no existe: {pdf_path}")
+                        continue
+                    pdf_path.unlink()
+                    deleted.append(f"PDF rechazado: {pdf_path.name}")
+                    logger.info(f"PDF rechazado por indexador eliminado: {pdf_path}")
+                except Exception as e:
+                    errors.append(f"Error eliminando PDF {pdf_path.name}: {e}")
 
             self.after(0, lambda: self._show_cleanup_result(deleted, errors))
 
@@ -3985,17 +4068,17 @@ class App3Window(ctk.CTk):
 
     def _show_cleanup_result(self, deleted: list[str], errors: list[str]):
         """Muestra resultado de la limpieza de duplicados."""
-        message = f"✓ {len(deleted)} archivo(s) eliminado(s)\n\n"
+        message = f"{len(deleted)} archivo(s) eliminado(s)\n\n"
         for item in deleted[:10]:
             message += f"  • {item}\n"
         if len(deleted) > 10:
             message += f"  ... y {len(deleted) - 10} más"
 
         if errors:
-            message += f"\n\n⚠ {len(errors)} error(es):\n" + "\n".join(f"  • {e}" for e in errors[:5])
-            messagebox.showwarning("Limpieza completada", message)
+            message += f"\n\n{len(errors)} error(es):\n" + "\n".join(f"  • {e}" for e in errors[:5])
+            ModalOverlay.show_warning(self, "Limpieza completada", message)
         else:
-            messagebox.showinfo("Limpieza completada", message)
+            ModalOverlay.show_success(self, "Limpieza completada", message)
 
         self._set_status(f"Limpieza: {len(deleted)} archivo(s) eliminado(s)")
 

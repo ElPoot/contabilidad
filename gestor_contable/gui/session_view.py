@@ -553,6 +553,35 @@ class _CedulaDialog(ctk.CTkToplevel):
         self._status_badge.configure(text="✗", text_color=DANGER)
 
 
+def _create_client_folder(session: "ClientSession") -> None:
+    """Crea carpeta del cliente nuevo y guarda su cédula en client_profiles.json."""
+    from gestor_contable.config import network_drive
+
+    folder = session.folder
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / ".metadata").mkdir(exist_ok=True)
+    (folder / "XML").mkdir(exist_ok=True)
+    (folder / "PDF").mkdir(exist_ok=True)
+
+    nd = network_drive()
+    profiles_path = nd / "CONFIG" / "client_profiles.json"
+    try:
+        profiles = load_profiles()
+    except Exception:
+        profiles = {}
+    entry = profiles.get(session.nombre)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["cedula"] = session.cedula
+    profiles[session.nombre] = entry
+    profiles_path.parent.mkdir(parents=True, exist_ok=True)
+    profiles_path.write_text(
+        json.dumps(profiles, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("Cliente nuevo creado: %s (%s)", session.nombre, session.cedula)
+
+
 # ── VISTA DE SESIÓN ────────────────────────────────────────────────────────────
 class SessionView(ctk.CTkFrame):
     """
@@ -568,6 +597,7 @@ class SessionView(ctk.CTkFrame):
         self._debounce_id: str | None = None
         self._pending_session: ClientSession | None = None
         self._all_clients: list[dict] = []
+        self._pending_new_client: bool = False
 
         self._build()
         self._load_clients_async()
@@ -830,8 +860,9 @@ class SessionView(ctk.CTkFrame):
         raw = _digits(self._cedula_entry.get())
         if len(raw) < 9:
             self._set_preview_idle()
-            self._btn_continuar.configure(state="disabled")
+            self._btn_continuar.configure(state="disabled", text="Continuar  ->")
             self._pending_session = None
+            self._pending_new_client = False
             return
         self._set_preview_searching()
         self._debounce_id = self.after(500, self._resolve_cedula)
@@ -847,21 +878,34 @@ class SessionView(ctk.CTkFrame):
         def worker():
             try:
                 session = resolve_client_session(cedula)
-                self.after(0, lambda s=session: self._on_resolve_ok(s))
+                self.after(0, lambda s=session: self._on_resolve_ok(s, new_client=False))
+            except FileNotFoundError:
+                # Cédula válida pero sin carpeta → ofrecer crear
+                try:
+                    session = resolve_client_session(cedula, allow_missing=True)
+                    self.after(0, lambda s=session: self._on_resolve_ok(s, new_client=True))
+                except Exception as exc2:
+                    self.after(0, lambda e=exc2: self._on_resolve_error(str(e)))
             except Exception as exc:
                 self.after(0, lambda e=exc: self._on_resolve_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_resolve_ok(self, session: ClientSession):
+    def _on_resolve_ok(self, session: ClientSession, new_client: bool = False):
         self._pending_session = session
-        self._set_preview_found(session.nombre)
-        self._btn_continuar.configure(state="normal")
+        self._pending_new_client = new_client
+        if new_client:
+            self._set_preview_new_client(session.nombre)
+            self._btn_continuar.configure(state="normal", text="Crear nuevo cliente  ->")
+        else:
+            self._set_preview_found(session.nombre)
+            self._btn_continuar.configure(state="normal", text="Continuar  ->")
 
     def _on_resolve_error(self, msg: str):
         self._pending_session = None
+        self._pending_new_client = False
         self._set_preview_error(msg)
-        self._btn_continuar.configure(state="disabled")
+        self._btn_continuar.configure(state="disabled", text="Continuar  ->")
 
     def _on_client_card_click(self, client: dict):
         """Clic en acceso rápido — resuelve sesión y entra directamente."""
@@ -896,7 +940,21 @@ class SessionView(ctk.CTkFrame):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_continuar(self):
-        if self._pending_session:
+        if not self._pending_session:
+            return
+        if self._pending_new_client:
+            self._btn_continuar.configure(state="disabled", text="Creando...")
+            session = self._pending_session
+
+            def worker():
+                try:
+                    _create_client_folder(session)
+                    self.after(0, lambda s=session: self._on_resolved(s))
+                except Exception as exc:
+                    self.after(0, lambda e=exc: self._on_resolve_error(str(e)))
+
+            threading.Thread(target=worker, daemon=True).start()
+        else:
             self._on_resolved(self._pending_session)
 
     # ── ESTADOS DEL PREVIEW ───────────────────────────────────────────────────
@@ -912,6 +970,13 @@ class SessionView(ctk.CTkFrame):
         self._preview_dot.configure(text_color=TEAL)
         self._preview_name.configure(text="Buscando...", text_color=MUTED)
         self._preview_status.configure(text="")
+
+    def _set_preview_new_client(self, nombre: str):
+        truncado = nombre[:45] + "..." if len(nombre) > 45 else nombre
+        self._preview_frame.configure(fg_color="#2a1e0d")
+        self._preview_dot.configure(text_color=WARNING)
+        self._preview_name.configure(text=truncado, text_color=TEXT)
+        self._preview_status.configure(text="Nuevo", text_color=WARNING)
 
     def _set_preview_found(self, nombre: str):
         truncado = nombre[:45] + "..." if len(nombre) > 45 else nombre

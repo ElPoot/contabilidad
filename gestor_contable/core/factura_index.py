@@ -222,6 +222,8 @@ class FacturaIndexer:
         self.duplicate_xml_count: int = 0
         self.duplicate_xml_files: list[dict] = []  # [{archivo, original, hash}, ...]
         self.failed_xml_files: list[str] = []  # Nombres de XML que fallaron el parseo
+        # PDFs rechazados por duplicado de clave: {path_rechazado: path_ganador}
+        self.pdf_duplicates_rejected: dict[Path, Path] = {}
 
     def load_period(
         self,
@@ -233,6 +235,7 @@ class FacturaIndexer:
     ) -> list[FacturaRecord]:
         self.parse_errors = []
         self.audit_report = {}
+        self.pdf_duplicates_rejected = {}
         self.failed_xml_files = []
 
         start_total = time.perf_counter()
@@ -737,21 +740,22 @@ class FacturaIndexer:
                 # ── Detectar PDF duplicado (misma clave, dos PDFs) ──
                 if records[clave].pdf_path and records[clave].pdf_path != pdf_path:
                     # Elegir el mejor PDF (preferir el más pesado si alguno < 5KB)
-                    best_path, change_msg = self._choose_best_pdf_for_duplicate(
-                        records[clave].pdf_path, pdf_path
-                    )
+                    prev_path = records[clave].pdf_path
+                    best_path, change_msg = self._choose_best_pdf_for_duplicate(prev_path, pdf_path)
                     if change_msg:
                         self.parse_errors.append(change_msg)
-                    if best_path != records[clave].pdf_path:
-                        # Cambió al nuevo PDF
+                    if best_path != prev_path:
+                        # Cambió al nuevo PDF: el anterior queda rechazado
+                        self.pdf_duplicates_rejected[prev_path] = best_path
                         linked[clave] = best_path
                         records[clave].pdf_path = best_path
                         logger.info(f"PDF duplicado: cambio a {best_path.name} (más pesado/mejor)")
                     else:
-                        # Se mantiene el existente
+                        # Se mantiene el existente: pdf_path queda rechazado
+                        self.pdf_duplicates_rejected[pdf_path] = best_path
                         logger.debug(
                             f"PDF duplicado para clave {clave[:12]}...: "
-                            f"'{records[clave].pdf_path.name}' mantiene prioridad sobre '{pdf_file.name}'"
+                            f"'{prev_path.name}' mantiene prioridad sobre '{pdf_file.name}'"
                         )
                 elif records[clave].pdf_path == pdf_path:
                     # Mismo PDF, idempotente - no hace nada
@@ -861,19 +865,22 @@ class FacturaIndexer:
                         # ── Detectar PDF duplicado (misma clave, dos PDFs) ──
                         if records[clave].pdf_path and records[clave].pdf_path != pdf_file:
                             # Elegir el mejor PDF (preferir el más pesado si alguno < 5KB)
-                            best_path, change_msg = self._choose_best_pdf_for_duplicate(
-                                records[clave].pdf_path, pdf_file
-                            )
+                            prev_path = records[clave].pdf_path
+                            best_path, change_msg = self._choose_best_pdf_for_duplicate(prev_path, pdf_file)
                             if change_msg:
                                 self.parse_errors.append(change_msg)
                             records[clave].pdf_path = best_path
                             linked[clave] = best_path
                             if best_path == pdf_file:
+                                # El anterior queda rechazado
+                                self.pdf_duplicates_rejected[prev_path] = best_path
                                 logger.info(f"PDF duplicado: cambio a {pdf_file.name} (más pesado/mejor)")
                             else:
+                                # pdf_file queda rechazado
+                                self.pdf_duplicates_rejected[pdf_file] = best_path
                                 logger.debug(
                                     f"PDF duplicado para clave {clave[:12]}...: "
-                                    f"'{records[clave].pdf_path.name}' mantiene prioridad sobre '{pdf_file.name}'"
+                                    f"'{prev_path.name}' mantiene prioridad sobre '{pdf_file.name}'"
                                 )
                         elif records[clave].pdf_path != pdf_file:
                             records[clave].pdf_path = pdf_file
@@ -1060,13 +1067,13 @@ class FacturaIndexer:
             if new_size > existing_size:
                 return (
                     new_path,
-                    f"PDF duplicado: '{existing_path.name}' ({existing_size} B) → "
-                    f"'{new_path.name}' ({new_size} B) [más pesado]",
+                    f"PDF duplicado: '{existing_path.name}' ({existing_size} B) -> "
+                    f"'{new_path.name}' ({new_size} B) [mas pesado]",
                 )
             else:
                 return (
                     existing_path,
-                    f"PDF duplicado: ignorado '{new_path.name}' ({new_size} B) ≤ "
+                    f"PDF duplicado: ignorado '{new_path.name}' ({new_size} B) <= "
                     f"'{existing_path.name}' ({existing_size} B)",
                 )
 

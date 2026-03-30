@@ -540,6 +540,65 @@ def find_duplicate_xmls_in_origin(
     return duplicados
 
 
+def find_duplicate_pdfs_within_origin(
+    client_folder: Path,
+) -> list[dict]:
+    """
+    Detecta PDFs con contenido idéntico (mismo SHA256) dentro de la carpeta PDF/.
+
+    Ocurre cuando el mismo archivo existe en PDF/ raíz Y en PDF/EMISOR/ subfolder
+    (el indexador ya detecta esto como "PDF duplicado" durante el escaneo).
+    Se conserva el que está en la ruta más profunda (más organizado); los demás se eliminan.
+
+    Returns:
+        Lista de diccionarios:
+        {
+            "sha256": str,
+            "copias": [Path, ...],      # todas las rutas del mismo contenido
+            "mantener": Path,           # cuál conservar (subfolder más profundo)
+            "a_eliminar": [Path, ...],  # cuáles eliminar
+        }
+    """
+    from gestor_contable.core.classifier import sha256_file
+
+    duplicados = []
+    pdf_folder = client_folder / "PDF"
+    if not pdf_folder.exists():
+        return duplicados
+
+    sha256_groups: dict[str, list[Path]] = {}
+
+    for pdf_path in pdf_folder.rglob("*.pdf"):
+        try:
+            h = sha256_file(pdf_path)
+            sha256_groups.setdefault(h, []).append(pdf_path)
+        except Exception as e:
+            logger.warning(f"No se pudo calcular SHA256 de {pdf_path}: {e}")
+
+    for sha256, copias in sha256_groups.items():
+        if len(copias) >= 2:
+            # Preferir la ruta con más componentes (más organizada / en subfolder)
+            # Si misma profundidad, ordenar alfabéticamente para consistencia
+            copias_ordenadas = sorted(copias, key=lambda p: (-len(p.parts), str(p)))
+            mantener = copias_ordenadas[0]
+            a_eliminar = copias_ordenadas[1:]
+
+            duplicados.append({
+                "sha256": sha256,
+                "copias": copias_ordenadas,
+                "mantener": mantener,
+                "a_eliminar": a_eliminar,
+            })
+            logger.info(
+                f"PDF duplicado en origen (SHA256: {sha256[:16]}...): "
+                f"mantener '{mantener.name}' en '{mantener.parent.name}/', "
+                f"eliminar {len(a_eliminar)} copia(s)"
+            )
+
+    logger.info(f"Total: {len(duplicados)} grupo(s) de PDFs duplicados en origen")
+    return duplicados
+
+
 def find_renamed_client_folders(
     contabilidades_root: Path,
     session_client_name: str,
@@ -614,14 +673,38 @@ def find_renamed_client_folders(
         if (month_dir / session_client_name).exists():
             continue
 
-        # Buscar qué carpeta de cliente tiene los archivos esperados
+        # Buscar carpeta renombrada: primero por prefijo, luego por archivos (mayoría)
         sample = relatives[:5]
+        found = False
         try:
-            for client_dir in month_dir.iterdir():
-                if not client_dir.is_dir() or client_dir.name == session_client_name:
-                    continue
+            candidates = [
+                d for d in month_dir.iterdir()
+                if d.is_dir() and d.name != session_client_name
+            ]
+        except OSError:
+            continue
+
+        # Paso 1: coincidencia de prefijo — carpeta cuyo nombre empieza con el nombre
+        # del cliente (p.ej. "HERMANOS DT DE CR SOCIEDAD ANONIMA (L)")
+        for client_dir in candidates:
+            if client_dir.name.startswith(session_client_name):
+                renames.append({
+                    "mes": mes,
+                    "old_name": session_client_name,
+                    "new_name": client_dir.name,
+                    "affected": count_by_month.get(mes, len(relatives)),
+                })
+                found = True
+                break
+
+        if found:
+            continue
+
+        # Paso 2: si no hay prefijo, verificar por archivos — exigir mayoría
+        if sample:
+            for client_dir in candidates:
                 matches = sum(1 for r in sample if (client_dir / r).exists())
-                if matches > 0:
+                if matches >= max(2, len(sample) // 2 + 1):
                     renames.append({
                         "mes": mes,
                         "old_name": session_client_name,
@@ -629,7 +712,5 @@ def find_renamed_client_folders(
                         "affected": count_by_month.get(mes, len(relatives)),
                     })
                     break
-        except OSError:
-            continue
 
     return renames

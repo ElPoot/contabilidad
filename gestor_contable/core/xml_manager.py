@@ -241,6 +241,114 @@ class CRXMLManager:
             "iva_otros": self.sum_decimal_strings(buckets["otros"]),
         }
 
+    def extract_lineas_cabys(self, xml_path: Path | str) -> list[dict[str, Any]]:
+        """
+        Extrae las líneas de detalle con sus códigos CABYS y montos desde el XML.
+
+        Recorre cada <LineaDetalle> y extrae:
+          - numero_linea  : int  — número de línea dentro de la factura
+          - cabys         : str  — código CABYS (tipo 04), vacío si no viene en el XML
+          - detalle       : str  — descripción del ítem
+          - cantidad      : str  — cantidad (texto normalizado)
+          - monto_total   : str  — MontoTotal de la línea sin IVA (texto con separador local)
+
+        Retorna lista vacía si el XML no tiene líneas o hay un error de lectura.
+
+        Estructura XML — dos formatos coexisten:
+
+          Formato clásico (v4.3 y anteriores):
+            <LineaDetalle>
+              <NumeroLinea>1</NumeroLinea>
+              <Codigo>
+                <Tipo>04</Tipo>           ← tipo 04 = CABYS
+                <Codigo>1234567890</Codigo>
+              </Codigo>
+              <Detalle>Descripcion</Detalle>
+              <Cantidad>2</Cantidad>
+              <MontoTotal>10000.00</MontoTotal>
+            </LineaDetalle>
+
+          Formato directo (v4.4+):
+            <LineaDetalle>
+              <NumeroLinea>1</NumeroLinea>
+              <CodigoCABYS>1234567890</CodigoCABYS>
+              <Detalle>Descripcion</Detalle>
+              <Cantidad>2</Cantidad>
+              <MontoTotal>10000.00</MontoTotal>
+            </LineaDetalle>
+
+        Ambos formatos son manejados.
+        """
+        xml_path = Path(xml_path)
+        lineas: list[dict[str, Any]] = []
+
+        try:
+            for _event, elem in ET.iterparse(xml_path, events=("end",)):
+                if self.local_name(elem.tag) != "LineaDetalle":
+                    continue
+
+                numero_linea = 0
+                cabys = ""
+                detalle = ""
+                cantidad = ""
+                monto_total = ""
+
+                for child in elem:
+                    tag = self.local_name(child.tag)
+
+                    if tag == "NumeroLinea":
+                        try:
+                            numero_linea = int((child.text or "").strip())
+                        except (ValueError, TypeError):
+                            pass
+
+                    elif tag == "CodigoCABYS":
+                        # Formato v4.4+: <CodigoCABYS>XXXXXXXXX</CodigoCABYS>
+                        valor = (child.text or "").strip()
+                        if valor:
+                            cabys = valor
+
+                    elif tag == "Codigo":
+                        # Formato clásico: <Codigo><Tipo>04</Tipo><Codigo>X</Codigo></Codigo>
+                        # Solo sobreescribir si no se obtuvo ya via CodigoCABYS
+                        tipo_codigo = ""
+                        valor_codigo = ""
+                        for grandchild in child:
+                            gc_tag = self.local_name(grandchild.tag)
+                            if gc_tag == "Tipo":
+                                tipo_codigo = (grandchild.text or "").strip()
+                            elif gc_tag == "Codigo":
+                                valor_codigo = (grandchild.text or "").strip()
+                        if tipo_codigo == "04" and valor_codigo and not cabys:
+                            cabys = valor_codigo
+
+                    elif tag == "Detalle":
+                        detalle = self.normalize_text(child.text)
+
+                    elif tag == "Cantidad":
+                        cantidad = self.normalize_amount_text(child.text)
+
+                    elif tag == "MontoTotal":
+                        monto_total = self.normalize_amount_text(child.text)
+
+                # Solo agregar si la línea tiene algún dato útil
+                if detalle or cabys or monto_total:
+                    lineas.append({
+                        "numero_linea": numero_linea,
+                        "cabys": cabys,
+                        "detalle": detalle,
+                        "cantidad": cantidad,
+                        "monto_total": monto_total,
+                    })
+
+                elem.clear()
+
+        except Exception:
+            LOGGER.warning("Error extrayendo líneas CABYS de %s", xml_path, exc_info=True)
+            return []
+
+        return lineas
+
     @staticmethod
     def normalize_tax_rate(raw_rate: Any) -> str:
         text = str(raw_rate or "").strip().replace(",", ".")
