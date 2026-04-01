@@ -691,59 +691,56 @@ class CRXMLManager:
             row["_process_status"] = "ok"
             return row
         except ET.ParseError as exc:
-            # Hacienda genera _respuesta.xml con encoding="UTF-8" declarado pero
-            # bytes Latin-1 en el DetalleMensaje (tildes, ñ, etc.). Reintentamos
-            # reemplazando la declaración a ISO-8859-1 para recuperar estado_hacienda.
-            if xml_file.name.endswith("_respuesta.xml"):
-                try:
-                    raw = xml_file.read_bytes()
-                    fixed = raw.replace(b'encoding="UTF-8"', b'encoding="ISO-8859-1"', 1)
-                    root = ET.fromstring(fixed)
-                    flat: dict[str, str] = {}
-                    stack: list[str] = []
-                    for event, elem in ET.iterparse(io.BytesIO(fixed), events=("start", "end")):
-                        tag = self.local_name(elem.tag)
-                        if event == "start":
-                            stack.append(tag)
-                            continue
-                        text = self.normalize_text(elem.text)
-                        if text and len(elem) == 0:
-                            key = "_".join(stack)
-                            flat[key] = f"{flat[key]} | {text}" if key in flat else text
-                        stack.pop()
-                        elem.clear()
-                    root_name = self.local_name(root.tag)
-                    row = {
-                        "archivo": xml_file.name,
-                        "ruta": str(xml_file),
-                        "carpeta": str(xml_file.parent),
-                        "xml_hash": self.compute_file_hash(xml_file),
-                        "documento_root": root_name,
-                        "tipo_documento": self.DOCUMENT_TYPES.get(root_name, f"Desconocido ({root_name})"),
-                    }
-                    row.update(flat)
-                    row["clave_numerica"] = flat.get("MensajeHacienda_Clave", "")
-                    row["_process_status"] = "ok"
-                    LOGGER.debug("MensajeHacienda recuperado con re-encoding: %s", xml_file.name)
-                    return row
-                except Exception as inner:
-                    LOGGER.warning("MensajeHacienda irrecuperable %s: %s", xml_file.name, inner)
-                    return {
-                        "archivo": xml_file.name,
-                        "ruta": str(xml_file),
-                        "carpeta": str(xml_file.parent),
-                        "documento_root": "",
-                        "_process_status": "skipped",
-                    }
-            LOGGER.warning("XML inválido en %s: %s", xml_file, exc)
-            return {
-                "archivo": xml_file.name,
-                "ruta": str(xml_file),
-                "carpeta": str(xml_file.parent),
-                "tipo_documento": "XML inválido",
-                "error": f"ParseError: {exc}",
-                "_process_status": "invalid_xml",
-            }
+            # Algunos emisores (ej. FAPEMO, otros) generan XMLs con encoding="UTF-8" declarado
+            # pero bytes Latin-1 en textos con tildes/ñ. Intentamos re-encoding para recuperar.
+            try:
+                raw = xml_file.read_bytes()
+                fixed = raw.replace(b'encoding="UTF-8"', b'encoding="ISO-8859-1"', 1)
+                root = ET.fromstring(fixed)
+                flat: dict[str, str] = {}
+                stack: list[str] = []
+                for event, elem in ET.iterparse(io.BytesIO(fixed), events=("start", "end")):
+                    tag = self.local_name(elem.tag)
+                    if event == "start":
+                        stack.append(tag)
+                        continue
+                    text = self.normalize_text(elem.text)
+                    if text and len(elem) == 0:
+                        key = "_".join(stack)
+                        flat[key] = f"{flat[key]} | {text}" if key in flat else text
+                    stack.pop()
+                    elem.clear()
+                root_name = self.local_name(root.tag)
+                row = {
+                    "archivo": xml_file.name,
+                    "ruta": str(xml_file),
+                    "carpeta": str(xml_file.parent),
+                    "xml_hash": self.compute_file_hash(xml_file),
+                    "documento_root": root_name,
+                    "tipo_documento": self.DOCUMENT_TYPES.get(root_name, f"Desconocido ({root_name})"),
+                }
+                row.update(flat)
+                row["clave_numerica"] = self.extract_first_non_empty(
+                    row,
+                    [
+                        f"{root_name}_Clave",
+                        "MensajeHacienda_Clave",
+                        "clave_numerica",
+                    ],
+                )
+                row["_process_status"] = "ok"
+                LOGGER.debug("XML recuperado con re-encoding: %s", xml_file.name)
+                return row
+            except Exception as inner:
+                LOGGER.warning("XML inválido y no recuperable %s: %s → %s", xml_file.name, exc, inner)
+                return {
+                    "archivo": xml_file.name,
+                    "ruta": str(xml_file),
+                    "carpeta": str(xml_file.parent),
+                    "tipo_documento": "XML inválido",
+                    "error": f"ParseError: {exc}",
+                    "_process_status": "invalid_xml",
+                }
         except (OSError, ValueError, PermissionError) as exc:
             LOGGER.exception("Error procesando %s", xml_file)
             return {
