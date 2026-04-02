@@ -2423,6 +2423,7 @@ class App3Window(ctk.CTk):
                     "subtipo": str(meta.get("subtipo") or ""),
                     "nombre_cuenta": str(meta.get("nombre_cuenta") or ""),
                     "estado": estado,
+                    "clasificacion_tx": classify_transaction(r, client_cedula),
                 }
             )
 
@@ -2454,7 +2455,7 @@ class App3Window(ctk.CTk):
         ]
 
         # Columnas ocultas: usadas internamente (agrupación Gasto) pero no visibles en ninguna hoja
-        _HIDDEN = {"subtipo", "nombre_cuenta", "estado", "categoria", "detalle_estado_hacienda"}
+        _HIDDEN = {"subtipo", "nombre_cuenta", "estado", "categoria", "detalle_estado_hacienda", "clasificacion_tx"}
         display_columns = [c for c in export_columns if c not in _HIDDEN]
 
         numeric_columns = {
@@ -2542,13 +2543,11 @@ class App3Window(ctk.CTk):
                     df[date_column] = pd.to_datetime(df[date_column], format="%d/%m/%Y", errors="coerce")
 
                 # ── Sheet splitting idéntico a App 2 ─────────────────────────
-                emisor_raw = df_all["emisor_cedula"].fillna("").astype(str).str.strip()
-                receptor_raw = df_all["receptor_cedula"].fillna("").astype(str).str.strip()
-                receptor_is_empty = receptor_raw.str.lower().isin({"", "null", "none", "nan"})
+                clasificacion_tx = df_all["clasificacion_tx"].fillna("").astype(str).str.strip().str.lower()
 
-                mask_ventas = emisor_raw.eq(client_cedula)
-                mask_egreso = ~mask_ventas & receptor_raw.eq(client_cedula)
-                mask_sin_receptor = ~mask_ventas & ~mask_egreso & receptor_is_empty
+                mask_ventas = clasificacion_tx.eq("ingreso")
+                mask_egreso = clasificacion_tx.eq("egreso")
+                mask_sin_receptor = clasificacion_tx.eq("sin_receptor")
 
                 # Egresos: GASTOS -> hoja "Gastos"; COMPRAS -> hoja "Compras"; OGND -> hoja "OGND"
                 categoria_upper = df_all["categoria"].fillna("").astype(str).str.strip().str.upper()

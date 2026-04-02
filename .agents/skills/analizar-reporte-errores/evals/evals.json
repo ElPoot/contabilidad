@@ -1,0 +1,77 @@
+{
+  "skill_name": "analizar-reporte-errores",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Analiza este reporte de errores: C:\\Users\\MalwarePRO\\Downloads\\errores_3-101-812411 SOCIEDAD ANONIMA_20260401_160255.txt. Necesito saber si los 51 XMLs fallidos con ParseError son problema del emisor o del nuestro código.",
+      "expected_output": "Reporte consolidado indicando que los errores son XML corrupto del emisor (carácter inválido en línea 21 col 79, etc.). Acción: OMITIR.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Identifica correctamente el tipo de error",
+          "description": "El análisis menciona específicamente que son errores de parseo (ParseError) y no intenta arreglar el código"
+        },
+        {
+          "name": "Agrupa por patrón",
+          "description": "El análisis agrupa los 51 errores en grupos por emisor/patrón en lugar de listar todos individuales"
+        },
+        {
+          "name": "Veredicto claro",
+          "description": "Da un veredicto final claro: OMITIR o ARREGLAR, con justificación"
+        },
+        {
+          "name": "Respuesta directa",
+          "description": "El análisis es conciso (menos de 500 palabras) y va al punto"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Tengo un reporte con errores mixtos: algunos xml_failed por ParseError, algunos respuesta_failed, y algunos total_mismatch. Dame un análisis de cada categoría, qué significa, si es bug nuestro, y qué hacer. El archivo está en Z:\\DATA\\PF-2026\\CLIENTES\\test\\errores_test.txt (puedes usar un ejemplo ficticio si el archivo no existe).",
+      "expected_output": "Análisis por categoría: xml_failed (OMITIR si es emisor), respuesta_failed (revisar encoding), total_mismatch (OMITIR, advertencia del emisor). Formato consolidado y directo.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Analiza cada tipo de error",
+          "description": "El análisis toca al menos 2-3 de los tipos mencionados (xml_failed, respuesta_failed, total_mismatch)"
+        },
+        {
+          "name": "Explica qué significa cada error",
+          "description": "Para cada tipo de error, hay una explicación clara de qué es y por qué ocurre"
+        },
+        {
+          "name": "Veredictos diferenciados",
+          "description": "Cada categoría recibe un veredicto específico (OMITIR o ARREGLAR) basado en su naturaleza"
+        },
+        {
+          "name": "Formato estructurado",
+          "description": "Los resultados están organizados por categoría, no en un párrafo desordenado"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Quiero que revises un reporte de errores pero SOLO me digas: ¿cuántos XMLs fallaron?, ¿cuál es el patrón común?, ¿es urgente arreglarlo o puedo omitirlo?. Dale al skill un archivo real si lo tienes, o crea un escenario de ejemplo.",
+      "expected_output": "Resumen ejecutivo: X XMLs fallaron, patrón [TIPO], veredicto [OMITIR/ARREGLAR] con justificación concisa.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Responde las 3 preguntas",
+          "description": "El análisis responde explícitamente: cuántos fallaron, cuál es el patrón, urgencia"
+        },
+        {
+          "name": "Resumen ejecutivo (máximo 5 líneas)",
+          "description": "La respuesta es breve y ejecutiva (menos de 5 líneas o 200 palabras)"
+        },
+        {
+          "name": "Veredicto urgencia",
+          "description": "Claramente dice si es urgente arreglarlo u omitible"
+        },
+        {
+          "name": "No reiterativo",
+          "description": "No repite el reporte; sintetiza y extrae solo lo esencial"
+        }
+      ]
+    }
+  ]
+}
