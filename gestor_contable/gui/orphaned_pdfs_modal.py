@@ -187,7 +187,10 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
                 pf_root = self.session_folder.parent.parent
                 contabilidades_root = pf_root / "Contabilidades"
 
-                self.orphaned = find_orphaned_pdfs(contabilidades_root, self.db_records)
+                self.orphaned = find_orphaned_pdfs(
+                    contabilidades_root, self.db_records,
+                    client_name=self.session_folder.name,
+                )
 
                 # Actualizar UI
                 self.after(0, self._display_results)
@@ -259,6 +262,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
             def worker():
                 recovered = 0
                 failed = 0
+                recovered_ids = []
 
                 for item_id in selected:
                     idx = int(item_id)
@@ -266,13 +270,14 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
                         orphaned_info = self.orphaned[idx]
                         if recover_orphaned_pdf(orphaned_info, self.db):
                             recovered += 1
+                            recovered_ids.append(item_id)
                         else:
                             failed += 1
 
                 # Actualizar UI
                 self.after(
                     0,
-                    lambda: self._show_recovery_result(recovered, failed, count),
+                    lambda: self._show_recovery_result(recovered, failed, count, recovered_ids),
                 )
 
             threading.Thread(target=worker, daemon=True).start()
@@ -285,7 +290,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
             confirm_text="Recuperar",
         )
 
-    def _show_recovery_result(self, recovered: int, failed: int, total: int):
+    def _show_recovery_result(self, recovered: int, failed: int, total: int, recovered_ids: list):
         """Muestra el resultado de la recuperación."""
         message = f"Recuperados: {recovered}\nFallidos: {failed}\nTotal: {total}"
 
@@ -300,11 +305,10 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
                 text=f"{recovered} recuperados, {failed} fallaron", text_color=WARNING
             )
 
-        # Limpiar árbol (borrar items recuperados)
-        for item_id in self._tree.selection():
-            self._tree.delete(item_id)
-
-        self._tree.selection_remove(self._tree.selection())
+        # Borrar solo los ítems recuperados con éxito; los fallidos permanecen visibles
+        for item_id in recovered_ids:
+            if self._tree.exists(item_id):
+                self._tree.delete(item_id)
 
     def _show_error(self, title: str, message: str):
         ModalOverlay.show_error(self, title, message)

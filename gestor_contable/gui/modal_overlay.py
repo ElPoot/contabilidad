@@ -132,8 +132,9 @@ class ModalOverlay(ctk.CTkFrame):
                 command=self._close,
             ).pack()
 
-        # Click en el fondo oscuro → cerrar
-        self.bind("<Button-1>", self._on_bg_click)
+        # Click en el fondo oscuro → cerrar (confirm: equivale a Cancelar)
+        bg_handler = self._on_bg_click_confirm if kind == "confirm" else self._on_bg_click
+        self.bind("<Button-1>", bg_handler)
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -158,6 +159,10 @@ class ModalOverlay(ctk.CTkFrame):
     def _on_bg_click(self, event):
         if event.widget is self:
             self._close()
+
+    def _on_bg_click_confirm(self, event):
+        if event.widget is self:
+            self._no()
 
     # ── API estática — mensajes simples ───────────────────────────────────────
 

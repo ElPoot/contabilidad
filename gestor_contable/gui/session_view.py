@@ -366,6 +366,7 @@ class _CedulaDialog(ctk.CTkToplevel):
         self._client      = client
         self._on_resolved = on_resolved
         self._debounce_id: str | None = None
+        self._verify_gen: int = 0
         self._verified_cedula:       str | None = None
         self._verified_hacienda_name: str | None = None
 
@@ -468,6 +469,7 @@ class _CedulaDialog(ctk.CTkToplevel):
             self.after_cancel(self._debounce_id)
         raw = re.sub(r"\D", "", self._cedula_entry.get() or "")
         if len(raw) < 9:
+            self._verify_gen += 1  # invalida cualquier query en vuelo
             self._set_idle()
             self._btn.configure(state="disabled")
             self._verified_cedula        = None
@@ -478,6 +480,8 @@ class _CedulaDialog(ctk.CTkToplevel):
 
     def _do_verify(self):
         cedula = re.sub(r"\D", "", self._cedula_entry.get() or "")
+        self._verify_gen += 1
+        gen = self._verify_gen
 
         def worker():
             try:
@@ -488,13 +492,15 @@ class _CedulaDialog(ctk.CTkToplevel):
                         f"No se encontró contribuyente con cédula {cedula} "
                         "en caché local ni en API de Hacienda."
                     )
-                self.after(0, lambda n=nombre: self._on_verify_ok(cedula, n))
+                self.after(0, lambda n=nombre: self._on_verify_ok(cedula, n, gen))
             except Exception as exc:
-                self.after(0, lambda e=exc: self._on_verify_error(str(e)))
+                self.after(0, lambda e=exc: self._on_verify_error(str(e), gen))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_verify_ok(self, cedula: str, hacienda_name: str):
+    def _on_verify_ok(self, cedula: str, hacienda_name: str, gen: int = 0):
+        if gen != self._verify_gen:
+            return  # respuesta obsoleta — descartada
         self._verified_cedula        = cedula
         self._verified_hacienda_name = hacienda_name
         folder_name = self._client["nombre"]
@@ -506,7 +512,9 @@ class _CedulaDialog(ctk.CTkToplevel):
 
         self._btn.configure(state="normal")
 
-    def _on_verify_error(self, msg: str):
+    def _on_verify_error(self, msg: str, gen: int = 0):
+        if gen != self._verify_gen:
+            return  # respuesta obsoleta — descartada
         self._verified_cedula        = None
         self._verified_hacienda_name = None
         short = msg[:65] + "..." if len(msg) > 65 else msg
@@ -625,6 +633,7 @@ class SessionView(ctk.CTkFrame):
         self._on_resolved = on_session_resolved
         self._on_cancel = on_cancel
         self._debounce_id: str | None = None
+        self._resolve_gen: int = 0
         self._pending_session: ClientSession | None = None
         self._all_clients: list[dict] = []
         self._pending_new_client: bool = False
@@ -889,6 +898,7 @@ class SessionView(ctk.CTkFrame):
             self.after_cancel(self._debounce_id)
         raw = _digits(self._cedula_entry.get())
         if len(raw) < 9:
+            self._resolve_gen += 1  # invalida cualquier query en vuelo
             self._set_preview_idle()
             self._btn_continuar.configure(state="disabled", text="Continuar  ->")
             self._pending_session = None
@@ -904,24 +914,28 @@ class SessionView(ctk.CTkFrame):
 
     def _resolve_cedula(self):
         cedula = self._cedula_entry.get().strip()
+        self._resolve_gen += 1
+        gen = self._resolve_gen
 
         def worker():
             try:
                 session = resolve_client_session(cedula)
-                self.after(0, lambda s=session: self._on_resolve_ok(s, new_client=False))
+                self.after(0, lambda s=session: self._on_resolve_ok(s, new_client=False, gen=gen))
             except FileNotFoundError:
                 # Cédula válida pero sin carpeta → ofrecer crear
                 try:
                     session = resolve_client_session(cedula, allow_missing=True)
-                    self.after(0, lambda s=session: self._on_resolve_ok(s, new_client=True))
+                    self.after(0, lambda s=session: self._on_resolve_ok(s, new_client=True, gen=gen))
                 except Exception as exc2:
-                    self.after(0, lambda e=exc2: self._on_resolve_error(str(e)))
+                    self.after(0, lambda e=exc2: self._on_resolve_error(str(e), gen))
             except Exception as exc:
-                self.after(0, lambda e=exc: self._on_resolve_error(str(e)))
+                self.after(0, lambda e=exc: self._on_resolve_error(str(e), gen))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_resolve_ok(self, session: ClientSession, new_client: bool = False):
+    def _on_resolve_ok(self, session: ClientSession, new_client: bool = False, gen: int = 0):
+        if gen != self._resolve_gen:
+            return  # respuesta obsoleta — descartada
         self._pending_session = session
         self._pending_new_client = new_client
         if new_client:
@@ -931,7 +945,9 @@ class SessionView(ctk.CTkFrame):
             self._set_preview_found(session.nombre)
             self._btn_continuar.configure(state="normal", text="Continuar  ->")
 
-    def _on_resolve_error(self, msg: str):
+    def _on_resolve_error(self, msg: str, gen: int = 0):
+        if gen != self._resolve_gen:
+            return  # respuesta obsoleta — descartada
         self._pending_session = None
         self._pending_new_client = False
         self._set_preview_error(msg)
