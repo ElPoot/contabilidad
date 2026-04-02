@@ -156,3 +156,80 @@ def delete_empty_folders(empty_folders: list[Path]) -> tuple[int, list[str]]:
             logger.exception(f"Error eliminando carpeta {folder}: {e}")
 
     return deleted, errors
+
+
+def find_residual_contabilidades_folders(
+    contabilidades_root: Path,
+    session_client_name: str,
+    db_records: dict,
+) -> list[dict]:
+    """
+    Detecta carpetas residuales del nombre anterior del cliente en Contabilidades.
+
+    Una carpeta es residual si:
+    - Existe Contabilidades/{mes}/{session_client_name}/
+    - TAMBIEN existe una carpeta hermana que empieza con session_client_name (el nuevo nombre)
+    - La BD no tiene registros apuntando al nombre original en ese mes
+
+    Returns:
+        Lista de dicts:
+        {
+            "path":      Path,   # raiz de la carpeta residual
+            "mes":       str,    # ej: "02-FEBRERO"
+            "has_files": bool,   # True = tiene archivos reales (solo reporte); False = solo dirs vacios
+        }
+    """
+    if not contabilidades_root.exists():
+        return []
+
+    results = []
+
+    try:
+        for mes_dir in contabilidades_root.iterdir():
+            if not mes_dir.is_dir():
+                continue
+
+            original_dir = mes_dir / session_client_name
+            if not original_dir.exists():
+                continue
+
+            # Buscar carpeta hermana que empiece con el mismo nombre (la renombrada)
+            try:
+                renamed_sibling = next(
+                    (d for d in mes_dir.iterdir()
+                     if d.is_dir()
+                     and d.name != session_client_name
+                     and d.name.startswith(session_client_name)),
+                    None,
+                )
+            except OSError:
+                continue
+
+            if renamed_sibling is None:
+                continue  # no hay carpeta renombrada — no es un caso residual
+
+            # Verificar que BD ya no apunta a la carpeta original en este mes
+            old_prefix = f"Contabilidades/{mes_dir.name}/{session_client_name}/"
+            old_count = sum(
+                1 for rec in db_records.values()
+                if old_prefix in rec.get("ruta_destino", "").replace("\\", "/")
+            )
+            if old_count > 0:
+                continue  # BD todavia tiene registros aqui — no es residual
+
+            # Distinguir entre "tiene archivos reales" y "solo subdirectorios vacios"
+            has_real_files = any(p for p in original_dir.rglob("*") if p.is_file())
+
+            results.append({
+                "path": original_dir,
+                "mes": mes_dir.name,
+                "has_files": has_real_files,
+            })
+            logger.info(
+                f"Carpeta residual detectada: {mes_dir.name}/{session_client_name} "
+                f"(has_files={has_real_files}, renombrada a: {renamed_sibling.name})"
+            )
+    except Exception as e:
+        logger.exception(f"Error escaneando carpetas residuales en {contabilidades_root}: {e}")
+
+    return results

@@ -690,18 +690,11 @@ def find_renamed_client_folders(
                 if old_prefix in rec.get("ruta_destino", "").replace("\\", "/")
             )
             if old_count == 0:
-                # BD ya actualizada — limpiar carpeta vieja vacía silenciosamente
-                try:
-                    for d in sorted(wrong_dir.rglob("*"), reverse=True):
-                        if d.is_dir():
-                            try:
-                                d.rmdir()
-                            except OSError:
-                                pass
-                    wrong_dir.rmdir()
-                except OSError:
-                    pass
-                continue  # Nada que consolidar
+                # BD ya no apunta a la carpeta vieja — no hay nada que consolidar.
+                # La carpeta residual se deja intacta; limpiarla es responsabilidad
+                # de una accion explicita del usuario (ej: boton Sanitizar), no de
+                # este paso de deteccion de solo lectura.
+                continue
             renames.append({
                 "mes": mes,
                 "old_name": session_client_name,

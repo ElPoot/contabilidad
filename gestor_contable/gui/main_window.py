@@ -3145,20 +3145,55 @@ class App3Window(ctk.CTk):
             ModalOverlay.show_info(self, "Sanitizar", "No hay sesión activa")
             return
 
-        # Detectar carpetas vacías en thread
         def worker():
-            from gestor_contable.core.folder_sanitizer import find_empty_folders
+            from gestor_contable.core.folder_sanitizer import (
+                find_empty_folders,
+                find_residual_contabilidades_folders,
+            )
             try:
                 empty_folders = find_empty_folders(self.session.folder)
-                self.after(0, lambda: self._show_sanitization_modal(empty_folders))
+
+                pf_root = self.session.folder.parent.parent
+                contabilidades_root = pf_root / "Contabilidades"
+                db_records = self.db.get_records_map() if self.db else {}
+                residuals = find_residual_contabilidades_folders(
+                    contabilidades_root,
+                    self.session.folder.name,
+                    db_records,
+                )
+
+                # Separar residuales con archivos (solo reporte) de las limpias (eliminar raiz)
+                residuals_with_content = [r for r in residuals if r["has_files"]]
+                residual_roots_with_files = {r["path"] for r in residuals_with_content}
+                residual_roots_clean = [r["path"] for r in residuals if not r["has_files"]]
+
+                # Excluir de empty_folders cualquier path dentro de una residual con archivos
+                filtered_empty = [
+                    p for p in empty_folders
+                    if not any(p == root or root in p.parents
+                               for root in residual_roots_with_files)
+                ]
+
+                # Agregar solo las raices de residuales limpias
+                # (sus subdirs ya estan en filtered_empty via find_empty_folders)
+                all_empty = list(dict.fromkeys(filtered_empty + residual_roots_clean))
+
+                self.after(0, lambda: self._show_sanitization_modal(
+                    all_empty, residuals_with_content
+                ))
             except Exception as e:
                 self.after(0, lambda error=e: self._show_error("Error al escanear", str(error)))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_sanitization_modal(self, empty_folders: list[Path]):
+    def _show_sanitization_modal(
+        self,
+        empty_folders: list[Path],
+        residuals_with_content: list[dict] | None = None,
+    ):
         """Muestra modal de confirmación con carpetas a eliminar."""
-        if not empty_folders:
+        residuals_with_content = residuals_with_content or []
+        if not empty_folders and not residuals_with_content:
             ModalOverlay.show_info(self, "Sanitizar", "No hay carpetas vacias\n\nTodas las carpetas de clasificación tienen contenido.")
             return
 
@@ -3167,9 +3202,13 @@ class App3Window(ctk.CTk):
         # Header
         header = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=0)
         header.pack(fill="x")
+        if empty_folders:
+            header_text = f"Se encontraron {len(empty_folders)} carpeta(s) vacias"
+        else:
+            header_text = "Carpetas residuales detectadas (solo reporte)"
         ctk.CTkLabel(
             header,
-            text=f"Se encontraron {len(empty_folders)} carpeta(s) vacias",
+            text=header_text,
             font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
@@ -3185,11 +3224,11 @@ class App3Window(ctk.CTk):
         list_frame = CTkScrollableFrame(body, fg_color=CARD, corner_radius=8)
         list_frame.grid(row=0, column=0, sticky="nsew")
 
-        # Mostrar carpetas a eliminar (ruta relativa para claridad)
-        contabilidades_root = self.session.folder.parent.parent / "Contabilidades" / self.session.folder.name
+        # Mostrar carpetas vacias a eliminar (ruta relativa para claridad)
+        contabilidades_root = self.session.folder.parent.parent / "Contabilidades"
         for folder in sorted(empty_folders):
             try:
-                rel_path = folder.relative_to(contabilidades_root.parent)
+                rel_path = folder.relative_to(contabilidades_root)
             except ValueError:
                 rel_path = folder
             label_text = f"  {rel_path}"
@@ -3201,25 +3240,49 @@ class App3Window(ctk.CTk):
                 justify="left",
             ).pack(anchor="w", padx=12, pady=4)
 
+        # Sección informativa: residuales con contenido (no se eliminan)
+        if residuals_with_content:
+            ctk.CTkLabel(
+                list_frame,
+                text="Carpetas residuales con contenido (no se eliminaran):",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=WARNING,
+            ).pack(anchor="w", padx=12, pady=(12, 2))
+            for r in residuals_with_content:
+                ctk.CTkLabel(
+                    list_frame,
+                    text=f"  {r['mes']}/{r['path'].name}  [contiene archivos]",
+                    font=ctk.CTkFont(size=10),
+                    text_color=MUTED,
+                ).pack(anchor="w", padx=12, pady=2)
+
         # Footer con botones
         footer = ctk.CTkFrame(body, fg_color="transparent")
         footer.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         footer.grid_columnconfigure(0, weight=1)
 
-        # Info y advertencia
-        ctk.CTkLabel(
-            footer,
-            text="Solo se eliminaran carpetas COMPLETAMENTE vacias",
-            font=ctk.CTkFont(size=10),
-            text_color=WARNING,
-        ).pack(anchor="w")
+        # Info y advertencia (solo si hay carpetas a eliminar)
+        if empty_folders:
+            ctk.CTkLabel(
+                footer,
+                text="Solo se eliminaran carpetas COMPLETAMENTE vacias",
+                font=ctk.CTkFont(size=10),
+                text_color=WARNING,
+            ).pack(anchor="w")
 
-        ctk.CTkLabel(
-            footer,
-            text="Si hay error de acceso: Cierra Explorador Windows si esta abierto en estas carpetas",
-            font=ctk.CTkFont(size=9),
-            text_color=MUTED,
-        ).pack(anchor="w", pady=(4, 0))
+            ctk.CTkLabel(
+                footer,
+                text="Si hay error de acceso: Cierra Explorador Windows si esta abierto en estas carpetas",
+                font=ctk.CTkFont(size=9),
+                text_color=MUTED,
+            ).pack(anchor="w", pady=(4, 0))
+        else:
+            ctk.CTkLabel(
+                footer,
+                text="Las carpetas residuales tienen archivos y no se eliminaran automaticamente.",
+                font=ctk.CTkFont(size=10),
+                text_color=WARNING,
+            ).pack(anchor="w")
 
         # Botones
         button_frame = ctk.CTkFrame(footer, fg_color="transparent")
@@ -3227,7 +3290,7 @@ class App3Window(ctk.CTk):
 
         ctk.CTkButton(
             button_frame,
-            text="Cancelar",
+            text="Cancelar" if empty_folders else "Cerrar",
             width=100,
             height=32,
             fg_color=SURFACE,
@@ -3237,17 +3300,18 @@ class App3Window(ctk.CTk):
             command=close_fn,
         ).pack(side="left", padx=(0, 8))
 
-        ctk.CTkButton(
-            button_frame,
-            text="Eliminar",
-            width=100,
-            height=32,
-            fg_color=DANGER,
-            hover_color="#f56565",
-            text_color="white",
-            corner_radius=8,
-            command=lambda: self._execute_sanitization(empty_folders, close_fn),
-        ).pack(side="left")
+        if empty_folders:
+            ctk.CTkButton(
+                button_frame,
+                text="Eliminar",
+                width=100,
+                height=32,
+                fg_color=DANGER,
+                hover_color="#f56565",
+                text_color="white",
+                corner_radius=8,
+                command=lambda: self._execute_sanitization(empty_folders, close_fn),
+            ).pack(side="left")
 
     def _execute_sanitization(self, empty_folders: list[Path], close_fn):
         """Ejecuta la eliminación de carpetas vacías en thread."""
