@@ -90,6 +90,13 @@ class XMLCacheManager:
             self._conn.commit()
             logger.debug("XML cache: %d entradas guardadas", len(rows))
 
+    def load_all(self) -> dict[str, tuple[float, int, str]]:
+        """Carga todas las entradas en memoria: {key: (mtime, size, data_json)}."""
+        rows = self._conn.execute(
+            "SELECT key, mtime, size, data_json FROM xml_cache"
+        ).fetchall()
+        return {row[0]: (row[1], row[2], row[3]) for row in rows}
+
     def close(self) -> None:
         try:
             self._conn.close()

@@ -366,7 +366,7 @@ def classify_record(
     if record.pdf_path is None:
         db.upsert(
             clave_numerica=record.clave,
-            estado="clasificado",
+            estado="pendiente_pdf",
             categoria=categoria,
             subtipo=subtipo,
             nombre_cuenta=nombre_cuenta,

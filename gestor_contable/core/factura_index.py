@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import hashlib
 import logging
+import os
 from pathlib import Path
 import re
 import time
@@ -561,6 +562,8 @@ class FacturaIndexer:
         logger.info(f"State recomputation: {recompute_time:.2f}s")
 
         total_time = time.perf_counter() - start_total
+        if hasattr(self.xml_manager, "_last_timing_summary"):
+            logger.info(self.xml_manager._last_timing_summary)
         logger.info(f"load_period() TOTAL: {total_time:.2f}s")
 
         xml_cache.close()
@@ -641,28 +644,31 @@ class FacturaIndexer:
         cached_negative_verdicts: dict[Path, str] = {}  # {pdf_file -> status}
 
         if self.pdf_cache:
-            for pdf_file in all_pdf_files:
-                cached_path = self.pdf_cache.get_cached_path(pdf_file)
-                if cached_path:
-                    # PDF está en caché y no cambió - verificar si tiene clave asociada
-                    cached_clave = self.pdf_cache.get_cached_clave(pdf_file)
-                    if cached_clave:
-                        # Tiene clave -> fue vinculado exitosamente, usar del caché
-                        cached_pdfs[pdf_file] = cached_path
-                        cached_pdf_claves[pdf_file] = cached_clave
-                        continue
+            _pc = self.pdf_cache
 
-                    # Check for cached negative verdict -- ONLY non_invoice is permanent.
-                    # empty/timeout/extract_failed are transient and get re-scanned.
-                    cached_status = self.pdf_cache.get_cached_status(pdf_file)
-                    if cached_status == "non_invoice":
-                        cached_negative_verdicts[pdf_file] = cached_status
-                        continue
+            def _check_one_pdf(pdf_file: Path):
+                cached_path = _pc.get_cached_path(pdf_file)
+                if not cached_path:
+                    return pdf_file, "scan", None, None
+                cached_clave = _pc.get_cached_clave(pdf_file)
+                if cached_clave:
+                    return pdf_file, "hit", cached_path, cached_clave
+                cached_status = _pc.get_cached_status(pdf_file)
+                if cached_status == "non_invoice":
+                    return pdf_file, "negative", None, None
+                return pdf_file, "scan", None, None
 
-                    # No clave, no permanent negative verdict -> re-process
-                    pdfs_to_scan.append(pdf_file)
+            cache_workers = max(4, min(16, (os.cpu_count() or 4) * 2))
+            with ThreadPoolExecutor(max_workers=cache_workers) as cex:
+                check_results = list(cex.map(_check_one_pdf, all_pdf_files))
+
+            for pdf_file, verdict, cached_path, cached_clave in check_results:
+                if verdict == "hit":
+                    cached_pdfs[pdf_file] = cached_path
+                    cached_pdf_claves[pdf_file] = cached_clave
+                elif verdict == "negative":
+                    cached_negative_verdicts[pdf_file] = "non_invoice"
                 else:
-                    # PDF es nuevo o cambió
                     pdfs_to_scan.append(pdf_file)
         else:
             pdfs_to_scan = all_pdf_files

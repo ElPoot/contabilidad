@@ -652,9 +652,12 @@ class CRXMLManager:
         if not folder.exists() or not folder.is_dir():
             raise FileNotFoundError(f"La carpeta no existe o no es válida: {folder}")
 
+        t_rglob = time.perf_counter()
         xml_files = sorted(folder.rglob("*.xml"))
         if ignored_filenames:
             xml_files = [f for f in xml_files if f.name not in ignored_filenames]
+        t_rglob_done = time.perf_counter() - t_rglob
+
         rows: list[dict[str, Any]] = []
         if not xml_files:
             report = self._build_audit_report(
@@ -669,17 +672,47 @@ class CRXMLManager:
         # ── CACHÉ DE XMLs ──
         to_parse: list[Path] = []
         new_to_cache: list[tuple[Path, dict]] = []
+        t_cache_load_done = 0.0
+        t_stat_done = 0.0
+        stat_workers = 0
+        cache_hits = 0
         if xml_cache is not None:
-            for xml_file in xml_files:
-                cached = xml_cache.get(xml_file)
-                if cached is not None:
-                    rows.append(cached)
-                else:
+            t0 = time.perf_counter()
+            cache_map = xml_cache.load_all()
+            t_cache_load_done = time.perf_counter() - t0
+
+            def _stat_file(p: Path):
+                try:
+                    return p, p.stat()
+                except OSError:
+                    return p, None
+
+            t0 = time.perf_counter()
+            stat_workers = max(4, min(16, (os.cpu_count() or 4) * 2))
+            with ThreadPoolExecutor(max_workers=stat_workers) as stat_ex:
+                stat_results = list(stat_ex.map(_stat_file, xml_files))
+            t_stat_done = time.perf_counter() - t0
+
+            for xml_file, st in stat_results:
+                if st is None:
                     to_parse.append(xml_file)
-            LOGGER.info("XML cache: %d hits, %d a parsear de %d total", len(rows), len(to_parse), len(xml_files))
+                    continue
+                key = xml_cache._make_key(xml_file)
+                entry = cache_map.get(key)
+                if entry is not None:
+                    cached_mtime, cached_size, data_json = entry
+                    if abs(st.st_mtime - cached_mtime) < 0.01 and st.st_size == cached_size:
+                        try:
+                            rows.append(json.loads(data_json))
+                            cache_hits += 1
+                            continue
+                        except Exception:
+                            pass
+                to_parse.append(xml_file)
         else:
             to_parse = xml_files
 
+        t0 = time.perf_counter()
         max_workers = max(2, min(8, (os.cpu_count() or 2)))
         if to_parse:
             future_to_file: dict = {}
@@ -692,17 +725,26 @@ class CRXMLManager:
                     rows.append(row)
                     if xml_cache is not None and row.get("_process_status") == "ok":
                         new_to_cache.append((xml_file, row))
+        t_parse_done = time.perf_counter() - t0
 
         if xml_cache is not None and new_to_cache:
             xml_cache.put_batch(new_to_cache)
-            LOGGER.info("XML cache: %d nuevas entradas guardadas", len(new_to_cache))
 
+        t0 = time.perf_counter()
         df = pd.DataFrame(rows)
         associated = self.associate_hacienda_messages(df)
         comprobantes = self.filter_comprobante_rows(associated)
         deduped, duplicate_files = self.remove_duplicate_hashes_with_audit(comprobantes)
         enriched = self.resolve_party_names_in_dataframe(deduped)
         optimized = self.optimize_dataframe_memory(enriched)
+        t_pandas_done = time.perf_counter() - t0
+
+        self._last_timing_summary = (
+            f"XML desglose — rglob:{t_rglob_done:.2f}s | "
+            f"cache_load:{t_cache_load_done:.2f}s | stat({stat_workers}w):{t_stat_done:.2f}s | "
+            f"hits:{cache_hits}/to_parse:{len(to_parse)} | "
+            f"parse({max_workers}w):{t_parse_done:.2f}s | pandas:{t_pandas_done:.2f}s"
+        )
 
         processing_time_seconds = round(time.perf_counter() - started_at, 3)
         report = self._build_audit_report(
