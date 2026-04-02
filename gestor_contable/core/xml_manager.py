@@ -75,10 +75,19 @@ class CRXMLManager:
         "07": "0",
         "08": "13",
     }
-    def parse_xml_file(self, xml_path: str | Path) -> dict[str, Any]:
-        """Parsea un XML en modo streaming para reducir uso de RAM."""
+    def parse_xml_file(self, xml_path: str | Path, _source: bytes | None = None) -> dict[str, Any]:
+        """Parsea un XML en modo streaming para reducir uso de RAM.
+
+        Args:
+            xml_path: Ruta al archivo XML (siempre requerida para metadatos y hash).
+            _source:  Bytes pre-decodificados opcionales. Cuando se proveen, se usan para
+                      parsear el contenido en lugar de leer el archivo del disco (útil para
+                      XMLs con encoding corrupto que ya fueron re-codificados en memoria).
+        """
         xml_path = Path(xml_path)
-        flat_xml, root_name = self.flatten_xml_stream(xml_path)
+        flat_xml, root_name = self.flatten_xml_stream(
+            io.BytesIO(_source) if _source is not None else xml_path
+        )
         flat_data: dict[str, Any] = {
             "archivo": xml_path.name,
             "ruta": str(xml_path),
@@ -128,7 +137,9 @@ class CRXMLManager:
         flat_data["subtotal"] = self.pick_doc_value(flat_data, root_name, "ResumenFactura_TotalVentaNeta")
         flat_data["total_comprobante"] = self.pick_doc_value(flat_data, root_name, "ResumenFactura_TotalComprobante")
         flat_data["otros_cargos"] = self.pick_doc_value(flat_data, root_name, "ResumenFactura_TotalOtrosCargos")
-        impuestos = self.extract_iva_breakdown(flat_data, root_name, xml_path=xml_path)
+        # BytesIO fresco: flatten_xml_stream ya consumió el stream anterior.
+        iva_source: "Path | io.BytesIO" = io.BytesIO(_source) if _source is not None else xml_path
+        impuestos = self.extract_iva_breakdown(flat_data, root_name, xml_path=iva_source)
         flat_data.update(impuestos)
         for amount_col in ["subtotal", "tipo_cambio", "iva_1", "iva_2", "iva_4", "iva_8", "iva_13", "iva_otros", "impuesto_total", "total_comprobante", "otros_cargos"]:
             default_zero = amount_col.startswith("iva_")
@@ -157,7 +168,7 @@ class CRXMLManager:
         )
         keys.append(suffix)
         return self.extract_first_non_empty(data, keys)
-    def extract_iva_breakdown(self, data: dict[str, Any], root_name: str, xml_path: Path | None = None) -> dict[str, str]:
+    def extract_iva_breakdown(self, data: dict[str, Any], root_name: str, xml_path: "Path | io.BytesIO | None" = None) -> dict[str, str]:
         """Calcula IVA por tarifa priorizando desglose de resumen cuando exista."""
         summary_breakdown = self.extract_iva_from_summary_breakdown_xml(xml_path) if xml_path else None
         if summary_breakdown is not None:
@@ -195,7 +206,7 @@ class CRXMLManager:
         result["impuesto_total"] = self.pick_doc_value(data, root_name, "ResumenFactura_TotalImpuesto")
         return result
 
-    def extract_iva_from_summary_breakdown_xml(self, xml_path: Path) -> dict[str, str] | None:
+    def extract_iva_from_summary_breakdown_xml(self, source: "Path | io.BytesIO") -> dict[str, str] | None:
         """Extrae IVA desde nodos ResumenFactura/TotalDesgloseImpuesto."""
         buckets: dict[str, list[str]] = {
             "1": [],
@@ -207,7 +218,7 @@ class CRXMLManager:
         }
         found_breakdown = False
 
-        for _event, elem in ET.iterparse(xml_path, events=("end",)):
+        for _event, elem in ET.iterparse(source, events=("end",)):
             if self.local_name(elem.tag) != "TotalDesgloseImpuesto":
                 continue
 
@@ -617,12 +628,12 @@ class CRXMLManager:
         if number is None:
             return "0"
         return cls.decimal_to_local_text(-abs(number))
-    def flatten_xml_stream(self, xml_path: Path) -> tuple[dict[str, str], str]:
+    def flatten_xml_stream(self, source: "Path | io.BytesIO") -> tuple[dict[str, str], str]:
         """Aplana XML vía iterparse (CPU/RAM más eficiente para lotes grandes)."""
         output: dict[str, str] = {}
         stack: list[str] = []
         root_name = ""
-        context = ET.iterparse(xml_path, events=("start", "end"))
+        context = ET.iterparse(source, events=("start", "end"))
         for event, elem in context:
             tag_name = self.local_name(elem.tag)
             if event == "start":
@@ -764,44 +775,11 @@ class CRXMLManager:
             return row
         except ET.ParseError as exc:
             # Algunos emisores generan XMLs con encoding="UTF-8" declarado pero bytes Latin-1.
-            # Solución: decodificar como Latin-1, re-codificar a UTF-8, luego parsear.
+            # Solución: decodificar como Latin-1, re-codificar a UTF-8 y reutilizar parse_xml_file()
+            # para producir el mismo contrato normalizado que el parseo normal.
             try:
-                raw = xml_file.read_bytes()
-                text_latin1 = raw.decode("iso-8859-1")
-                fixed = text_latin1.encode("utf-8")
-                # La declaración ya dice UTF-8, y ahora los bytes también son UTF-8.
-                root = ET.fromstring(fixed)
-                flat: dict[str, str] = {}
-                stack: list[str] = []
-                for event, elem in ET.iterparse(io.BytesIO(fixed), events=("start", "end")):
-                    tag = self.local_name(elem.tag)
-                    if event == "start":
-                        stack.append(tag)
-                        continue
-                    text = self.normalize_text(elem.text)
-                    if text and len(elem) == 0:
-                        key = "_".join(stack)
-                        flat[key] = f"{flat[key]} | {text}" if key in flat else text
-                    stack.pop()
-                    elem.clear()
-                root_name = self.local_name(root.tag)
-                row = {
-                    "archivo": xml_file.name,
-                    "ruta": str(xml_file),
-                    "carpeta": str(xml_file.parent),
-                    "xml_hash": self.compute_file_hash(xml_file),
-                    "documento_root": root_name,
-                    "tipo_documento": self.DOCUMENT_TYPES.get(root_name, f"Desconocido ({root_name})"),
-                }
-                row.update(flat)
-                row["clave_numerica"] = self.extract_first_non_empty(
-                    row,
-                    [
-                        f"{root_name}_Clave",
-                        "MensajeHacienda_Clave",
-                        "clave_numerica",
-                    ],
-                )
+                fixed = xml_file.read_bytes().decode("iso-8859-1").encode("utf-8")
+                row = self.parse_xml_file(xml_file, _source=fixed)
                 row["_process_status"] = "ok"
                 LOGGER.debug("XML recuperado con re-encoding: %s", xml_file.name)
                 return row

@@ -90,9 +90,15 @@ def filter_records_by_tab(
 
     if tab == "pendiente":
         # Pendientes: no clasificados (excluir omitidos)
+        # Un pendiente_pdf con categoria ya asignada está clasificado contablemente;
+        # se excluye de Pendiente aunque siga sin PDF (flujos Crear PDF / vincular intactos).
         return [
             r for r in non_omitted
             if not (db_records.get(r.clave, {}).get("estado") == "clasificado")
+            and not (
+                db_records.get(r.clave, {}).get("estado") == "pendiente_pdf"
+                and str(db_records.get(r.clave, {}).get("categoria") or "").strip()
+            )
         ]
 
     if tab == "sin_clave":
