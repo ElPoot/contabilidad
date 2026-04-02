@@ -8,14 +8,21 @@ from pathlib import Path
 log_file = Path.home() / ".gestor_contable_logs" / "gestor_contable.log"
 log_file.parent.mkdir(parents=True, exist_ok=True)
 
+_formatter = logging.Formatter(
+    fmt='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%H:%M:%S',
+)
+_file_handler = logging.FileHandler(log_file, encoding="utf-8")
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(_formatter)
+
+_stream_handler = logging.StreamHandler()
+_stream_handler.setLevel(logging.INFO)
+_stream_handler.setFormatter(_formatter)
+
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S',
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler(),
-    ]
+    handlers=[_file_handler, _stream_handler],
 )
 logger = logging.getLogger(__name__)
 logger.info("Logs se escriben en: %s", log_file)

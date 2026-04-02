@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import Counter
 from datetime import datetime
 import hashlib
 import logging
@@ -969,17 +970,30 @@ class FacturaIndexer:
             clave for clave, record in records.items() if record.xml_path and not record.pdf_path
         )
         if claves_faltantes_pdf:
+            sample_size = 5
+            sample = ", ".join(claves_faltantes_pdf[:sample_size])
+            suffix = " ..." if len(claves_faltantes_pdf) > sample_size else ""
             logger.warning(
-                "Claves con XML sin PDF vinculado: %s. Se listan para revisión manual.",
+                "Claves con XML sin PDF vinculado: %s. Muestra: %s%s",
                 len(claves_faltantes_pdf),
+                sample,
+                suffix,
             )
             for clave in claves_faltantes_pdf:
-                logger.warning("CLAVE SIN PDF: %s", clave)
+                logger.debug("CLAVE SIN PDF: %s", clave)
 
         if diagnostics_sin_clave:
-            logger.warning("ANALISIS DETALLADO PDFs SIN CLAVE (%s):", len(diagnostics_sin_clave))
+            reasons = Counter(str(item.get("razon", "") or "desconocida") for item in diagnostics_sin_clave)
+            reasons_summary = ", ".join(
+                f"{reason}={count}" for reason, count in sorted(reasons.items())
+            )
+            logger.info(
+                "PDFs sin clave: %s | %s",
+                len(diagnostics_sin_clave),
+                reasons_summary,
+            )
             for item in diagnostics_sin_clave:
-                logger.warning(
+                logger.debug(
                     "SIN_CLAVE | archivo=%s | razon=%s | intento=%s | tiempo_ms=%s | tokens_nombre=%s | tokens_texto=%s | claves_50=%s | error=%s",
                     item.get("archivo", ""),
                     item.get("razon", ""),

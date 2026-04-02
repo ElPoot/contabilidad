@@ -1613,7 +1613,7 @@ class App3Window(ctk.CTk):
                                     import re
                                     cedula_clean = re.sub(r"\D", "", cedula)
                                     if cedula_clean:
-                                        logger.info(f"Cédula obtenida de perfiles: {cedula_clean}")
+                                        logger.debug(f"Cédula obtenida de perfiles: {cedula_clean}")
                                         return cedula_clean
         except Exception as e:
             logger.warning(f"Error obteniendo cédula desde perfiles: {e}")
