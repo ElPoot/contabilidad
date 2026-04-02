@@ -14,6 +14,11 @@ from tkinter import filedialog, ttk
 
 import logging
 
+from gestor_contable.app.controllers.load_period_controller import (
+    load_range_worker,
+    load_session_worker,
+    months_for_range,
+)
 from gestor_contable.app.use_cases.export_report_use_case import (
     default_export_filename,
     export_period_report,
@@ -109,54 +114,6 @@ def _short_name(name: str, max_len: int = 34) -> str:
     return base[:max_len]
 
 # Inyectar estilos oscuros en el Treeview de ttk
-def _filter_sinxml_by_clave_date(
-    records: list,
-    from_str: str,
-    to_str: str,
-) -> list:
-    """Excluye registros sin_xml cuya fecha de clave esta fuera del rango cargado.
-
-    Cuando se carga con rango de fechas, los PDFs de otros meses no encuentran su XML
-    y se marcan sin_xml aunque su XML exista (solo no fue cargado). La clave tiene la
-    fecha en las posiciones 3:9 (DDMMYY), lo que permite determinar a que mes pertenece.
-    Si la fecha de la clave cae dentro del rango, el sin_xml es genuino y se conserva.
-    """
-    def _parse(s: str):
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-            try:
-                return datetime.strptime((s or "").strip(), fmt).date()
-            except (ValueError, AttributeError):
-                continue
-        return None
-
-    from_dt = _parse(from_str)
-    to_dt = _parse(to_str)
-    if not from_dt and not to_dt:
-        return records
-
-    result = []
-    for r in records:
-        if r.estado != "sin_xml":
-            result.append(r)
-            continue
-        clave = r.clave or ""
-        if len(clave) < 9:
-            result.append(r)  # Clave invalida: conservar para revision manual
-            continue
-        try:
-            clave_day   = int(clave[3:5])
-            clave_month = int(clave[5:7])
-            clave_year  = 2000 + int(clave[7:9])
-            clave_date  = date(clave_year, clave_month, clave_day)
-        except (ValueError, IndexError):
-            result.append(r)  # No se pudo parsear: conservar
-            continue
-        if from_dt and clave_date < from_dt:
-            continue
-        if to_dt and clave_date > to_dt:
-            continue
-        result.append(r)
-    return result
 
 
 _TREE_STYLE_DONE = False
@@ -602,7 +559,6 @@ class App3Window(ctk.CTk):
             self._show_error("Error al limpiar cache", str(e))
 
     def _load_session(self, session: ClientSession, reset_dates: bool = True):
-        import time
         self._load_generation += 1
         generation = self._load_generation
         self._load_queue = Queue()
@@ -641,73 +597,19 @@ class App3Window(ctk.CTk):
 
         def worker():
             try:
-                start_total = time.perf_counter()
+                def _progress(msg: str, current: int, total: int):
+                    self.after(0, lambda m=msg, c=current, t=total: (
+                        self._loading_overlay.update_status(m),
+                        self._loading_overlay.update_progress(c, t),
+                    ))
 
-                # Fase 1: Setup
-                mdir = metadata_dir(session.folder)
-                self.after(0, lambda: self._loading_overlay.update_status("Preparando cliente..."))
-                self.after(0, lambda: self._loading_overlay.update_progress(10, 100))
-                catalog = CatalogManager(mdir).load()
-                db = ClassificationDB(mdir)
-                indexer = FacturaIndexer()
-
-                # Fase 2: Load (XML + PDF)
-                self.after(0, lambda: self._loading_overlay.update_status("Leyendo XMLs..."))
-                self.after(0, lambda: self._loading_overlay.update_progress(20, 100))
-
-                # La fase larga: XML + PDF
-                self.after(0, lambda: self._loading_overlay.update_status("Escaneando PDFs (esto toma ~40s)..."))
-                self.after(0, lambda: self._loading_overlay.update_progress(30, 100))
-
-                start_load = time.perf_counter()
-                records = indexer.load_period(
-                    session.folder,
-                    from_date=load_from,
-                    to_date=load_to,
-                    include_pdf_scan=True,
-                    allow_pdf_content_fallback=True,
-                )
-                load_time = time.perf_counter() - start_load
-                logger.info(f"load_period() tardó {load_time:.2f}s para {len(records)} registros")
-                self.after(0, lambda t=load_time: self._loading_overlay.update_status(f"XMLs y PDFs ({t:.1f}s). Buscando huerfanos..."))
-                self.after(0, lambda: self._loading_overlay.update_progress(70, 100))
-
-                # Los PDFs sin_xml cuya clave tiene fecha fuera del rango cargado son de otro mes
-                # (su XML no fue cargado porque está fuera del filtro, no porque no exista).
-                # Se filtran por la fecha embebida en la clave (posiciones 3:9 → DDMMYY).
-                # Los que tienen fecha DENTRO del rango son genuinamente sin_xml y se conservan.
-                if load_from or load_to:
-                    records = _filter_sinxml_by_clave_date(records, load_from, load_to)
-
-                # Escanear PDFs huérfanos
-                from gestor_contable.core.classification_utils import find_orphaned_pdfs, create_orphaned_record, find_renamed_client_folders
-                pf_root = session.folder.parent.parent
-                contabilidades_root = pf_root / "Contabilidades"
-                local_db_records = db.get_records_map()
-                client_name = session.folder.name  # Limitar huérfanos al cliente actual
-
-                # Detectar carpetas del cliente renombradas por el contador
-                start_orphan = time.perf_counter()
-                renames = find_renamed_client_folders(contabilidades_root, client_name, local_db_records)
-
-                orphaned_list = find_orphaned_pdfs(contabilidades_root, local_db_records, client_name)
-                orphan_time = time.perf_counter() - start_orphan
-                logger.info(f"Huerfanos tardó {orphan_time:.2f}s, encontrados: {len(orphaned_list)}")
-                self.after(0, lambda t=orphan_time: self._loading_overlay.update_status(f"Huerfanos ({t:.1f}s). Finalizando..."))
-                self.after(0, lambda: self._loading_overlay.update_progress(90, 100))
-
-                # Agregar registros dummy para PDFs huérfanos
-                for orphaned_info in orphaned_list:
-                    orphaned_record = create_orphaned_record(orphaned_info)
-                    records.append(orphaned_record)
-
-                if orphaned_list:
-                    logger.info(f"Agregados {len(orphaned_list)} registros huerfanos")
-
-                total_time = time.perf_counter() - start_total
-                logger.info(f"Worker total: {total_time:.2f}s")
-
-                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors, indexer.failed_xml_files, renames, indexer.pdf_duplicates_rejected, load_months)))
+                result = load_session_worker(session, load_from, load_to, load_months, _progress)
+                self._load_queue.put(("ok", (
+                    generation, session,
+                    result.catalog, result.db, result.records,
+                    result.parse_errors, result.failed_xml_files,
+                    result.renames, result.pdf_duplicates_rejected, result.load_months,
+                )))
             except Exception as exc:
                 logger.exception("Error en worker")
                 self._load_queue.put(("error", (generation, str(exc))))
@@ -1950,28 +1852,7 @@ class App3Window(ctk.CTk):
 
     @staticmethod
     def _months_for_range(from_str: str, to_str: str) -> set[tuple[int, int]]:
-        """Retorna el conjunto de (year, month) que cubre el rango de fechas dado."""
-        def _parse(s: str):
-            for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-                try:
-                    return datetime.strptime(s.strip(), fmt).date()
-                except (ValueError, AttributeError):
-                    continue
-            return None
-
-        from_dt = _parse(from_str)
-        to_dt = _parse(to_str)
-        if not from_dt or not to_dt:
-            return set()
-        months: set[tuple[int, int]] = set()
-        cursor = from_dt.replace(day=1)
-        while cursor <= to_dt:
-            months.add((cursor.year, cursor.month))
-            if cursor.month == 12:
-                cursor = cursor.replace(year=cursor.year + 1, month=1)
-            else:
-                cursor = cursor.replace(month=cursor.month + 1)
-        return months
+        return months_for_range(from_str, to_str)
 
     def _load_range_if_needed(self):
         """Carga los meses faltantes del rango activo o solo re-filtra si ya estan en cache."""
@@ -2021,30 +1902,17 @@ class App3Window(ctk.CTk):
         self.update()
 
         session = self.session
-        sorted_months = sorted(missing_months)
 
         def worker():
             try:
-                all_new: list[FacturaRecord] = []
-                n = len(sorted_months)
-                for i, (year, month) in enumerate(sorted_months):
-                    first_day = date(year, month, 1)
-                    last_day = date(year, month, calendar.monthrange(year, month)[1])
-                    from_s = first_day.strftime("%d/%m/%Y")
-                    to_s = last_day.strftime("%d/%m/%Y")
-                    self.after(0, lambda i=i, n=n: self._loading_overlay.update_status(
-                        f"Cargando mes {i + 1}/{n}..."))
-                    self.after(0, lambda i=i, n=n: self._loading_overlay.update_progress(i, n))
-                    indexer = FacturaIndexer()
-                    batch = indexer.load_period(
-                        session.folder,
-                        from_date=from_s,
-                        to_date=to_s,
-                        include_pdf_scan=True,
-                        allow_pdf_content_fallback=True,
-                    )
-                    all_new.extend(_filter_sinxml_by_clave_date(batch, from_s, to_s))
-                self._range_load_queue.put(("ok", (generation, all_new, set(sorted_months))))
+                def _progress(msg: str, current: int, total: int):
+                    self.after(0, lambda m=msg, c=current, t=total: (
+                        self._loading_overlay.update_status(m),
+                        self._loading_overlay.update_progress(c, t),
+                    ))
+
+                result = load_range_worker(session, missing_months, _progress)
+                self._range_load_queue.put(("ok", (generation, result.new_records, result.loaded_months)))
             except Exception as exc:
                 logger.exception("Error en range worker")
                 self._range_load_queue.put(("error", (generation, str(exc))))
@@ -3454,7 +3322,7 @@ class App3Window(ctk.CTk):
                 cats["iva_mismatch"].append(err)
             elif "duplicados descartados" in err or "XML(s) duplicados" in err:
                 cats["xml_duplicate"].append(err)
-            elif "[respuesta_irrecuperable]" in err:
+            elif "[respuesta_irrecuperable]" in err or "[respuesta_no_asociada]" in err:
                 cats["respuesta_failed"].append(err)
             elif "Error cargando carpeta XML" in err or (
                 ": " in err and "factura" not in err.lower() and "pdf" not in err.lower()
@@ -3470,7 +3338,7 @@ class App3Window(ctk.CTk):
             "iva_mismatch":     "suma de IVAs no cuadra con impuesto_total",
             "xml_duplicate":    "XML duplicados (descartados automáticamente)",
             "xml_failed":       "XML fallidos / error de parseo",
-            "respuesta_failed": "MensajeHacienda irrecuperable (requiere revisión manual)",
+            "respuesta_failed": "Mensajes de respuesta con incidencia (irrecuperables o no asociados)",
             "pdf_duplicate":    "PDF duplicado resuelto automáticamente",
             "other":            "otros / sin categoría",
         }
@@ -3528,11 +3396,11 @@ class App3Window(ctk.CTk):
             "                   El archivo está corrupto o tiene formato inválido.",
             "                   Acción: revisión manual del archivo XML indicado.",
             "",
-            "  respuesta_failed: MensajeHacienda (_respuesta.xml) irrecuperable.",
-            "                   La factura SÍ cargó desde su XML principal.",
-            "                   No se pudo determinar si Hacienda la aceptó o rechazó.",
+            "  respuesta_failed: MensajeHacienda/MensajeReceptor con incidencia.",
+            "                   Puede ser un _respuesta.xml irrecuperable o una respuesta",
+            "                   que NO corresponde a ningún comprobante cargado por clave.",
             "                   Acción: revisar manualmente el archivo indicado y",
-            "                   verificar en el portal de Hacienda el estado de la clave.",
+            "                   verificar que la clave pertenezca al XML principal correcto.",
             "",
             "  pdf_duplicate  : Dos PDFs apuntaban a la misma clave.",
             "                   Sistema conservó el más pesado (más bytes = más contenido).",
