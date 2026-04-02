@@ -314,7 +314,7 @@ La recomendación concreta y pragmática es **no migrar la GUI ahora** y **no re
 
 ## 9. Estado del refactoring
 
-- [ ] R1: Extraer lógica de exportación de `main_window.py` → `app/use_cases/export_report_use_case.py`
+- [x] R1: Extraer lógica de exportación de `main_window.py` → `app/use_cases/export_report_use_case.py`
 - [ ] R2: Separar carga de sesión y rango de `main_window.py` → `LoadPeriodController`
 - [ ] R3: Introducir `MainWindowState` (tab activa, rango, selección, registros, carga, errores)
 - [ ] R4: Separar selección + panel derecho + visor → `SelectionController` + `SelectionVM`
