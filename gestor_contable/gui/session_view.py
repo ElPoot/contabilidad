@@ -145,6 +145,29 @@ def _load_saved_clients(year: int) -> list[dict]:
     return clients
 
 
+def _save_cedula(cedula: str, folder_name: str) -> None:
+    """Persiste únicamente la cédula bajo el nombre de carpeta actual en client_profiles.json."""
+    from gestor_contable.config import network_drive
+
+    nd = network_drive()
+    profiles_path = nd / "CONFIG" / "client_profiles.json"
+    try:
+        profiles = load_profiles()
+        entry = profiles.get(folder_name)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry["cedula"] = cedula
+        profiles[folder_name] = entry
+        profiles_path.parent.mkdir(parents=True, exist_ok=True)
+        profiles_path.write_text(
+            json.dumps(profiles, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Cédula %s guardada para '%s'", cedula, folder_name)
+    except Exception as exc:
+        logger.warning("No se pudo guardar client_profiles.json: %s", exc)
+
+
 def _heal_client(
     old_folder_name: str,
     hacienda_name: str,
@@ -503,10 +526,17 @@ class _CedulaDialog(ctk.CTkToplevel):
 
         def worker():
             try:
-                session = _heal_client(
-                    old_folder_name=folder_name,
-                    hacienda_name=hacienda_name,
+                from gestor_contable.config import network_drive
+                nd = network_drive()
+                clientes = nd / f"PF-{year}" / "CLIENTES"
+                folder_path = clientes / folder_name
+
+                _save_cedula(cedula, folder_name)
+
+                session = ClientSession(
                     cedula=cedula,
+                    nombre=folder_name,
+                    folder=folder_path,
                     year=year,
                 )
                 self.after(0, lambda s=session: self._finish(s))
@@ -544,7 +574,7 @@ class _CedulaDialog(ctk.CTkToplevel):
         self._status_frame.configure(fg_color="#2d2010")
         self._status_dot.configure(text_color=WARNING)
         self._status_label.configure(text=f"Hacienda: {truncado}", text_color=WARNING)
-        self._status_badge.configure(text="se renombrará", text_color=WARNING)
+        self._status_badge.configure(text="nombre distinto en Hacienda", text_color=WARNING)
 
     def _set_error(self, msg: str):
         self._status_frame.configure(fg_color="#2a0d0d")
