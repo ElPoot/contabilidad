@@ -92,11 +92,13 @@ class PDFCacheManager:
             return {"version": "2", "pdfs": {}}
 
     def save_cache(self) -> None:
-        """Guardar caché a archivo JSON."""
+        """Guardar caché a archivo JSON (escritura atómica via archivo temporal)."""
         try:
             self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.cache_file, "w", encoding="utf-8") as f:
+            tmp = self.cache_file.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.cache, f, indent=2, default=str)
+            tmp.replace(self.cache_file)
             logger.debug(f"Caché de PDFs guardado: {len(self.cache.get('pdfs', {}))} entradas")
         except Exception as exc:
             logger.warning(f"No se pudo guardar caché: {exc}")
@@ -262,7 +264,7 @@ class PDFCacheManager:
         logger.info("Caché de PDFs limpiado")
 
     @staticmethod
-    def _compute_checksum(pdf_file: Path, chunk_size: int = 8192) -> str:
+    def _compute_checksum(pdf_file: Path, chunk_size: int = 1024 * 1024) -> str:
         """Computar checksum SHA-256 del archivo."""
         if not pdf_file.exists():
             return ""

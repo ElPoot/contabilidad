@@ -44,6 +44,8 @@ def build_dest_folder(
     subtipo: str,
     nombre_cuenta: str,
     proveedor: str,
+    *,
+    client_name_override: str | None = None,
 ) -> Path:
     """
     Construye la ruta de destino para un PDF clasificado:
@@ -62,9 +64,25 @@ def build_dest_folder(
 
     mes_str = f"{dt.month:02d}-{_MESES[dt.month]}"
     # session_folder = Z:/DATA/PF-{year}/CLIENTES/{CLIENT_NAME}
-    pf_root     = session_folder.parent.parent  # Z:/DATA/PF-{year}/
-    client_name = session_folder.name
-    base = pf_root / "Contabilidades" / mes_str / client_name
+    pf_root    = session_folder.parent.parent  # Z:/DATA/PF-{year}/
+    month_dir  = pf_root / "Contabilidades" / mes_str
+
+    if client_name_override:
+        # Nombre explícito del contador (prioridad máxima)
+        client_name = client_name_override
+    else:
+        client_name = session_folder.name
+        # Fallback: buscar carpeta con prefijo coincidente (ej: "EMPRESA (L)")
+        if not (month_dir / client_name).exists():
+            try:
+                for d in month_dir.iterdir():
+                    if d.is_dir() and d.name.startswith(client_name):
+                        client_name = d.name
+                        break
+            except OSError:
+                pass
+
+    base = month_dir / client_name
 
     cat = categoria.upper()
     if cat == "COMPRAS":
@@ -330,6 +348,8 @@ def classify_record(
     nombre_cuenta: str,
     proveedor: str,
     user: str = "local",
+    *,
+    client_name_override: str | None = None,
 ) -> Path | None:
     """
     Clasifica una factura moviéndola a la carpeta contable correspondiente.
@@ -346,7 +366,7 @@ def classify_record(
     if record.pdf_path is None:
         db.upsert(
             clave_numerica=record.clave,
-            estado="pendiente_pdf",
+            estado="clasificado",
             categoria=categoria,
             subtipo=subtipo,
             nombre_cuenta=nombre_cuenta,
@@ -366,6 +386,7 @@ def classify_record(
         subtipo,
         nombre_cuenta,
         proveedor,
+        client_name_override=client_name_override,
     )
     dest_folder.mkdir(parents=True, exist_ok=True)
 

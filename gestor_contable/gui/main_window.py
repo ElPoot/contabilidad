@@ -4,7 +4,7 @@ import calendar
 import csv
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from queue import Queue
@@ -106,6 +106,56 @@ def _short_name(name: str, max_len: int = 34) -> str:
     return base[:max_len]
 
 # Inyectar estilos oscuros en el Treeview de ttk
+def _filter_sinxml_by_clave_date(
+    records: list,
+    from_str: str,
+    to_str: str,
+) -> list:
+    """Excluye registros sin_xml cuya fecha de clave esta fuera del rango cargado.
+
+    Cuando se carga con rango de fechas, los PDFs de otros meses no encuentran su XML
+    y se marcan sin_xml aunque su XML exista (solo no fue cargado). La clave tiene la
+    fecha en las posiciones 3:9 (DDMMYY), lo que permite determinar a que mes pertenece.
+    Si la fecha de la clave cae dentro del rango, el sin_xml es genuino y se conserva.
+    """
+    def _parse(s: str):
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime((s or "").strip(), fmt).date()
+            except (ValueError, AttributeError):
+                continue
+        return None
+
+    from_dt = _parse(from_str)
+    to_dt = _parse(to_str)
+    if not from_dt and not to_dt:
+        return records
+
+    result = []
+    for r in records:
+        if r.estado != "sin_xml":
+            result.append(r)
+            continue
+        clave = r.clave or ""
+        if len(clave) < 9:
+            result.append(r)  # Clave invalida: conservar para revision manual
+            continue
+        try:
+            clave_day   = int(clave[3:5])
+            clave_month = int(clave[5:7])
+            clave_year  = 2000 + int(clave[7:9])
+            clave_date  = date(clave_year, clave_month, clave_day)
+        except (ValueError, IndexError):
+            result.append(r)  # No se pudo parsear: conservar
+            continue
+        if from_dt and clave_date < from_dt:
+            continue
+        if to_dt and clave_date > to_dt:
+            continue
+        result.append(r)
+    return result
+
+
 _TREE_STYLE_DONE = False
 
 def _apply_tree_style():
@@ -723,6 +773,12 @@ class App3Window(ctk.CTk):
         self._all_cuentas: list[str] = []  # Unfiltered account list
         self._loading_overlay: LoadingOverlay | None = None  # Overlay de carga
         self._tree_clave_map: dict[str, FacturaRecord] = {}  # Mapeo: clave -> record (para mantener orden)
+        self._loaded_months: set[tuple[int, int]] = set()   # (year, month) ya cargados en sesion
+        self._records_map: dict[str, FacturaRecord] = {}    # clave -> record (cache acumulativo)
+        self._user_set_dates: bool = False                   # True si el usuario cambio las fechas manualmente
+        self._range_load_generation: int = 0                # Generacion para cargas de rango adicionales
+        self._range_load_queue: Queue = Queue()             # Cola para resultados de carga de rango
+        self._detected_renames: list[dict] = []             # Renombrados detectados: [{mes, old_name, new_name}]
         self._active_tab: str = "todas"  # Pestaña activa de facturas del período
         self._tab_buttons: dict[str, ctk.CTkButton] = {}  # Botones de pestañas
 
@@ -776,16 +832,35 @@ class App3Window(ctk.CTk):
                 cache_file.unlink()
                 logger.info(f"Cache limpiado: {cache_file}")
 
-            # Recalcular registros (fuerza rescan de PDFs)
-            self._load_session(self.session)
+            # Recalcular registros (fuerza rescan de PDFs, preservar rango de fechas activo)
+            self._load_session(self.session, reset_dates=False)
         except Exception as e:
             self._show_error("Error al limpiar cache", str(e))
 
-    def _load_session(self, session: ClientSession):
+    def _load_session(self, session: ClientSession, reset_dates: bool = True):
         import time
         self._load_generation += 1
         generation = self._load_generation
         self._load_queue = Queue()
+
+        # Resetear cache acumulativo de la sesion anterior
+        self._loaded_months = set()
+        self._records_map = {}
+        self._detected_renames = []
+
+        # Rango de fechas: mes anterior por defecto al abrir cliente (solo si el usuario no ha cambiado el rango)
+        if reset_dates and not self._user_set_dates:
+            _today = date.today()
+            _first_current = _today.replace(day=1)
+            _last_prev = _first_current - timedelta(days=1)
+            _first_prev = _last_prev.replace(day=1)
+            self.from_var.set(_first_prev.strftime("%d/%m/%Y"))
+            self.to_var.set(_last_prev.strftime("%d/%m/%Y"))
+
+        # Capturar el rango que se va a cargar para registrarlo en _loaded_months al terminar
+        load_from = self.from_var.get()
+        load_to = self.to_var.get()
+        load_months = self._months_for_range(load_from, load_to)
 
         # Mostrar overlay de carga integrado
         if not hasattr(self, '_loading_overlay') or not self._loading_overlay:
@@ -823,13 +898,22 @@ class App3Window(ctk.CTk):
                 start_load = time.perf_counter()
                 records = indexer.load_period(
                     session.folder,
-                    from_date="",
-                    to_date="",
+                    from_date=load_from,
+                    to_date=load_to,
                     include_pdf_scan=True,
                     allow_pdf_content_fallback=True,
                 )
                 load_time = time.perf_counter() - start_load
                 logger.info(f"load_period() tardó {load_time:.2f}s para {len(records)} registros")
+                self.after(0, lambda t=load_time: self._loading_overlay.update_status(f"XMLs y PDFs ({t:.1f}s). Buscando huerfanos..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(70, 100))
+
+                # Los PDFs sin_xml cuya clave tiene fecha fuera del rango cargado son de otro mes
+                # (su XML no fue cargado porque está fuera del filtro, no porque no exista).
+                # Se filtran por la fecha embebida en la clave (posiciones 3:9 → DDMMYY).
+                # Los que tienen fecha DENTRO del rango son genuinamente sin_xml y se conservan.
+                if load_from or load_to:
+                    records = _filter_sinxml_by_clave_date(records, load_from, load_to)
 
                 # Escanear PDFs huérfanos
                 from gestor_contable.core.classification_utils import find_orphaned_pdfs, create_orphaned_record, find_renamed_client_folders
@@ -839,9 +923,14 @@ class App3Window(ctk.CTk):
                 client_name = session.folder.name  # Limitar huérfanos al cliente actual
 
                 # Detectar carpetas del cliente renombradas por el contador
+                start_orphan = time.perf_counter()
                 renames = find_renamed_client_folders(contabilidades_root, client_name, local_db_records)
 
                 orphaned_list = find_orphaned_pdfs(contabilidades_root, local_db_records, client_name)
+                orphan_time = time.perf_counter() - start_orphan
+                logger.info(f"Huerfanos tardó {orphan_time:.2f}s, encontrados: {len(orphaned_list)}")
+                self.after(0, lambda t=orphan_time: self._loading_overlay.update_status(f"Huerfanos ({t:.1f}s). Finalizando..."))
+                self.after(0, lambda: self._loading_overlay.update_progress(90, 100))
 
                 # Agregar registros dummy para PDFs huérfanos
                 for orphaned_info in orphaned_list:
@@ -849,16 +938,12 @@ class App3Window(ctk.CTk):
                     records.append(orphaned_record)
 
                 if orphaned_list:
-                    logger.info(f"Agregados {len(orphaned_list)} registros huérfanos")
-
-                # Casi listo
-                self.after(0, lambda: self._loading_overlay.update_status("Finalizando..."))
-                self.after(0, lambda: self._loading_overlay.update_progress(90, 100))
+                    logger.info(f"Agregados {len(orphaned_list)} registros huerfanos")
 
                 total_time = time.perf_counter() - start_total
                 logger.info(f"Worker total: {total_time:.2f}s")
 
-                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors, indexer.failed_xml_files, renames, indexer.pdf_duplicates_rejected)))
+                self._load_queue.put(("ok", (generation, session, catalog, db, records, indexer.parse_errors, indexer.failed_xml_files, renames, indexer.pdf_duplicates_rejected, load_months)))
             except Exception as exc:
                 logger.exception("Error en worker")
                 self._load_queue.put(("error", (generation, str(exc))))
@@ -886,15 +971,18 @@ class App3Window(ctk.CTk):
             self._show_error("Error al cargar cliente", message)
             return
 
-        generation, session, catalog_mgr, db, records, parse_errors, failed_xml_files, renames, pdf_duplicates_rejected = payload
+        generation, session, catalog_mgr, db, records, parse_errors, failed_xml_files, renames, pdf_duplicates_rejected, load_months = payload
         if generation != self._load_generation:
             return
         self.session = session
         self.catalog_mgr = catalog_mgr
         self.db = db
         self.all_records = records
+        self._records_map = {r.clave: r for r in records}
+        self._loaded_months = load_months
         self._db_records = db.get_records_map()
         self._pdf_duplicates_rejected: dict = pdf_duplicates_rejected  # {path_rechazado: path_ganador}
+        self._detected_renames = renames
         self.records = self._apply_filters()
         self.selected = None
         self.selected_records = []
@@ -935,7 +1023,10 @@ class App3Window(ctk.CTk):
             )
 
         if renames:
+            self._btn_consolidar.grid()
             self.after(100, lambda r=renames: self._show_rename_warning(r))
+        else:
+            self._btn_consolidar.grid_remove()
 
     def _apply_pdf_enrichment(self, generation: int, enriched_records: list[FacturaRecord], parse_errors: list[str]):
         """Ya no se usa (PDFs cargados en _load_session). Mantenido por compatibilidad."""
@@ -1153,7 +1244,16 @@ class App3Window(ctk.CTk):
                       image=get_icon("report", 16), compound="left",
                       fg_color=TEAL, hover_color=TEAL_DIM, text_color=BG,
                       font=F_SMALL(), corner_radius=8,
-                      command=self._generar_corte).grid(row=0, column=5, sticky="e", padx=(0, 10))
+                      command=self._generar_corte).grid(row=0, column=5, sticky="e", padx=(0, 5))
+
+        self._btn_consolidar = ctk.CTkButton(
+            top, text="Consolidar", width=90, height=30,
+            fg_color=SURFACE, hover_color=BORDER, text_color=WARNING,
+            font=F_SMALL(), corner_radius=8,
+            command=self._consolidate_folders,
+        )
+        self._btn_consolidar.grid(row=0, column=6, sticky="e", padx=(0, 10))
+        self._btn_consolidar.grid_remove()  # Oculto hasta detectar renombrados
 
         self._progress_var = ctk.StringVar(value="")
         ctk.CTkLabel(top, textvariable=self._progress_var,
@@ -1166,23 +1266,23 @@ class App3Window(ctk.CTk):
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
-        # Columnas: Emisor, Fecha, Tipo, IVA 13%, Impuesto, Total (sin Estado)
-        cols = ("emisor", "fecha", "tipo", "iva_13", "impuesto", "total")
+        # Columnas: Tipo, Fecha, Consecutivo, Emisor, Impuesto, Total
+        cols = ("tipo", "fecha", "consecutivo", "emisor", "impuesto", "total")
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
                                   selectmode="extended", style="Dark.Treeview")
-        self.tree.heading("emisor",    text="Emisor")
-        self.tree.heading("fecha",     text="Fecha")
-        self.tree.heading("tipo",      text="Tipo")
-        self.tree.heading("iva_13",    text="IVA 13%")
-        self.tree.heading("impuesto",  text="Impuesto")
-        self.tree.heading("total",     text="Total")
+        self.tree.heading("tipo",         text="Tipo")
+        self.tree.heading("fecha",        text="Fecha")
+        self.tree.heading("consecutivo",  text="Consecutivo")
+        self.tree.heading("emisor",       text="Emisor")
+        self.tree.heading("impuesto",     text="Impuesto")
+        self.tree.heading("total",        text="Total")
 
-        self.tree.column("emisor",    width=140)
-        self.tree.column("fecha",     width=78,  stretch=False)
-        self.tree.column("tipo",      width=46,  stretch=False)
-        self.tree.column("iva_13",    width=80,  stretch=False, anchor="e")
-        self.tree.column("impuesto",  width=90,  stretch=False, anchor="e")
-        self.tree.column("total",     width=96,  stretch=False, anchor="e")
+        self.tree.column("tipo",         width=46,  stretch=False)
+        self.tree.column("fecha",        width=78,  stretch=False)
+        self.tree.column("consecutivo",  width=110, stretch=False)
+        self.tree.column("emisor",       width=140)
+        self.tree.column("impuesto",     width=90,  stretch=False, anchor="e")
+        self.tree.column("total",        width=96,  stretch=False, anchor="e")
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical",
                              command=self.tree.yview, style="Dark.Vertical.TScrollbar")
@@ -1463,6 +1563,16 @@ class App3Window(ctk.CTk):
             self._refresh_tree()
             self._update_progress()
 
+        # Limpiar estado de botones contextuales al cambiar de pestaña
+        self.selected = None
+        self.selected_records = []
+        self._btn_create_pdf.grid_remove()
+        self._btn_link.grid_remove()
+        self._btn_delete.grid_remove()
+        self._btn_recover.grid_remove()
+        self._btn_auto_classify.grid_remove()
+        self._btn_classify.grid_remove()
+
     def _update_tab_appearance(self, active_tab: str):
         """Actualiza colores de botones de pestañas."""
         for tab_id, btn in self._tab_buttons.items():
@@ -1580,12 +1690,12 @@ class App3Window(ctk.CTk):
             impuesto_fmt = _fmt_amount(r.impuesto_total)
             total_fmt = _fmt_amount(r.total_comprobante)
 
-            # Orden de columnas: emisor, fecha, tipo, iva_13, impuesto, total
+            # Orden de columnas: tipo, fecha, consecutivo, emisor, impuesto, total
             row_values = (
-                emisor_short,
-                r.fecha_emision,
                 tipo_short,
-                iva_13_fmt,
+                r.fecha_emision,
+                r.consecutivo,
+                emisor_short,
                 impuesto_fmt,
                 total_fmt,
             )
@@ -1981,8 +2091,143 @@ class App3Window(ctk.CTk):
             self._preview_lbl.configure(text="")
 
     def _on_filter(self):
-        if not self.all_records:
+        if not self.session:
             return
+        self._load_range_if_needed()
+
+    # ── CARGA POR RANGO ACUMULATIVO ───────────────────────────────────────────
+
+    @staticmethod
+    def _months_for_range(from_str: str, to_str: str) -> set[tuple[int, int]]:
+        """Retorna el conjunto de (year, month) que cubre el rango de fechas dado."""
+        def _parse(s: str):
+            for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(s.strip(), fmt).date()
+                except (ValueError, AttributeError):
+                    continue
+            return None
+
+        from_dt = _parse(from_str)
+        to_dt = _parse(to_str)
+        if not from_dt or not to_dt:
+            return set()
+        months: set[tuple[int, int]] = set()
+        cursor = from_dt.replace(day=1)
+        while cursor <= to_dt:
+            months.add((cursor.year, cursor.month))
+            if cursor.month == 12:
+                cursor = cursor.replace(year=cursor.year + 1, month=1)
+            else:
+                cursor = cursor.replace(month=cursor.month + 1)
+        return months
+
+    def _load_range_if_needed(self):
+        """Carga los meses faltantes del rango activo o solo re-filtra si ya estan en cache."""
+        from_str = self.from_var.get()
+        to_str = self.to_var.get()
+
+        needed = self._months_for_range(from_str, to_str)
+        if not needed:
+            # Rango invalido o vacio: solo re-filtrar lo que ya hay
+            self.records = self._apply_filters()
+            self.selected = None
+            self.selected_records = []
+            self.pdf_viewer.clear()
+            self._refresh_tree()
+            self._update_progress()
+            self._set_status("Filtro aplicado")
+            return
+
+        missing = needed - self._loaded_months
+        if not missing:
+            # Todo ya en cache — respuesta instantanea
+            self.records = self._apply_filters()
+            self.selected = None
+            self.selected_records = []
+            self.pdf_viewer.clear()
+            self._refresh_tree()
+            self._update_progress()
+            self._set_status("Filtro aplicado")
+            return
+
+        # Hay meses que no se han cargado aun — lanzar carga en worker
+        self._start_range_load(missing)
+
+    def _start_range_load(self, missing_months: set[tuple[int, int]]):
+        """Carga en background los meses faltantes y los fusiona en el cache."""
+        self._range_load_generation += 1
+        generation = self._range_load_generation
+        self._range_load_queue = Queue()
+
+        if not hasattr(self, '_loading_overlay') or not self._loading_overlay:
+            self._loading_overlay = LoadingOverlay(self)
+            self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        else:
+            self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        self._loading_overlay.update_status("Cargando periodo adicional...")
+        self.update_idletasks()
+        self.update()
+
+        session = self.session
+        sorted_months = sorted(missing_months)
+
+        def worker():
+            try:
+                all_new: list[FacturaRecord] = []
+                n = len(sorted_months)
+                for i, (year, month) in enumerate(sorted_months):
+                    first_day = date(year, month, 1)
+                    last_day = date(year, month, calendar.monthrange(year, month)[1])
+                    from_s = first_day.strftime("%d/%m/%Y")
+                    to_s = last_day.strftime("%d/%m/%Y")
+                    self.after(0, lambda i=i, n=n: self._loading_overlay.update_status(
+                        f"Cargando mes {i + 1}/{n}..."))
+                    self.after(0, lambda i=i, n=n: self._loading_overlay.update_progress(i, n))
+                    indexer = FacturaIndexer()
+                    batch = indexer.load_period(
+                        session.folder,
+                        from_date=from_s,
+                        to_date=to_s,
+                        include_pdf_scan=True,
+                        allow_pdf_content_fallback=True,
+                    )
+                    all_new.extend(_filter_sinxml_by_clave_date(batch, from_s, to_s))
+                self._range_load_queue.put(("ok", (generation, all_new, set(sorted_months))))
+            except Exception as exc:
+                logger.exception("Error en range worker")
+                self._range_load_queue.put(("error", (generation, str(exc))))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(150, self._poll_range_load)
+
+    def _poll_range_load(self):
+        """Polling de la cola de carga de rango adicional."""
+        if self._range_load_queue.empty():
+            self.after(150, self._poll_range_load)
+            return
+
+        status, payload = self._range_load_queue.get()
+
+        if hasattr(self, '_loading_overlay') and self._loading_overlay:
+            self._loading_overlay.grid_remove()
+
+        if status == "error":
+            generation, message = payload
+            if generation != self._range_load_generation:
+                return
+            self._show_error("Error al cargar periodo", message)
+            return
+
+        generation, new_records, loaded_months = payload
+        if generation != self._range_load_generation:
+            return
+
+        for r in new_records:
+            self._records_map[r.clave] = r
+        self._loaded_months |= loaded_months
+        self.all_records = list(self._records_map.values())
+
         self.records = self._apply_filters()
         self.selected = None
         self.selected_records = []
@@ -2001,6 +2246,7 @@ class App3Window(ctk.CTk):
                 self.from_var.set(value)
             else:
                 self.to_var.set(value)
+            self._user_set_dates = True
             self._close_date_picker()
 
         self.update_idletasks()
@@ -2773,6 +3019,28 @@ class App3Window(ctk.CTk):
             command=on_actualizar,
         ).pack(side="left")
 
+    def _effective_client_name(self, mes_str: str) -> str | None:
+        """Retorna el nombre renombrado de la carpeta del cliente para el mes dado.
+
+        Si el contador renombró la carpeta (ej: agregó ' (L)'), devuelve el nombre nuevo
+        para que classify_record use la carpeta correcta en Contabilidades.
+        """
+        for r in self._detected_renames:
+            if r.get("mes") == mes_str:
+                return r.get("new_name")
+        return None
+
+    @staticmethod
+    def _get_mes_str(fecha: str) -> str:
+        """Convierte 'DD/MM/YYYY' al string de mes usado en Contabilidades (ej: '03-MARZO')."""
+        from gestor_contable.core.classifier import _MESES
+        try:
+            from datetime import datetime as _dt
+            d = _dt.strptime(fecha.strip(), "%d/%m/%Y")
+            return f"{d.month:02d}-{_MESES[d.month]}"
+        except Exception:
+            return ""
+
     def _apply_rename_fixes(self, renames: list[dict]):
         """Actualiza en BD todas las rutas rotas usando heal_classified_path."""
         if not self.session or not self.db:
@@ -2802,11 +3070,73 @@ class App3Window(ctk.CTk):
         if not self.session or not self.db:
             return   # sesión cambió mientras corría el worker
         self._db_records = self.db.get_records_map()
+        self._refresh_tree()
+        self._update_progress()
         self._show_info(
             "Rutas actualizadas",
             f"Se actualizaron {updated} registro(s) con las nuevas rutas de carpetas.\n"
             f"Los cambios quedaron guardados en la base de datos."
         )
+
+    # ── CONSOLIDACIÓN DE CARPETAS DUPLICADAS ──────────────────────────────────
+    def _consolidate_folders(self):
+        """Mueve PDFs de carpetas con nombre incorrecto a las carpetas renombradas por el contador."""
+        if not self.session or not self.db:
+            return
+        if not self._detected_renames:
+            self._show_info("Consolidar", "No hay carpetas renombradas detectadas.")
+            return
+
+        contabilidades_root = self.session.folder.parent.parent / "Contabilidades"
+
+        # Construir resumen de qué se va a hacer
+        lines = []
+        for r in self._detected_renames:
+            lines.append(f"  {r['mes']}: '{r['old_name']}' -> '{r['new_name']}' ({r['affected']} archivo(s))")
+        detalle = "\n".join(lines)
+
+        if not self._ask(
+            "Consolidar carpetas duplicadas",
+            f"Se moverán los PDFs de las carpetas con nombre anterior a las carpetas renombradas "
+            f"y se actualizará la base de datos.\n\n{detalle}\n\n¿Deseas continuar?"
+        ):
+            return
+
+        renames_snapshot = list(self._detected_renames)
+        db = self.db
+
+        def worker():
+            from gestor_contable.core.classification_utils import consolidate_duplicate_client_folders
+            total_moved = 0
+            all_errors: list[str] = []
+            for r in renames_snapshot:
+                moved, errors = consolidate_duplicate_client_folders(
+                    contabilidades_root,
+                    original_name=r["old_name"],
+                    renamed_name=r["new_name"],
+                    db=db,
+                    month=r["mes"],
+                )
+                total_moved += moved
+                all_errors.extend(errors)
+
+            def on_done():
+                if all_errors:
+                    self._show_warning(
+                        "Consolidación completada con errores",
+                        f"Se movieron {total_moved} archivo(s).\n\nErrores:\n" + "\n".join(all_errors[:10]),
+                    )
+                else:
+                    self._show_info(
+                        "Consolidación completada",
+                        f"Se movieron {total_moved} archivo(s) a las carpetas correctas.\n"
+                        f"La base de datos fue actualizada.",
+                    )
+                self._load_session(self.session, reset_dates=False)
+
+            self.after(0, on_done)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ── SANITIZACIÓN DE CARPETAS VACÍAS ────────────────────────────────────────
     def _sanitize_folders(self):
@@ -3110,21 +3440,38 @@ class App3Window(ctk.CTk):
                 return
 
             # Ejecutar vinculación
+            omitido_record = self.selected
+
             def worker():
                 try:
-                    # Actualizar el PDF omitido para que tenga la misma clave que el XML
-                    self.selected.clave = selected_xml.clave
-                    self.selected.estado = "pendiente"
-                    self.selected.razon_omisión = None
+                    import shutil
+                    src_pdf = omitido_record.pdf_path
+                    if not src_pdf or not src_pdf.exists():
+                        raise FileNotFoundError(f"PDF omitido no encontrado: {src_pdf}")
 
-                    # Actualizar DB
-                    if self.db:
-                        self.db.upsert(
-                            clave_numerica=selected_xml.clave,
-                            estado="pendiente",
-                            ruta_origen=str(selected_xml.xml_path or ""),
-                            ruta_destino="",
-                        )
+                    # Destino: carpeta PDF del cliente, con nombre = clave del XML
+                    # xml_path está en CLIENT/XML/archivo.xml → PDF en CLIENT/PDF/
+                    dest_dir = selected_xml.xml_path.parent.parent / "PDF"
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    dest_pdf = dest_dir / f"{selected_xml.clave}.pdf"
+
+                    # Copiar de forma segura (SHA256)
+                    import hashlib
+
+                    def sha256(path):
+                        h = hashlib.sha256()
+                        with open(path, "rb") as f:
+                            for chunk in iter(lambda: f.read(65536), b""):
+                                h.update(chunk)
+                        return h.hexdigest()
+
+                    shutil.copy2(src_pdf, dest_pdf)
+                    if sha256(src_pdf) != sha256(dest_pdf):
+                        dest_pdf.unlink(missing_ok=True)
+                        raise IOError("Verificación SHA256 fallida — PDF no movido")
+
+                    # Eliminar original omitido
+                    src_pdf.unlink()
 
                     self.after(0, lambda: self._show_info(
                         "Vinculacion completada",
@@ -3134,6 +3481,8 @@ class App3Window(ctk.CTk):
                 except Exception as e:
                     self.after(0, lambda error=e: self._show_error("Error en vinculación", str(error)))
 
+            # Liberar el lock del visor antes de iniciar el worker
+            self.pdf_viewer.release_file_handles("Vinculando PDF...")
             threading.Thread(target=worker, daemon=True).start()
 
         ctk.CTkButton(
@@ -3174,6 +3523,7 @@ class App3Window(ctk.CTk):
             r.pdf_path = output_path
             r.estado = "pendiente"
             self._refresh_tree()
+            self._update_progress()
             self.pdf_viewer.load(output_path)
             self._on_select_single(r)  # Re-trigger para actualizar botones
 
@@ -3240,7 +3590,9 @@ class App3Window(ctk.CTk):
             if deleted > 0:
                 self.selected = None
                 self.selected_records = []
+                self.records = self._apply_filters()
                 self.after(0, self._refresh_tree)
+                self.after(0, self._update_progress)
                 self.after(0, self.pdf_viewer._close_doc)
 
                 if deleted == 1:
@@ -3313,10 +3665,12 @@ class App3Window(ctk.CTk):
             record  = self.selected
             session = self.session
             db      = self.db
+            _client_override = self._effective_client_name(self._get_mes_str(record.fecha_emision))
 
             def worker():
                 try:
-                    classify_record(record, session.folder, db, cat, subtipo, cuenta, prov)
+                    classify_record(record, session.folder, db, cat, subtipo, cuenta, prov,
+                                    client_name_override=_client_override)
                     self.after(0, self._on_classify_ok)
                 except Exception as exc:
                     self.after(0, lambda e=exc: self._on_classify_error(str(e)))
@@ -3348,11 +3702,16 @@ class App3Window(ctk.CTk):
             def worker():
                 errores = []
                 for i, record in enumerate(record_list):
-                    self.after(0, lambda i=i: self._btn_classify.configure(
-                        text=f"Clasificando {i+1}/{n}..."
-                    ))
+                    if i % 100 == 0:
+                        self.after(0, lambda i=i: self._btn_classify.configure(
+                            text=f"Clasificando {i+1}/{n}..."
+                        ))
                     try:
-                        classify_record(record, session.folder, db, cat, subtipo, cuenta, prov)
+                        _override = self._effective_client_name(
+                            self._get_mes_str(record.fecha_emision)
+                        )
+                        classify_record(record, session.folder, db, cat, subtipo, cuenta, prov,
+                                        client_name_override=_override)
                     except Exception as exc:
                         errores.append((record, str(exc)))
 
@@ -3390,11 +3749,9 @@ class App3Window(ctk.CTk):
         """Maneja finalización de clasificación en lote."""
         exitosos = total - len(errores)
 
-        # Actualizar BD local en memoria con los nuevos estados
-        for r in self.selected_records:
-            db_rec = self.db.get_record(r.clave) if self.db else None
-            if db_rec:
-                self._db_records[r.clave] = db_rec
+        # Actualizar BD local en memoria con los nuevos estados (una sola query)
+        if self.db:
+            self._db_records.update(self.db.get_records_map())
 
         # Refrescar árbol para actualizar estado visual de las filas
         self._refresh_tree()
@@ -3470,12 +3827,17 @@ class App3Window(ctk.CTk):
         def worker():
             errores = []
             for i, record in enumerate(records_list):
-                self.after(0, lambda i=i: self._btn_auto_classify.configure(
-                    text=f"Clasificando {i+1}/{n}..."
-                ))
+                if i % 100 == 0:
+                    self.after(0, lambda i=i: self._btn_auto_classify.configure(
+                        text=f"Clasificando {i+1}/{n}..."
+                    ))
                 try:
                     # Para INGRESOS y SIN_RECEPTOR, no se necesitan subtipo, cuenta, proveedor
-                    classify_record(record, session.folder, db, categoria, "", "", "")
+                    _override = self._effective_client_name(
+                        self._get_mes_str(record.fecha_emision)
+                    )
+                    classify_record(record, session.folder, db, categoria, "", "", "",
+                                    client_name_override=_override)
                 except Exception as exc:
                     errores.append((record, str(exc)))
 

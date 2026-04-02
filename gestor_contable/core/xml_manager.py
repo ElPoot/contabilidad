@@ -640,7 +640,12 @@ class CRXMLManager:
             stack.pop()
             elem.clear()
         return output, root_name
-    def load_xml_folder(self, folder_path: str | Path, ignored_filenames: set[str] | None = None) -> tuple[pd.DataFrame, dict[str, Any]]:
+    def load_xml_folder(
+        self,
+        folder_path: str | Path,
+        ignored_filenames: set[str] | None = None,
+        xml_cache=None,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
         """Carga XML de forma segura y retorna DataFrame junto a reporte de auditoría."""
         started_at = time.perf_counter()
         folder = Path(folder_path)
@@ -661,11 +666,36 @@ class CRXMLManager:
             self._persist_audit_report(report)
             return pd.DataFrame(), report
 
+        # ── CACHÉ DE XMLs ──
+        to_parse: list[Path] = []
+        new_to_cache: list[tuple[Path, dict]] = []
+        if xml_cache is not None:
+            for xml_file in xml_files:
+                cached = xml_cache.get(xml_file)
+                if cached is not None:
+                    rows.append(cached)
+                else:
+                    to_parse.append(xml_file)
+            LOGGER.info("XML cache: %d hits, %d a parsear de %d total", len(rows), len(to_parse), len(xml_files))
+        else:
+            to_parse = xml_files
+
         max_workers = max(2, min(8, (os.cpu_count() or 2)))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self._safe_parse_xml_file, xml_file) for xml_file in xml_files]
-            for future in as_completed(futures):
-                rows.append(future.result())
+        if to_parse:
+            future_to_file: dict = {}
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for xml_file in to_parse:
+                    future_to_file[executor.submit(self._safe_parse_xml_file, xml_file)] = xml_file
+                for future in as_completed(future_to_file):
+                    xml_file = future_to_file[future]
+                    row = future.result()
+                    rows.append(row)
+                    if xml_cache is not None and row.get("_process_status") == "ok":
+                        new_to_cache.append((xml_file, row))
+
+        if xml_cache is not None and new_to_cache:
+            xml_cache.put_batch(new_to_cache)
+            LOGGER.info("XML cache: %d nuevas entradas guardadas", len(new_to_cache))
 
         df = pd.DataFrame(rows)
         associated = self.associate_hacienda_messages(df)
@@ -691,11 +721,13 @@ class CRXMLManager:
             row["_process_status"] = "ok"
             return row
         except ET.ParseError as exc:
-            # Algunos emisores (ej. FAPEMO, otros) generan XMLs con encoding="UTF-8" declarado
-            # pero bytes Latin-1 en textos con tildes/ñ. Intentamos re-encoding para recuperar.
+            # Algunos emisores generan XMLs con encoding="UTF-8" declarado pero bytes Latin-1.
+            # Solución: decodificar como Latin-1, re-codificar a UTF-8, luego parsear.
             try:
                 raw = xml_file.read_bytes()
-                fixed = raw.replace(b'encoding="UTF-8"', b'encoding="ISO-8859-1"', 1)
+                text_latin1 = raw.decode("iso-8859-1")
+                fixed = text_latin1.encode("utf-8")
+                # La declaración ya dice UTF-8, y ahora los bytes también son UTF-8.
                 root = ET.fromstring(fixed)
                 flat: dict[str, str] = {}
                 stack: list[str] = []

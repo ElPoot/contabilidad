@@ -253,6 +253,10 @@ class FacturaIndexer:
         cache_file = metadata_dir / "pdf_cache.json"
         self.pdf_cache = PDFCacheManager(cache_file, pdf_root=pdf_root)
 
+        # ── CACHÉ DE XMLs ──
+        from gestor_contable.core.xml_cache import XMLCacheManager
+        xml_cache = XMLCacheManager(metadata_dir / "xml_cache.db", xml_root=xml_root)
+
         # ── PASO 1: XML ──
         # Cargar lista de XMLs ignorados por el usuario
         import json as _json
@@ -267,7 +271,7 @@ class FacturaIndexer:
         start_xml = time.perf_counter()
         if xml_root.exists():
             try:
-                df, audit = self.xml_manager.load_xml_folder(xml_root, ignored_filenames=_ignored_filenames)
+                df, audit = self.xml_manager.load_xml_folder(xml_root, ignored_filenames=_ignored_filenames, xml_cache=xml_cache)
                 self.audit_report = audit
 
                 # Capturar duplicados XML
@@ -559,6 +563,7 @@ class FacturaIndexer:
         total_time = time.perf_counter() - start_total
         logger.info(f"load_period() TOTAL: {total_time:.2f}s")
 
+        xml_cache.close()
         return sorted(records.values(), key=lambda r: (r.fecha_emision, r.clave))
 
     def link_pdfs_for_records(
@@ -621,7 +626,7 @@ class FacturaIndexer:
         if not pdf_root.exists():
             return {"linked": {}, "omitidos": {}, "audit": base_audit}
 
-        all_pdf_files = [p for p in pdf_root.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"]
+        all_pdf_files = list(pdf_root.rglob("*.pdf"))
         total_files = len(all_pdf_files)
         if not all_pdf_files:
             return {"linked": {}, "omitidos": {}, "audit": base_audit}

@@ -43,7 +43,7 @@ def classify_transaction(record: FacturaRecord, client_cedula: str) -> str:
     # Egreso sin receptor identificado (otros gastos, sin receptor cedula)
     receptor_ced_str = str(getattr(record, "receptor_cedula", "") or "").strip().lower()
     receptor_empty = receptor_ced_str in {"", "null", "none", "nan"}
-    if not emisor_ced == client_ced and receptor_empty:
+    if receptor_empty:
         return "sin_receptor"
 
     # Terceros
@@ -238,11 +238,19 @@ def find_orphaned_pdfs(
         if v.get("ruta_destino")
     }
 
-    # Escanear todos los PDFs en Contabilidades
-    for pdf_path in contabilidades_root.rglob("*.pdf"):
-        # Filtrar por cliente si se proporciona
-        if client_name and client_name not in pdf_path.parts:
-            continue
+    # Escanear PDFs limitando el scope al cliente actual (evita recorrer toda la red)
+    def _client_pdfs():
+        if client_name:
+            for mes_dir in contabilidades_root.iterdir():
+                if not mes_dir.is_dir():
+                    continue
+                client_dir = mes_dir / client_name
+                if client_dir.exists():
+                    yield from client_dir.rglob("*.pdf")
+        else:
+            yield from contabilidades_root.rglob("*.pdf")
+
+    for pdf_path in _client_pdfs():
 
         nombre = pdf_path.name
         # Extraer clave del nombre (si es un archivo nombrado por clave)
@@ -647,23 +655,61 @@ def find_renamed_client_folders(
     if not sample_by_month:
         return []
 
-    # Filtrar solo meses donde la carpeta del cliente YA NO existe
+    renames = []
+    # Filtrar solo meses donde la carpeta del cliente YA NO existe O hay duplicado
     broken_by_month: dict[str, list[Path]] = {}
     for mes, samples in sample_by_month.items():
         month_dir = contabilidades_root / mes
         if not month_dir.exists():
             continue
         if (month_dir / session_client_name).exists():
-            continue   # carpeta del cliente intacta, sin renombrado
+            # La carpeta original existe: verificar si TAMBIÉN hay una con sufijo
+            # (caso donde el app creó una carpeta nueva por error tras el renombrado)
+            try:
+                renamed_sibling = next(
+                    (d for d in month_dir.iterdir()
+                     if d.is_dir() and d.name != session_client_name
+                     and d.name.startswith(session_client_name)),
+                    None,
+                )
+            except OSError:
+                renamed_sibling = None
+            if renamed_sibling is None:
+                continue  # carpeta intacta, sin renombrado ni duplicado
+            # Ambas carpetas existen — verificar si hay trabajo real que hacer
+            wrong_dir = month_dir / session_client_name
+            old_prefix = f"Contabilidades/{mes}/{session_client_name}/"
+            old_count = sum(
+                1 for rec in db_records.values()
+                if old_prefix in rec.get("ruta_destino", "").replace("\\", "/")
+            )
+            if old_count == 0:
+                # BD ya actualizada — limpiar carpeta vieja vacía silenciosamente
+                try:
+                    for d in sorted(wrong_dir.rglob("*"), reverse=True):
+                        if d.is_dir():
+                            try:
+                                d.rmdir()
+                            except OSError:
+                                pass
+                    wrong_dir.rmdir()
+                except OSError:
+                    pass
+                continue  # Nada que consolidar
+            renames.append({
+                "mes": mes,
+                "old_name": session_client_name,
+                "new_name": renamed_sibling.name,
+                "affected": old_count,
+            })
+            continue
         # Si las rutas en BD ya existen (fueron corregidas previamente), no reportar
         if any(full_path.exists() for full_path, _ in samples[:3]):
             continue   # rutas ya válidas — BD fue sanada en sesión anterior
         broken_by_month[mes] = [rel for _, rel in samples]
 
-    if not broken_by_month:
-        return []
-
-    renames = []
+    if not broken_by_month and not renames:
+        return renames
     for mes, relatives in broken_by_month.items():
         month_dir = contabilidades_root / mes
         if not month_dir.exists():
@@ -712,5 +758,100 @@ def find_renamed_client_folders(
                         "affected": count_by_month.get(mes, len(relatives)),
                     })
                     break
+
+    return renames
+
+
+def consolidate_duplicate_client_folders(
+    contabilidades_root: Path,
+    original_name: str,
+    renamed_name: str,
+    db,
+    month: str | None = None,
+) -> tuple[int, list[str]]:
+    """Mueve PDFs de la carpeta original (nombre incorrecto) a la carpeta renombrada.
+
+    Cuando el contador renombró una carpeta del cliente (ej: agregó " (L)") y el app
+    ya clasificó algunos archivos en la carpeta con el nombre original, esta función
+    los consolida en la carpeta correcta (renombrada), actualiza la BD y elimina la
+    carpeta vacía original.
+
+    Args:
+        contabilidades_root: Ruta a la raíz de Contabilidades.
+        original_name: Nombre ORIGINAL de la carpeta (el incorrecto, sin sufijo).
+        renamed_name: Nombre ACTUAL de la carpeta (el correcto, con sufijo del contador).
+        db: Instancia de ClassificationDB (para actualizar ruta_destino).
+        month: Si se especifica (ej: "03-MARZO"), limitar a ese mes. None = todos.
+
+    Returns:
+        (moved_count, errors): cantidad de PDFs movidos y lista de mensajes de error.
+    """
+    import hashlib
+    import shutil
+
+    def _sha256(path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    moved = 0
+    errors: list[str] = []
+
+    try:
+        month_dirs = (
+            [contabilidades_root / month]
+            if month
+            else [d for d in contabilidades_root.iterdir() if d.is_dir()]
+        )
+    except OSError as exc:
+        return 0, [f"No se pudo listar Contabilidades: {exc}"]
+
+    for month_dir in month_dirs:
+        wrong_dir = month_dir / original_name
+        right_dir = month_dir / renamed_name
+        if not wrong_dir.exists():
+            continue
+
+        for src in list(wrong_dir.rglob("*.pdf")):
+            rel = src.relative_to(wrong_dir)
+            dest = right_dir / rel
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                if _sha256(src) != _sha256(dest):
+                    dest.unlink(missing_ok=True)
+                    errors.append(f"SHA256 mismatch: {src.name} — no movido")
+                    continue
+                src.unlink()
+                moved += 1
+                # Actualizar ruta en BD si db tiene el método
+                if db is not None:
+                    try:
+                        records = db.get_records_map()
+                        src_str = str(src)
+                        for clave, rec in records.items():
+                            if rec.get("ruta_destino") == src_str:
+                                db.update_ruta_destino(clave, str(dest))
+                                break
+                    except Exception:
+                        pass  # BD update no es crítico; el archivo ya fue movido
+            except Exception as exc:
+                errors.append(f"Error moviendo {src.name}: {exc}")
+
+        # Limpiar directorios vacíos bajo wrong_dir
+        for d in sorted(wrong_dir.rglob("*"), reverse=True):
+            if d.is_dir():
+                try:
+                    d.rmdir()
+                except OSError:
+                    pass
+        try:
+            wrong_dir.rmdir()
+        except OSError:
+            pass
+
+    return moved, errors
 
     return renames
