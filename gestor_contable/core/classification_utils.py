@@ -12,6 +12,25 @@ from gestor_contable.core.classifier import heal_classified_path
 logger = logging.getLogger(__name__)
 
 
+def _is_tiquete_electronico(record: FacturaRecord) -> bool:
+    """Detecta Tiquete Electrónico por tipo_documento o por clave Hacienda.
+
+    Fallback por clave:
+    - La clave Hacienda (50 dígitos) contiene el consecutivo en [21:41]
+    - Dentro del consecutivo, el tipo de documento ocupa [8:10]
+    - Código "04" = Tiquete Electrónico
+    """
+    tipo_documento = str(getattr(record, "tipo_documento", "") or "").strip().lower()
+    if tipo_documento == "tiquete electrónico" or tipo_documento == "tiquete electronico":
+        return True
+
+    clave = str(getattr(record, "clave", "") or "").strip()
+    if len(clave) == 50 and clave.isdigit():
+        return clave[29:31] == "04"
+
+    return False
+
+
 def classify_transaction(record: FacturaRecord, client_cedula: str) -> str:
     """Clasifica factura según perspectiva del cliente.
 
@@ -38,6 +57,11 @@ def classify_transaction(record: FacturaRecord, client_cedula: str) -> str:
 
     # Yo soy receptor -> Egreso (compra)
     if receptor_ced == client_ced:
+        return "egreso"
+
+    # Tiquete Electrónico: por regla de negocio se trata como egreso aunque
+    # no traiga receptor_cedula en el XML.
+    if _is_tiquete_electronico(record):
         return "egreso"
 
     # Egreso sin receptor identificado (otros gastos, sin receptor cedula)

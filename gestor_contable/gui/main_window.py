@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar
 import csv
+import os
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -781,6 +782,8 @@ class App3Window(ctk.CTk):
         self._detected_renames: list[dict] = []             # Renombrados detectados: [{mes, old_name, new_name}]
         self._active_tab: str = "todas"  # Pestaña activa de facturas del período
         self._tab_buttons: dict[str, ctk.CTkButton] = {}  # Botones de pestañas
+        self._catalog_categories: list[str] = []          # Categorías manuales del catálogo (egresos)
+        self._prev_dest_path: Path | None = None          # Ruta clasificada mostrada en panel ANTERIOR
 
         _apply_tree_style()
 
@@ -993,10 +996,12 @@ class App3Window(ctk.CTk):
 
         # Actualizar catálogo
         cats = catalog_mgr.categorias()
+        self._catalog_categories = list(cats)
         self._cat_cb.configure(values=cats)
         if cats:
             self._cat_var.set(cats[0])
             self._on_categoria_change()
+        self._sync_category_for_record(None)
 
         self.pdf_viewer.clear()
 
@@ -1572,6 +1577,7 @@ class App3Window(ctk.CTk):
         self._btn_recover.grid_remove()
         self._btn_auto_classify.grid_remove()
         self._btn_classify.grid_remove()
+        self._sync_category_for_record(None)
 
     def _update_tab_appearance(self, active_tab: str):
         """Actualiza colores de botones de pestañas."""
@@ -1765,6 +1771,7 @@ class App3Window(ctk.CTk):
     def _on_select_single(self, r: FacturaRecord):
         """Maneja selección de una sola factura (flujo original)."""
         self.selected = r
+        self._sync_category_for_record(r)
 
         # Estado Hacienda -- pill superior
         if r.estado_hacienda:
@@ -1885,19 +1892,19 @@ class App3Window(ctk.CTk):
                 ruta_dest = prev.get("ruta_destino", "")
                 if ruta_dest:
                     ruta_dest_path = Path(ruta_dest)
+                    if not ruta_dest_path.is_absolute() and self.session:
+                        ruta_dest_path = self.session.folder.parent.parent / ruta_dest_path
                     if not ruta_dest_path.exists() and self.session:
                         cont_root = self.session.folder.parent.parent / "Contabilidades"
                         sanada = heal_classified_path(ruta_dest_path, cont_root, self.db, prev.get("clave_numerica"))
                         if sanada:
-                            ruta_dest = str(sanada)
-                    parts = Path(ruta_dest).parts
-                    snippet = (".../" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else f"{ruta_dest}/"
-                    self._prev_path_lbl.config(text=snippet)
+                            ruta_dest_path = sanada
+                    self._set_prev_dest_path(ruta_dest_path)
                 else:
-                    self._prev_path_lbl.config(text="")
+                    self._set_prev_dest_path(None)
             else:
                 self._prev_var.set("--")
-                self._prev_path_lbl.config(text="")
+                self._set_prev_dest_path(None)
 
     def _on_multi_select(self, records: list[FacturaRecord]):
         """Maneja selección de múltiples facturas (modo lote)."""
@@ -1919,6 +1926,8 @@ class App3Window(ctk.CTk):
             self._hacienda_lbl.configure(text="", fg_color="transparent")
             # Ocultar panel de clasificación anterior
             self._prev_frame.grid_remove()
+            self._set_prev_dest_path(None)
+            self._sync_category_for_record(None)
             return
 
         # Mismo emisor -> mostrar modo lote
@@ -1951,6 +1960,87 @@ class App3Window(ctk.CTk):
 
         # Ocultar panel de clasificación anterior
         self._prev_frame.grid_remove()
+        self._set_prev_dest_path(None)
+        self._sync_category_for_record(records[0] if records else None)
+
+    @staticmethod
+    def _format_prev_dest_path(path: Path) -> str:
+        """Formatea la ruta clasificada de forma legible para el panel ANTERIOR."""
+        try:
+            parts = list(path.parts)
+            cont_idx = next(i for i, part in enumerate(parts) if part == "Contabilidades")
+            rel_parts = parts[cont_idx + 1:]
+        except StopIteration:
+            rel_parts = list(path.parts[-5:])
+
+        if not rel_parts:
+            return str(path)
+
+        file_name = rel_parts[-1]
+        folders = rel_parts[:-1]
+        lines: list[str] = []
+
+        if len(folders) <= 3:
+            if folders:
+                lines.append(" / ".join(folders))
+        else:
+            lines.append(" / ".join(folders[:3]))
+            lines.append(" / ".join(folders[3:]))
+
+        lines.append(file_name)
+        return "\n".join(line for line in lines if line)
+
+    def _set_prev_dest_path(self, path: Path | None):
+        """Actualiza la ruta mostrada en ANTERIOR y conserva la ruta real para el click."""
+        self._prev_dest_path = path
+        if path is None:
+            self._prev_path_lbl.config(text="", cursor="arrow")
+            return
+        self._prev_path_lbl.config(
+            text=self._format_prev_dest_path(path),
+            cursor="hand2",
+        )
+
+    def _forced_form_values_for_record(self, record: FacturaRecord | None) -> dict[str, str] | None:
+        """Retorna valores forzados del formulario según el tipo real de transacción."""
+        if not record or not self.session:
+            return None
+        tx_kind = classify_transaction(record, self._get_client_cedula())
+        if tx_kind == "ingreso":
+            return {"categoria": "INGRESOS", "subtipo": ""}
+        if tx_kind == "sin_receptor":
+            return {"categoria": "SIN_RECEPTOR", "subtipo": ""}
+        if tx_kind == "ors":
+            return {"categoria": "OGND", "subtipo": "ORS"}
+        return None
+
+    def _sync_category_for_record(self, record: FacturaRecord | None):
+        """Sincroniza el combo de categoría con el contexto real del documento seleccionado."""
+        forced = self._forced_form_values_for_record(record)
+        if forced:
+            forced_cat = forced["categoria"]
+            forced_subtipo = forced.get("subtipo", "")
+            self._cat_cb.configure(values=[forced_cat], state="disabled")
+            self._cat_var.set(forced_cat)
+            self._on_categoria_change()
+            if forced_subtipo:
+                self._tipo_cb.configure(values=[forced_subtipo], state="disabled")
+                self._tipo_var.set(forced_subtipo)
+                self._update_path_preview()
+            else:
+                self._tipo_cb.configure(state="readonly")
+            return
+
+        manual_cats = list(self._catalog_categories)
+        self._cat_cb.configure(values=manual_cats, state="readonly")
+        if manual_cats:
+            current = self._cat_var.get().strip().upper()
+            if current not in manual_cats:
+                self._cat_var.set(manual_cats[0])
+        else:
+            self._cat_var.set("")
+        self._tipo_cb.configure(state="readonly")
+        self._on_categoria_change()
 
     # ── CATÁLOGO ──────────────────────────────────────────────────────────────
     def _on_categoria_change(self, _value=None):
@@ -3694,8 +3784,9 @@ class App3Window(ctk.CTk):
             )
             return
 
-        cat    = self._cat_var.get().strip().upper()
-        subtipo = self._tipo_var.get().strip().upper() if cat in ("GASTOS", "OGND") else ""
+        forced = self._forced_form_values_for_record(self.selected_records[0] if self.selected_records else self.selected)
+        cat    = forced["categoria"] if forced else self._cat_var.get().strip().upper()
+        subtipo = (forced.get("subtipo", "") if forced else self._tipo_var.get().strip().upper()) if cat in ("GASTOS", "OGND") else ""
         cuenta  = self._cuenta_var.get().strip().upper() if cat == "GASTOS" else ""
         prov    = self._prov_var.get().strip().upper() if cat in ("COMPRAS", "GASTOS", "ACTIVO") else ""
 
@@ -4512,22 +4603,26 @@ class App3Window(ctk.CTk):
 
     def _open_dest_folder(self, event=None):
         """Abre en el Explorador de Windows la carpeta donde está el PDF clasificado."""
-        if not self.selected or not self.db:
-            return
-        db_rec = self._db_records.get(self.selected.clave)
-        if not db_rec or not db_rec.get("ruta_destino"):
-            return
+        ruta = self._prev_dest_path
+        if ruta is None and self.selected and self.db:
+            db_rec = self._db_records.get(self.selected.clave)
+            if db_rec and db_rec.get("ruta_destino"):
+                ruta = Path(db_rec["ruta_destino"])
         try:
-            ruta = Path(db_rec["ruta_destino"])
+            if ruta is None:
+                return
+            ruta = Path(ruta)
+            if not ruta.is_absolute() and self.session:
+                ruta = self.session.folder.parent.parent / ruta
             if not ruta.exists() and self.session:
                 cont_root = self.session.folder.parent.parent / "Contabilidades"
-                ruta = heal_classified_path(ruta, cont_root, self.db, self.selected.clave) or ruta
-            import subprocess
-            if ruta.exists():
-                # Seleccionar el archivo en la carpeta
-                subprocess.Popen(["explorer", f"/select,{ruta}"])
-            elif ruta.parent.exists():
-                # El archivo no existe pero la carpeta sí — abrir la carpeta
-                subprocess.Popen(["explorer", str(ruta.parent)])
+                ruta = heal_classified_path(ruta, cont_root, self.db, self.selected.clave if self.selected else None) or ruta
+
+            folder = ruta if ruta.is_dir() else ruta.parent
+            if folder.exists():
+                os.startfile(str(folder))
+            else:
+                self._show_warning("Ruta no disponible", f"No se encontró la carpeta destino:\n{ruta}")
         except Exception as e:
             logger.warning(f"No se pudo abrir carpeta destino: {e}")
+            self._show_warning("No se pudo abrir la ruta", f"No se pudo abrir la carpeta destino.\n\n{e}")
