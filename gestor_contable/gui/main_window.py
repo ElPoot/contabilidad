@@ -3630,47 +3630,49 @@ class App3Window(ctk.CTk):
         if not self._ask("Borrar PDFs", msg, confirm_text="Sí, borrar"):
             return
 
-        # Ejecutar borrado en worker
+        # Cerrar visor en UI thread para liberar el archivo antes de lanzar el worker
+        if self.selected and any(r.clave == self.selected.clave for r in records_to_delete):
+            self.pdf_viewer._close_doc()
+
+        # Ejecutar borrado en worker — solo I/O, sin tocar estado UI
         def worker():
-            deleted = 0
+            deleted_claves = []
             errors = []
 
             for record in records_to_delete:
                 try:
                     if record.pdf_path:
-                        # Cerrar el documento PDF en el viewer para liberar el archivo
-                        if self.selected and self.selected.clave == record.clave:
-                            self.after(0, self.pdf_viewer._close_doc)
-                            time.sleep(0.1)
-
                         Path(record.pdf_path).unlink(missing_ok=True)
-                        # Eliminar del registro en memoria
-                        self.all_records = [r for r in self.all_records if r.clave != record.clave]
-                        deleted += 1
+                        deleted_claves.append(record.clave)
                 except Exception as e:
                     errors.append(f"{record.pdf_path.name if record.pdf_path else 'desconocido'}: {str(e)}")
 
-            # Actualizar UI
-            if deleted > 0:
-                self.selected = None
-                self.selected_records = []
-                self.records = self._apply_filters()
-                self.after(0, self._refresh_tree)
-                self.after(0, self._update_progress)
-                self.after(0, self.pdf_viewer._close_doc)
-
-                if deleted == 1:
-                    self.after(0, lambda: self._show_info("PDF borrado", f"Archivo eliminado exitosamente"))
-                else:
-                    self.after(0, lambda: self._show_info("PDFs borrados", f"{deleted} archivos eliminados exitosamente"))
-
-            if errors:
-                msg_error = "Errores en el borrado:\n\n" + "\n".join(errors[:5])
-                if len(errors) > 5:
-                    msg_error += f"\n... y {len(errors) - 5} errores más"
-                self.after(0, lambda: self._show_error("Error", msg_error))
+            self.after(0, lambda: self._on_delete_omitido_done(deleted_claves, errors))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_delete_omitido_done(self, deleted_claves: list, errors: list):
+        """Callback en hilo UI: aplica resultados del borrado de omitidos."""
+        deleted = len(deleted_claves)
+        if deleted > 0:
+            deleted_set = set(deleted_claves)
+            self.all_records = [r for r in self.all_records if r.clave not in deleted_set]
+            self.selected = None
+            self.selected_records = []
+            self.records = self._apply_filters()
+            self._refresh_tree()
+            self._update_progress()
+            self.pdf_viewer._close_doc()
+            if deleted == 1:
+                self._show_info("PDF borrado", "Archivo eliminado exitosamente")
+            else:
+                self._show_info("PDFs borrados", f"{deleted} archivos eliminados exitosamente")
+
+        if errors:
+            msg_error = "Errores en el borrado:\n\n" + "\n".join(errors[:5])
+            if len(errors) > 5:
+                msg_error += f"\n... y {len(errors) - 5} errores más"
+            self._show_error("Error", msg_error)
 
     def _show_info(self, title: str, message: str):
         ModalOverlay.show_info(self, title, message)
