@@ -19,6 +19,7 @@ from gestor_contable.app.controllers.load_period_controller import (
     load_session_worker,
     months_for_range,
 )
+from gestor_contable.app.state.main_window_state import MainWindowState
 from gestor_contable.app.use_cases.export_report_use_case import (
     default_export_filename,
     export_period_report,
@@ -464,6 +465,100 @@ class NewCuentaDialog(ctk.CTkToplevel):
 
 
 class App3Window(ctk.CTk):
+    # ── Propiedades delegadas a MainWindowState ───────────────────────────────
+    # Permiten que el resto del codigo siga usando self.records, self.selected,
+    # self._active_tab, etc. sin ningun cambio. La fuente de verdad es self._window_state.
+
+    @property
+    def records(self) -> list[FacturaRecord]:
+        return self._window_state.records
+
+    @records.setter
+    def records(self, value: list[FacturaRecord]) -> None:
+        self._window_state.records = value
+
+    @property
+    def all_records(self) -> list[FacturaRecord]:
+        return self._window_state.all_records
+
+    @all_records.setter
+    def all_records(self, value: list[FacturaRecord]) -> None:
+        self._window_state.all_records = value
+
+    @property
+    def selected(self) -> FacturaRecord | None:
+        return self._window_state.selected
+
+    @selected.setter
+    def selected(self, value: FacturaRecord | None) -> None:
+        self._window_state.selected = value
+
+    @property
+    def selected_records(self) -> list[FacturaRecord]:
+        return self._window_state.selected_records
+
+    @selected_records.setter
+    def selected_records(self, value: list[FacturaRecord]) -> None:
+        self._window_state.selected_records = value
+
+    @property
+    def _active_tab(self) -> str:
+        return self._window_state.active_tab
+
+    @_active_tab.setter
+    def _active_tab(self, value: str) -> None:
+        self._window_state.active_tab = value
+
+    @property
+    def _loaded_months(self) -> set[tuple[int, int]]:
+        return self._window_state.loaded_months
+
+    @_loaded_months.setter
+    def _loaded_months(self, value: set[tuple[int, int]]) -> None:
+        self._window_state.loaded_months = value
+
+    @property
+    def _records_map(self) -> dict[str, FacturaRecord]:
+        return self._window_state.records_map
+
+    @_records_map.setter
+    def _records_map(self, value: dict[str, FacturaRecord]) -> None:
+        self._window_state.records_map = value
+
+    @property
+    def _user_set_dates(self) -> bool:
+        return self._window_state.user_set_dates
+
+    @_user_set_dates.setter
+    def _user_set_dates(self, value: bool) -> None:
+        self._window_state.user_set_dates = value
+
+    @property
+    def _prev_dest_path(self) -> Path | None:
+        return self._window_state.prev_dest_path
+
+    @_prev_dest_path.setter
+    def _prev_dest_path(self, value: Path | None) -> None:
+        self._window_state.prev_dest_path = value
+
+    @property
+    def _detected_renames(self) -> list[dict]:
+        return self._window_state.detected_renames
+
+    @_detected_renames.setter
+    def _detected_renames(self, value: list[dict]) -> None:
+        self._window_state.detected_renames = value
+
+    @property
+    def _pdf_duplicates_rejected(self) -> dict:
+        return self._window_state.pdf_duplicates_rejected
+
+    @_pdf_duplicates_rejected.setter
+    def _pdf_duplicates_rejected(self, value: dict) -> None:
+        self._window_state.pdf_duplicates_rejected = value
+
+    # ─────────────────────────────────────────────────────────────────────────
+
     def __init__(self) -> None:
         super().__init__()
         ctk.set_appearance_mode("dark")
@@ -480,28 +575,18 @@ class App3Window(ctk.CTk):
         self.session: ClientSession | None = None
         self.db: ClassificationDB | None = None
         self.catalog_mgr: CatalogManager | None = None
-        self.records: list[FacturaRecord] = []
-        self.all_records: list[FacturaRecord] = []
+        self._window_state: MainWindowState = MainWindowState()
         self._db_records: dict[str, dict] = {}
-        self._pdf_duplicates_rejected: dict = {}  # {path_rechazado: path_ganador} — del último load
-        self.selected: FacturaRecord | None = None
-        self.selected_records: list[FacturaRecord] = []  # Multi-selección
         self._load_queue: Queue = Queue()
         self._active_calendar: DatePickerDropdown | None = None
         self._load_generation: int = 0
         self._all_cuentas: list[str] = []  # Unfiltered account list
         self._loading_overlay: LoadingOverlay | None = None  # Overlay de carga
         self._tree_clave_map: dict[str, FacturaRecord] = {}  # Mapeo: clave -> record (para mantener orden)
-        self._loaded_months: set[tuple[int, int]] = set()   # (year, month) ya cargados en sesion
-        self._records_map: dict[str, FacturaRecord] = {}    # clave -> record (cache acumulativo)
-        self._user_set_dates: bool = False                   # True si el usuario cambio las fechas manualmente
         self._range_load_generation: int = 0                # Generacion para cargas de rango adicionales
         self._range_load_queue: Queue = Queue()             # Cola para resultados de carga de rango
-        self._detected_renames: list[dict] = []             # Renombrados detectados: [{mes, old_name, new_name}]
-        self._active_tab: str = "todas"  # Pestaña activa de facturas del período
-        self._tab_buttons: dict[str, ctk.CTkButton] = {}  # Botones de pestañas
-        self._catalog_categories: list[str] = []          # Categorías manuales del catálogo (egresos)
-        self._prev_dest_path: Path | None = None          # Ruta clasificada mostrada en panel ANTERIOR
+        self._tab_buttons: dict[str, ctk.CTkButton] = {}  # Botones de pestanas
+        self._catalog_categories: list[str] = []          # Categorias manuales del catalogo (egresos)
 
         _apply_tree_style()
 
@@ -647,7 +732,7 @@ class App3Window(ctk.CTk):
         self._records_map = {r.clave: r for r in records}
         self._loaded_months = load_months
         self._db_records = db.get_records_map()
-        self._pdf_duplicates_rejected: dict = pdf_duplicates_rejected  # {path_rechazado: path_ganador}
+        self._pdf_duplicates_rejected = pdf_duplicates_rejected  # {path_rechazado: path_ganador}
         self._detected_renames = renames
         self.records = self._apply_filters()
         self.selected = None
