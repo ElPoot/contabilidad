@@ -19,6 +19,8 @@ from gestor_contable.app.controllers.load_period_controller import (
     load_session_worker,
     months_for_range,
 )
+from gestor_contable.app.selection_controller import build_multi_vm, build_single_vm
+from gestor_contable.app.selection_vm import SelectionVM
 from gestor_contable.app.state.main_window_state import MainWindowState
 from gestor_contable.app.use_cases.export_report_use_case import (
     default_export_filename,
@@ -1431,7 +1433,11 @@ class App3Window(ctk.CTk):
 
         for idx, r in enumerate(sorted_records):
             # Estado para etiqueta de color
-            estado = (self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado
+            db_rec = self._db_records.get(r.clave, {}) if self.db else {}
+            estado = db_rec.get("estado") or r.estado
+            # pendiente_pdf con categoria guardada → tratar como clasificado visualmente
+            if estado == "pendiente_pdf" and db_rec.get("categoria"):
+                estado = "clasificado"
             tag = estado if estado in ("clasificado", "pendiente", "pendiente_pdf", "sin_xml", "huerfano") else "pendiente"
 
             # Formatear campos
@@ -1517,199 +1523,147 @@ class App3Window(ctk.CTk):
             self._on_multi_select(records)
 
     def _on_select_single(self, r: FacturaRecord):
-        """Maneja selección de una sola factura (flujo original)."""
+        """Maneja selección de una sola factura."""
         self.selected = r
         self._sync_category_for_record(r)
+        pdf_path = self._resolve_pdf_path_for_record(r)
+        prev_text, prev_dest = self._resolve_previous_classification(r)
+        vm = build_single_vm(r, self._active_tab, pdf_path, prev_text, prev_dest)
+        self._render_selection_vm(vm)
 
-        # Estado Hacienda -- pill superior
-        if r.estado_hacienda:
-            esh = r.estado_hacienda.strip()
-            color = SUCCESS if "aceptado" in esh.lower() else WARNING
-            bg    = "#0d2a1e" if color == SUCCESS else "#2d2010"
-            icon  = "" 
-            self._hacienda_lbl.configure(
-                text=f"{icon}  Hacienda: {esh}",
-                text_color=color, fg_color=bg,
-            )
-        else:
-            self._hacienda_lbl.configure(text="", fg_color="transparent")
+    def _on_multi_select(self, records: list[FacturaRecord]):
+        """Maneja selección de múltiples facturas (modo lote)."""
+        vm = build_multi_vm(records)
+        if vm.mode != "multi_mixed":
+            self.selected = records[0]
+        self._render_selection_vm(vm)
+        self._sync_category_for_record(records[0] if vm.mode != "multi_mixed" else None)
 
-        # PDF: Intentar cargar desde ruta original, o desde ruta clasificada si ya fue movido
-        pdf_to_load = None
+    # ── HELPERS DE SELECCION ──────────────────────────────────────────────────
 
-        # 1️⃣ Intenta ruta original (si no fue clasificado aún)
+    def _resolve_pdf_path_for_record(self, r: FacturaRecord) -> Path | None:
+        """Resuelve la ruta del PDF a cargar: original o ruta clasificada si ya fue movido."""
         if r.pdf_path and r.pdf_path.exists():
-            pdf_to_load = r.pdf_path
-
-        # 2️⃣ Si no está en original, busca en ruta destino (si ya fue clasificado)
-        elif self.db and r.clave:
+            return r.pdf_path
+        if self.db and r.clave:
             db_record = self._db_records.get(r.clave)
             if db_record and db_record.get("ruta_destino"):
                 ruta_destino = Path(db_record["ruta_destino"])
                 if not ruta_destino.exists() and self.session:
                     cont_root = self.session.folder.parent.parent / "Contabilidades"
-                    ruta_destino = heal_classified_path(ruta_destino, cont_root, self.db, r.clave) or ruta_destino
+                    ruta_destino = (
+                        heal_classified_path(ruta_destino, cont_root, self.db, r.clave)
+                        or ruta_destino
+                    )
                 if ruta_destino.exists():
-                    pdf_to_load = ruta_destino
                     logger.debug(f"PDF cargado desde ruta clasificada: {ruta_destino}")
+                    return ruta_destino
+        return None
 
-        # Cargar o mostrar vacío
-        if pdf_to_load:
-            self.pdf_viewer.load(pdf_to_load)
-        else:
-            # Si es un registro sin PDF, mostrar mensaje específico
-            if r.estado == "pendiente_pdf":
-                self.pdf_viewer.show_message(
-                    "XML sin PDF\n\nPresiona «Crear PDF» para generar\n"
-                    "una factura a partir de los datos del XML."
-                )
-            elif r.razon_omisión:
-                # Registro omitido - mostrar razón
-                razon_text = {
-                    "non_invoice": "Detectado como no-factura (borrador, catálogo, comunicado, etc.)",
-                    "timeout": "Timeout durante extracción de clave",
-                    "extract_failed": "Error al extraer información del PDF",
-                }.get(r.razon_omisión, "PDF omitido")
-                self.pdf_viewer.release_file_handles(f"⊘ PDF Omitido\n\n{razon_text}")
-            else:
-                self.pdf_viewer.clear()
+    def _resolve_previous_classification(self, r: FacturaRecord) -> tuple[str, Path | None]:
+        """Devuelve (texto_clasificacion_previa, ruta_destino) para el panel ANTERIOR."""
+        if not self.db:
+            return "--", None
+        prev = self._db_records.get(r.clave)
+        estado = prev.get("estado")
+        has_classification = (
+            estado == "clasificado"
+            or (estado == "pendiente_pdf" and prev.get("categoria"))
+        )
+        if not has_classification:
+            return "--", None
+        crumbs = " \u203a ".join(
+            p for p in [
+                prev.get("categoria"),
+                prev.get("subtipo"),
+                prev.get("nombre_cuenta"),
+                prev.get("proveedor"),
+            ] if p
+        )
+        prev_text = f"{crumbs}\n{prev.get('fecha_clasificacion', '')}"
+        ruta_dest = prev.get("ruta_destino", "")
+        if not ruta_dest:
+            return prev_text, None
+        ruta_dest_path = Path(ruta_dest)
+        if not ruta_dest_path.is_absolute() and self.session:
+            ruta_dest_path = self.session.folder.parent.parent / ruta_dest_path
+        if not ruta_dest_path.exists() and self.session:
+            cont_root = self.session.folder.parent.parent / "Contabilidades"
+            sanada = heal_classified_path(ruta_dest_path, cont_root, self.db, prev.get("clave_numerica"))
+            if sanada:
+                ruta_dest_path = sanada
+        return prev_text, ruta_dest_path
 
-        # Prellenar proveedor
-        if r.emisor_nombre:
-            self._prov_var.set(r.emisor_nombre)
-
-        # Habilitar botones según tipo de registro
-        if r.estado == "huerfano":
-            # Es un PDF huérfano - permitir recuperación
-            self._btn_recover.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
-            self._btn_recover.configure(state="normal")
-            self._btn_link.grid_remove()
-            self._btn_delete.grid_remove()
-            self._btn_auto_classify.grid_remove()
-            self._btn_classify.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 12))
-            self._btn_classify.configure(state="disabled", text="⊘ No clasificable")
-        elif r.razon_omisión:
-            # Registro omitido - permitir vincular a XML o borrar
-            self._btn_recover.grid_remove()
-            self._btn_link.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
-            self._btn_link.configure(state="normal")
-            self._btn_delete.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 6))
-            self._btn_delete.configure(state="normal")
-            self._btn_auto_classify.grid_remove()
-            self._btn_classify.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 12))
-            self._btn_classify.configure(state="disabled", text="⊘ No clasificable")
-        else:
-            # Registro normal - permitir clasificación
-            self._btn_recover.grid_remove()
-            self._btn_link.grid_remove()
-            self._btn_delete.grid_remove()
-            if r.estado == "pendiente_pdf":
-                # XML sin PDF: ofrecer crear PDF
-                self._btn_create_pdf.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
-                self._btn_create_pdf.configure(state="normal")
-                self._btn_auto_classify.grid_remove()
-                self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
-                self._btn_classify.configure(state="normal", text="Clasificar sin PDF")
-            else:
-                self._btn_create_pdf.grid_remove()
-                # Mostrar botón auto-clasificar solo en Ingresos o Sin Receptor
-                if self._active_tab in ("ingreso", "sin_receptor"):
-                    self._btn_auto_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
-                    self._btn_auto_classify.configure(state="normal")
-                    self._btn_classify.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
-                else:
-                    self._btn_auto_classify.grid_remove()
-                    self._btn_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 12))
-                self._btn_classify.configure(state="normal", text="Clasificar")
-
-        # Clasificación previa
-        if self.db:
-            prev = self._db_records.get(r.clave)
-            if prev and prev.get("estado") == "clasificado":
-                crumbs = " › ".join(
-                    p for p in [
-                        prev.get("categoria"),
-                        prev.get("subtipo"),
-                        prev.get("nombre_cuenta"),
-                        prev.get("proveedor"),
-                    ] if p
-                )
-                self._prev_var.set(f"{crumbs}\n{prev.get('fecha_clasificacion', '')}")
-
-                # Ruta destino (sanar si el contador renombró la carpeta de mes)
-                ruta_dest = prev.get("ruta_destino", "")
-                if ruta_dest:
-                    ruta_dest_path = Path(ruta_dest)
-                    if not ruta_dest_path.is_absolute() and self.session:
-                        ruta_dest_path = self.session.folder.parent.parent / ruta_dest_path
-                    if not ruta_dest_path.exists() and self.session:
-                        cont_root = self.session.folder.parent.parent / "Contabilidades"
-                        sanada = heal_classified_path(ruta_dest_path, cont_root, self.db, prev.get("clave_numerica"))
-                        if sanada:
-                            ruta_dest_path = sanada
-                    self._set_prev_dest_path(ruta_dest_path)
-                else:
-                    self._set_prev_dest_path(None)
-            else:
-                self._prev_var.set("--")
-                self._set_prev_dest_path(None)
-
-    def _on_multi_select(self, records: list[FacturaRecord]):
-        """Maneja selección de múltiples facturas (modo lote)."""
-        # Verificar que todos pertenecen al mismo emisor
-        cedulas = {r.emisor_cedula for r in records}
-
-        if len(cedulas) > 1:
-            # Emisores diferentes -> bloquear con aviso
-            self.pdf_viewer.show_message(
-                f"Advertencia: {len(records)} facturas de {len(cedulas)} emisores distintos.\n"
-                "Solo se puede clasificar en lote facturas del MISMO EMISOR."
+    def _render_selection_vm(self, vm: SelectionVM):
+        """Aplica un SelectionVM a los widgets del panel derecho y visor."""
+        # Pill Hacienda
+        if vm.hacienda_text:
+            self._hacienda_lbl.configure(
+                text=vm.hacienda_text,
+                text_color=vm.hacienda_color,
+                fg_color=vm.hacienda_bg,
             )
-            self._btn_classify.configure(
-                state="disabled",
-                text=f"Advertencia: Emisores distintos ({len(cedulas)})"
-            )
-            self._btn_auto_classify.grid_remove()
-            # Ocultar pill Hacienda
+        else:
             self._hacienda_lbl.configure(text="", fg_color="transparent")
-            # Ocultar panel de clasificación anterior
-            self._prev_frame.grid_remove()
-            self._set_prev_dest_path(None)
-            self._sync_category_for_record(None)
-            return
 
-        # Mismo emisor -> mostrar modo lote
-        self.selected = records[0]  # Mantener referencia al primero
-        emisor_nombre = records[0].emisor_nombre or "Emisor desconocido"
+        # Visor PDF
+        if vm.viewer_pdf_path is not None:
+            self.pdf_viewer.load(vm.viewer_pdf_path)
+        elif vm.viewer_message is not None:
+            self.pdf_viewer.show_message(vm.viewer_message)
+        elif vm.viewer_release_message is not None:
+            self.pdf_viewer.release_file_handles(vm.viewer_release_message)
+        else:
+            self.pdf_viewer.clear()
 
-        # Mostrar mensaje de modo lote en lugar del PDF
-        self.pdf_viewer.show_message(
-            f"Lote de clasificación\n"
-            f"{len(records)} facturas seleccionadas\n\n"
-            f"Emisor: {emisor_nombre}\n\n"
-            "Complete la clasificacion y haga click\n"
-            "en 'Clasificar N facturas'."
-        )
+        # Proveedor
+        if vm.proveedor:
+            self._prov_var.set(vm.proveedor)
 
-        # Pre-llenar proveedor automaticamente con el nombre del emisor
-        self._prov_var.set(emisor_nombre)
-
-        # Cambiar texto del botón clasificar
-        self._btn_classify.configure(
-            state="normal",
-            text=f"Clasificar {len(records)} facturas"
-        )
-
-        # Ocultar botón auto-clasificar en modo lote
+        # Botones opcionales: ocultar todos, luego mostrar los visibles
+        self._btn_recover.grid_remove()
+        self._btn_link.grid_remove()
+        self._btn_delete.grid_remove()
+        self._btn_create_pdf.grid_remove()
         self._btn_auto_classify.grid_remove()
 
-        # Ocultar pill Hacienda
-        self._hacienda_lbl.configure(text="", fg_color="transparent")
+        # Asignar filas identicas al original segun que botones estan visibles
+        if vm.btn_recover_visible:
+            self._btn_recover.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
+            self._btn_recover.configure(state="normal")
+            classify_row = 9
+        elif vm.btn_link_visible:
+            self._btn_link.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
+            self._btn_link.configure(state="normal")
+            if vm.btn_delete_visible:
+                self._btn_delete.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 6))
+                self._btn_delete.configure(state="normal")
+            classify_row = 9
+        elif vm.btn_create_pdf_visible:
+            self._btn_create_pdf.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
+            self._btn_create_pdf.configure(state="normal")
+            classify_row = 8
+        elif vm.btn_auto_classify_visible:
+            self._btn_auto_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
+            self._btn_auto_classify.configure(state="normal")
+            classify_row = 8
+        else:
+            classify_row = 7
 
-        # Ocultar panel de clasificación anterior
-        self._prev_frame.grid_remove()
-        self._set_prev_dest_path(None)
-        self._sync_category_for_record(records[0] if records else None)
+        self._btn_classify.grid(row=classify_row, column=0, sticky="ew", padx=12, pady=(0, 12))
+        self._btn_classify.configure(
+            state="normal" if vm.btn_classify_enabled else "disabled",
+            text=vm.btn_classify_text,
+        )
+
+        # Panel clasificacion anterior
+        if vm.prev_frame_visible:
+            self._prev_frame.grid()
+            self._prev_var.set(vm.prev_text)
+            self._set_prev_dest_path(vm.prev_dest_path)
+        else:
+            self._prev_frame.grid_remove()
+            self._set_prev_dest_path(None)
 
     @staticmethod
     def _format_prev_dest_path(path: Path) -> str:

@@ -316,8 +316,8 @@ La recomendación concreta y pragmática es **no migrar la GUI ahora** y **no re
 
 - [x] R1: Extraer lógica de exportación de `main_window.py` → `app/use_cases/export_report_use_case.py`
 - [ ] R2: Separar carga de sesión y rango de `main_window.py` → `LoadPeriodController`
-- [ ] R3: Introducir `MainWindowState` (tab activa, rango, selección, registros, carga, errores)
-- [ ] R4: Separar selección + panel derecho + visor → `SelectionController` + `SelectionVM`
+- [x] R3: Introducir `MainWindowState` (tab activa, rango, selección, registros, carga, errores) — slice 1: dataclass + propiedades delegadas (sin cambio de comportamiento)
+- [x] R4: Separar selección + panel derecho + visor → `SelectionController` + `SelectionVM`
 - [ ] R5: Unificar estrategia de workers en `TaskRunner` (eliminar threads directos desde la vista)
 - [ ] R6: Mover `sanitize/recover/link/cleanup` → casos de uso de aplicación
 - [ ] R7: Sacar lógica de `session_view.py` (clientes, cédulas, creación) → `ClientAccessService`
