@@ -35,6 +35,13 @@ from gestor_contable.core.classification_utils import (
     get_tab_statistics,
 )
 from gestor_contable.core.classifier import ClassificationDB, build_dest_folder, classify_record, heal_classified_path
+from gestor_contable.core.ors_purge import (
+    OrsPurgeDB,
+    build_file_inventory,
+    execute_purge,
+    find_ors_candidates,
+    restore_batch,
+)
 from gestor_contable.core.factura_index import FacturaIndexer
 from gestor_contable.core.models import FacturaRecord
 from gestor_contable.core.session import ClientSession
@@ -1306,6 +1313,50 @@ class App3Window(ctk.CTk):
         self._prev_path_lbl.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
         self._prev_path_lbl.bind("<Button-1>", self._open_dest_folder)
 
+        # ── Accion de pestaña ORS: Purgar ORS ─────────────────────────────────
+        # Visible solo cuando la pestaña activa es ORS; independiente de seleccion.
+        ors_frame = ctk.CTkFrame(scroll, fg_color=BORDER, corner_radius=12)
+        ors_frame.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 10))
+        ors_inner = ctk.CTkFrame(ors_frame, fg_color=CARD, corner_radius=10)
+        ors_inner.pack(fill="both", expand=True, padx=1, pady=1)
+        ors_inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            ors_inner,
+            text="ACCIONES ORS",
+            font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
+            text_color=DANGER,
+        ).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 4))
+
+        self._btn_purge_ors = ctk.CTkButton(
+            ors_inner,
+            text="Purgar ORS",
+            font=F_BTN(),
+            fg_color=DANGER,
+            hover_color="#dc2626",
+            text_color="#0d1a18",
+            corner_radius=10,
+            height=40,
+            state="disabled",
+            command=self._purge_ors_clicked,
+        )
+        self._btn_purge_ors.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
+
+        self._ors_history_lbl = tk.Label(
+            ors_inner,
+            text="Ver historial de purgas",
+            font=("Segoe UI", 10),
+            fg=MUTED,
+            bg=CARD,
+            cursor="hand2",
+            anchor="w",
+        )
+        self._ors_history_lbl.grid(row=2, column=0, sticky="w", padx=12, pady=(0, 10))
+        self._ors_history_lbl.bind("<Button-1>", lambda _e: self._show_ors_purge_history())
+
+        self._ors_frame = ors_frame
+        self._ors_frame.grid_remove()  # Ocultar hasta que la pestaña sea ORS
+
     # ── PESTAÑAS DE FACTURAS DEL PERÍODO ────────────────────────────────────────
     def _on_tab_clicked(self, tab: str):
         """Maneja click en pestaña. Filtra registros y actualiza UI."""
@@ -1328,6 +1379,14 @@ class App3Window(ctk.CTk):
         self._btn_auto_classify.grid_remove()
         self._btn_classify.grid_remove()
         self._sync_category_for_record(None)
+
+        # Panel ORS: mostrar solo en pestaña ORS (accion de pestaña, no de seleccion)
+        if tab == "ors" and self.session:
+            self._ors_frame.grid()
+            self._btn_purge_ors.configure(state="normal")
+        else:
+            self._ors_frame.grid_remove()
+            self._btn_purge_ors.configure(state="disabled")
 
     def _update_tab_appearance(self, active_tab: str):
         """Actualiza colores de botones de pestañas."""
@@ -1564,7 +1623,7 @@ class App3Window(ctk.CTk):
         """Devuelve (texto_clasificacion_previa, ruta_destino) para el panel ANTERIOR."""
         if not self.db:
             return "--", None
-        prev = self._db_records.get(r.clave)
+        prev = self._db_records.get(r.clave) or {}
         estado = prev.get("estado")
         has_classification = (
             estado == "clasificado"
@@ -3787,6 +3846,526 @@ class App3Window(ctk.CTk):
             ModalOverlay.show_success(self, "Limpieza completada", message)
 
         self._set_status(f"Limpieza: {len(deleted)} archivo(s) eliminado(s)")
+
+    # ── PURGA ORS ─────────────────────────────────────────────────────────────
+
+    def _purge_ors_clicked(self):
+        """Abre el dialogo de cedula para iniciar el flujo de purga ORS."""
+        if not self.session:
+            return
+        self._show_ors_cedula_modal()
+
+    def _show_ors_cedula_modal(self):
+        """Modal con campo de texto para que el usuario ingrese la cedula de validacion."""
+        import tkinter as tk
+
+        overlay, card, close_fn = ModalOverlay.build(self)
+        card.configure(corner_radius=16)
+
+        ctk.CTkLabel(
+            card,
+            text="Purgar ORS — Verificacion de cedula",
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            text_color=DANGER,
+        ).pack(padx=24, pady=(24, 4))
+
+        ctk.CTkLabel(
+            card,
+            text=(
+                "Ingrese la cedula de la empresa AJENA cuyos registros\n"
+                "desea quitar de la pestana ORS.\n\n"
+                "Solo se moveran a cuarentena los registros ORS donde\n"
+                "el emisor O el receptor sea exactamente esa cedula.\n"
+                "Ningun registro fuera del ORS es afectado."
+            ),
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=MUTED,
+            justify="center",
+        ).pack(padx=24, pady=(0, 16))
+
+        cedula_var = ctk.StringVar()
+        entry = ctk.CTkEntry(
+            card,
+            textvariable=cedula_var,
+            placeholder_text="Ej: 3101234567",
+            fg_color=SURFACE,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            height=40,
+            justify="center",
+        )
+        entry.pack(padx=40, pady=(0, 8), fill="x")
+        entry.focus()
+
+        error_lbl = ctk.CTkLabel(
+            card,
+            text="",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=DANGER,
+        )
+        error_lbl.pack(padx=24, pady=(0, 8))
+
+        def _on_confirm():
+            import re
+            raw = cedula_var.get().strip()
+            cedula_clean = re.sub(r"\D", "", raw)
+            if len(cedula_clean) < 9:
+                error_lbl.configure(text="La cedula debe tener al menos 9 digitos.")
+                return
+            close_fn()
+            self._prepare_ors_purge(cedula_clean)
+
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(pady=(0, 24))
+        ctk.CTkButton(
+            btn_row,
+            text="Continuar",
+            width=130,
+            fg_color=DANGER,
+            hover_color="#dc2626",
+            text_color="#0d1a18",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            command=_on_confirm,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btn_row,
+            text="Cancelar",
+            width=130,
+            fg_color=SURFACE,
+            border_width=1,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            command=close_fn,
+        ).pack(side="left")
+
+        entry.bind("<Return>", lambda _e: _on_confirm())
+
+    def _prepare_ors_purge(self, cedula: str):
+        """Calcula candidatos e inventario, luego muestra el preview de purga.
+
+        Opera exclusivamente sobre self.records (registros ya filtrados como ORS
+        por la pestana activa). Nunca toca registros de otras categorias.
+        """
+        candidates = find_ors_candidates(self.records, cedula)
+
+        if not candidates:
+            ModalOverlay.show_info(
+                self,
+                "Sin candidatos",
+                f"No hay registros ORS donde el emisor o receptor sea {cedula}.\n"
+                "Verifique la cedula ingresada.",
+            )
+            return
+
+        db_records = self._db_records if self.db else {}
+        file_inventory = build_file_inventory(self.all_records, db_records)
+
+        total_xml = sum(len(file_inventory.get(r.clave, {}).get("xml", [])) for r in candidates)
+        total_pdf = sum(len(file_inventory.get(r.clave, {}).get("pdf", [])) for r in candidates)
+
+        self._show_ors_purge_preview(cedula, candidates, file_inventory, total_xml, total_pdf)
+
+    def _show_ors_purge_preview(
+        self,
+        cedula: str,
+        candidates: list,
+        file_inventory: dict,
+        total_xml: int,
+        total_pdf: int,
+    ):
+        """Modal de previsualizacion antes de confirmar la purga."""
+        import tkinter as tk
+
+        overlay, card, close_fn = ModalOverlay.build(self)
+
+        # Header
+        hdr = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=0)
+        hdr.pack(fill="x")
+        ctk.CTkLabel(
+            hdr,
+            text="Previsualizacion de purga ORS",
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            text_color=DANGER,
+        ).pack(side="left", padx=16, pady=12)
+        ctk.CTkLabel(
+            hdr,
+            text=f"Cedula: {cedula}",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=MUTED,
+        ).pack(side="right", padx=16, pady=12)
+
+        # Resumen
+        summary = ctk.CTkFrame(card, fg_color=CARD, corner_radius=8)
+        summary.pack(fill="x", padx=16, pady=(12, 8))
+        for label, value in [
+            ("Claves a purgar:", str(len(candidates))),
+            ("XMLs afectados:", str(total_xml)),
+            ("PDFs afectados:", str(total_pdf)),
+        ]:
+            row_f = ctk.CTkFrame(summary, fg_color="transparent")
+            row_f.pack(fill="x", padx=12, pady=3)
+            ctk.CTkLabel(row_f, text=label, font=ctk.CTkFont(family="Segoe UI", size=12),
+                         text_color=MUTED, anchor="w").pack(side="left")
+            ctk.CTkLabel(row_f, text=value, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+                         text_color=TEXT, anchor="e").pack(side="right")
+
+        # Lista de claves
+        ctk.CTkLabel(
+            card,
+            text="Documentos que seran movidos a cuarentena:",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=MUTED,
+        ).pack(anchor="w", padx=16, pady=(4, 2))
+
+        list_frame = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=6)
+        list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        sb = tk.Scrollbar(list_frame)
+        sb.pack(side="right", fill="y")
+        txt = tk.Text(
+            list_frame,
+            wrap="none",
+            bg=SURFACE,
+            fg=TEXT,
+            relief="flat",
+            font=("Consolas", 10),
+            bd=0,
+            padx=10,
+            pady=8,
+            yscrollcommand=sb.set,
+            state="normal",
+        )
+        txt.pack(fill="both", expand=True)
+        sb.config(command=txt.yview)
+
+        max_rows = 200
+        for i, r in enumerate(candidates[:max_rows], 1):
+            files = file_inventory.get(r.clave, {})
+            n_xml = len(files.get("xml", []))
+            n_pdf = len(files.get("pdf", []))
+            emisor = (r.emisor_nombre or "desconocido")[:40]
+            txt.insert("end", f"[{i:03d}] {r.clave}  |  {emisor}  |  {n_xml} XML  {n_pdf} PDF\n")
+        if len(candidates) > max_rows:
+            txt.insert("end", f"\n... y {len(candidates) - max_rows} claves mas\n")
+        txt.configure(state="disabled")
+
+        ctk.CTkLabel(
+            card,
+            text="Los archivos se moveran a .ors_quarantine/ dentro de la carpeta del cliente.",
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=MUTED,
+        ).pack(padx=16, pady=(0, 4))
+
+        # Botones
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(pady=(4, 16))
+
+        def _on_confirm():
+            close_fn()
+            self._btn_purge_ors.configure(state="disabled", text="Purgando...")
+            threading.Thread(
+                target=self._execute_ors_purge_worker,
+                args=(cedula, candidates, file_inventory),
+                daemon=True,
+            ).start()
+
+        ctk.CTkButton(
+            btn_row,
+            text="Confirmar purga",
+            width=160,
+            fg_color=DANGER,
+            hover_color="#dc2626",
+            text_color="#0d1a18",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            command=_on_confirm,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btn_row,
+            text="Cancelar",
+            width=130,
+            fg_color=SURFACE,
+            border_width=1,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            command=close_fn,
+        ).pack(side="left")
+
+    def _execute_ors_purge_worker(self, cedula: str, candidates: list, file_inventory: dict):
+        """Worker thread: ejecuta la cuarentena y notifica al hilo UI."""
+        try:
+            from gestor_contable.config import metadata_dir as _metadata_dir
+            mdir = _metadata_dir(self.session.folder)
+            purge_db = OrsPurgeDB(mdir)
+            summary = execute_purge(
+                candidates=candidates,
+                file_inventory=file_inventory,
+                client_folder=self.session.folder,
+                cedula=cedula,
+                purge_db=purge_db,
+            )
+            self.after(0, lambda: self._on_ors_purge_done(summary, cedula))
+        except Exception as exc:
+            self.after(
+                0,
+                lambda: (
+                    self._btn_purge_ors.configure(state="normal", text="Purgar ORS"),
+                    ModalOverlay.show_error(self, "Error en purga ORS", str(exc)),
+                ),
+            )
+
+    def _on_ors_purge_done(self, summary: dict, cedula: str):
+        """Callback UI: aplica resultados de la purga al estado de la ventana."""
+        self._btn_purge_ors.configure(state="normal", text="Purgar ORS")
+
+        batch_id = summary["batch_id"]
+        claves_ok = summary["claves_ok"]
+        claves_parcial = summary["claves_parcial"]
+        claves_fallidas = summary["claves_fallidas"]
+        total_movidos = summary["total_movidos"]
+        total_fallidos = summary["total_fallidos"]
+
+        # Remover de all_records las claves purgadas completamente
+        claves_purgadas = {
+            r["clave"]
+            for r in summary["results"]
+            if not r["fallidos"]
+        }
+        if claves_purgadas:
+            self.all_records = [r for r in self.all_records if r.clave not in claves_purgadas]
+            self.records = self._apply_filters()
+            self._refresh_tree()
+            self._update_progress()
+
+        msg_lines = [
+            f"Lote: {batch_id}",
+            f"Claves en cuarentena: {claves_ok}",
+        ]
+        if claves_parcial:
+            msg_lines.append(f"Claves parciales: {claves_parcial}")
+        if claves_fallidas:
+            msg_lines.append(f"Claves fallidas: {claves_fallidas}")
+        msg_lines.append(f"Archivos movidos: {total_movidos}")
+        if total_fallidos:
+            msg_lines.append(f"Archivos con error: {total_fallidos}")
+
+        msg = "\n".join(msg_lines)
+
+        if claves_fallidas == 0 and total_fallidos == 0:
+            ModalOverlay.show_success(self, "Purga ORS completada", msg)
+        else:
+            ModalOverlay.show_warning(self, "Purga ORS con errores", msg)
+
+    def _show_ors_purge_history(self):
+        """Modal de historial de purgas ORS consultable por lote."""
+        if not self.session:
+            return
+
+        import tkinter as tk
+        from gestor_contable.config import metadata_dir as _metadata_dir
+
+        try:
+            mdir = _metadata_dir(self.session.folder)
+            purge_db = OrsPurgeDB(mdir)
+            batches = purge_db.get_batches()
+        except Exception as exc:
+            ModalOverlay.show_error(self, "Error", f"No se pudo leer el historial:\n{exc}")
+            return
+
+        overlay, card, close_fn = ModalOverlay.build(self)
+
+        hdr = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=0)
+        hdr.pack(fill="x")
+        ctk.CTkLabel(
+            hdr,
+            text="Historial de purgas ORS",
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            text_color=TEXT,
+        ).pack(side="left", padx=16, pady=12)
+        ctk.CTkButton(
+            hdr,
+            text="Cerrar",
+            width=80,
+            fg_color=SURFACE,
+            border_width=1,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            command=close_fn,
+        ).pack(side="right", padx=16, pady=10)
+
+        if not batches:
+            ctk.CTkLabel(
+                card,
+                text="No hay purgas registradas para este cliente.",
+                font=ctk.CTkFont(family="Segoe UI", size=12),
+                text_color=MUTED,
+            ).pack(expand=True)
+            return
+
+        # Panel izquierdo: lista de lotes
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=2)
+        body.grid_rowconfigure(0, weight=1)
+
+        batch_list_frame = ctk.CTkScrollableFrame(body, fg_color=SURFACE, corner_radius=8)
+        batch_list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        batch_list_frame.grid_columnconfigure(0, weight=1)
+
+        # Panel derecho: detalle del lote seleccionado
+        detail_frame = ctk.CTkFrame(body, fg_color=SURFACE, corner_radius=8)
+        detail_frame.grid(row=0, column=1, sticky="nsew")
+        detail_frame.grid_columnconfigure(0, weight=1)
+        detail_frame.grid_rowconfigure(2, weight=1)
+
+        detail_header = ctk.CTkLabel(
+            detail_frame,
+            text="Seleccione un lote para ver el detalle",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=MUTED,
+        )
+        detail_header.grid(row=0, column=0, columnspan=2, padx=12, pady=8, sticky="w")
+
+        # Boton Restaurar (fila 1, visible solo cuando hay un lote seleccionado)
+        _current_batch_id: list[str] = [""]  # mutable closure
+
+        def _do_restore():
+            bid = _current_batch_id[0]
+            if not bid:
+                return
+            if not ModalOverlay.ask_sync(
+                self,
+                "Restaurar lote",
+                f"Los archivos del lote {bid[:23]} se moveran de vuelta\n"
+                "a sus rutas originales. Esta accion sobreescribira\n"
+                "cualquier archivo con el mismo nombre en el destino.\n\n"
+                "¿Continuar?",
+                confirm_text="Restaurar",
+            ):
+                return
+            btn_restore.configure(state="disabled", text="Restaurando...")
+            threading.Thread(
+                target=self._restore_ors_batch_worker,
+                args=(bid, purge_db, close_fn),
+                daemon=True,
+            ).start()
+
+        btn_restore = ctk.CTkButton(
+            detail_frame,
+            text="Restaurar lote",
+            width=150,
+            fg_color=WARNING,
+            hover_color="#e8a61c",
+            text_color="#0d1a18",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            state="disabled",
+            command=_do_restore,
+        )
+        btn_restore.grid(row=1, column=0, columnspan=2, padx=12, pady=(0, 6), sticky="w")
+
+        detail_sb = tk.Scrollbar(detail_frame)
+        detail_sb.grid(row=2, column=1, sticky="ns")
+        detail_txt = tk.Text(
+            detail_frame,
+            wrap="none",
+            bg=SURFACE,
+            fg=TEXT,
+            relief="flat",
+            font=("Consolas", 9),
+            bd=0,
+            padx=8,
+            pady=6,
+            yscrollcommand=detail_sb.set,
+            state="disabled",
+        )
+        detail_txt.grid(row=2, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
+        detail_sb.config(command=detail_txt.yview)
+
+        def _load_batch_detail(batch_id: str, batch: dict):
+            _current_batch_id[0] = batch_id
+            detail_header.configure(
+                text=f"Lote {batch_id[:23]}  |  cedula: {batch['cedula']}  |  {batch['fecha']}",
+                text_color=TEXT,
+            )
+            btn_restore.configure(state="normal")
+            try:
+                archivos = purge_db.get_archivos_for_batch(batch_id)
+            except Exception as e:
+                archivos = []
+                logger.warning(f"Error cargando detalle de lote: {e}")
+
+            detail_txt.configure(state="normal")
+            detail_txt.delete("1.0", "end")
+            if not archivos:
+                detail_txt.insert("end", "Sin registros de archivos para este lote.\n")
+            else:
+                for a in archivos:
+                    resultado = a["resultado"]
+                    tipo = a["tipo_archivo"].upper()
+                    nombre_orig = Path(a["ruta_original"]).name
+                    ruta_q = Path(a["ruta_cuarentena"]).name if a["ruta_cuarentena"] else "—"
+                    detalle = f"  [{a['detalle']}]" if a.get("detalle") else ""
+                    detail_txt.insert(
+                        "end",
+                        f"[{resultado:14s}] [{tipo:3s}] {nombre_orig}  ->  {ruta_q}{detalle}\n",
+                    )
+            detail_txt.configure(state="disabled")
+
+        for i, batch in enumerate(batches):
+            bid = batch["batch_id"]
+            btn_text = f"{batch['fecha'][:19]}  ({batch['total_claves']} claves)"
+            ctk.CTkButton(
+                batch_list_frame,
+                text=btn_text,
+                anchor="w",
+                font=ctk.CTkFont(family="Segoe UI", size=11),
+                fg_color=CARD if i % 2 == 0 else SURFACE,
+                hover_color=BORDER,
+                text_color=TEXT,
+                corner_radius=4,
+                command=lambda b=bid, bdata=batch: _load_batch_detail(b, bdata),
+            ).grid(row=i, column=0, sticky="ew", padx=4, pady=2)
+
+    def _restore_ors_batch_worker(self, batch_id: str, purge_db: OrsPurgeDB, close_fn):
+        """Worker thread: restaura archivos de cuarentena a sus rutas originales."""
+        try:
+            result = restore_batch(batch_id, purge_db)
+            self.after(0, lambda: self._on_ors_batch_restored(result, close_fn))
+        except Exception as exc:
+            self.after(
+                0,
+                lambda: ModalOverlay.show_error(
+                    self, "Error al restaurar", str(exc)
+                ),
+            )
+
+    def _on_ors_batch_restored(self, result: dict, close_fn):
+        """Callback UI: muestra resultado de restauracion y recarga registros."""
+        restaurados = len(result["restaurados"])
+        fallidos = result["fallidos"]
+
+        close_fn()  # Cerrar historial antes de mostrar resultado
+
+        if fallidos:
+            msg = (
+                f"{restaurados} archivo(s) restaurados.\n"
+                f"{len(fallidos)} error(es):\n"
+                + "\n".join(f"  • {e}" for _, e in fallidos[:5])
+            )
+            ModalOverlay.show_warning(self, "Restauracion con errores", msg)
+        else:
+            ModalOverlay.show_success(
+                self,
+                "Restauracion completada",
+                f"{restaurados} archivo(s) restaurados a sus rutas originales.\n\n"
+                "Recargue el periodo para ver los registros recuperados.",
+            )
+
+    # ── FIN PURGA ORS ─────────────────────────────────────────────────────────
 
     def _open_dest_folder(self, event=None):
         """Abre en el Explorador de Windows la carpeta donde está el PDF clasificado."""
