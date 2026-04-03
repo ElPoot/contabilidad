@@ -243,3 +243,57 @@ Required (see `requirements.txt`):
 - `requests` ≥2.31 — HTTP client
 - `cryptography` ≥42.0 — encryption
 - `keyring` ≥24.0 — credential storage
+
+---
+
+## Refactoring Active: GUI Decoupling (Audit 2026-04-02)
+
+The project is in an active refactoring phase based on a technical audit. The goal is to extract a thin application layer between GUI and core — without rewriting the app and without breaking production.
+
+### Target Architecture
+
+```
+gestor_contable/
+  gui/           ← views only: events, render, no business rules
+  app/           ← use cases + controllers (NEW — being built incrementally)
+    use_cases/   ← ExportPeriodReportUseCase, ClassifySelectionUseCase, etc.
+    controllers/ ← MainWindowController, SelectionController, SessionController
+    state/       ← MainWindowState, SelectionVM, view models
+    services/    ← ReportExportService, ClientAccessService, TaskRunner
+  core/          ← domain logic (DO NOT move rules from here)
+```
+
+### Refactoring Phases
+
+**Phase 1 — Safe stabilization (current)**
+Order: `ExportPeriodReportUseCase` → `FolderSanitizationUseCase` + `LinkOmittedPdfUseCase` → `SelectionController` → `TaskRunner`
+
+**Phase 2 — Structural decoupling**
+`MainWindowState`, `MainWindowController`, `SessionController`, unified render functions.
+
+**Phase 3 — Future GUI evolution**
+Controllers and use cases free of customtkinter; stable view models; ports for PDF viewer and dialogs.
+
+### Rules for Every Refactor (MANDATORY — applies to all agents)
+
+1. **Delegate, don't replace** — create the new module, make the existing method call it. Never rewrite an entire flow in one PR.
+2. **No business rules in GUI** — never add new domain logic to any file under `gui/`. If it belongs to core, put it in `core/` or `app/`.
+3. **One vertical flow per PR** — each change moves exactly one responsibility (e.g., export OR classify, never both).
+4. **Reuse core, don't move it** — `core/` is stable. New `app/` modules import from `core/`; never copy-paste logic.
+5. **Don't introduce new threading patterns** — converge gradually to a single `TaskRunner` pattern; don't add new `threading.Thread` calls directly from views.
+6. **Preserve existing contracts** — callback signatures, button names, messages, and UI behavior must remain identical unless explicitly requested.
+7. **View models for render** — when a view needs data to display, pass a typed view model, never read widgets or dispersed caches directly.
+8. **Validate before merging** — every refactor must pass this manual scenario matrix before being committed:
+   - Load client + change date range
+   - Single selection and multi-selection
+   - Classify individual and batch
+   - Export Excel/CSV
+   - Sanitize, recover orphan, link omitted
+   - Verify tree, PDF viewer, and right panel stay in sync
+
+### Prohibited in This Phase
+
+- Touching `classify_record()` in `classifier.py` (fiscal protocol — never change without explicit request)
+- Moving SQLite access outside `ClassificationDB` without a `threading.Lock()`
+- Adding any new direct imports of `customtkinter` in `core/` or `app/`
+- Refactoring multiple flows in one commit "to save time"
