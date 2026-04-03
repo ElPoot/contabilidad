@@ -295,9 +295,22 @@ class FacturaIndexer:
 
                 for rf in audit.get("respuesta_failed_files", []):
                     nombre = rf.get('archivo', '?')
-                    self.parse_errors.append(
-                        f"[respuesta_irrecuperable] {nombre}"
-                    )
+                    motivo = str(rf.get("motivo", "") or "").strip().lower()
+                    documento_root = str(rf.get("documento_root", "") or "").strip()
+                    clave = str(rf.get("clave_numerica", "") or "").strip()
+                    detalle = f"{nombre}"
+                    if clave:
+                        detalle += f" | clave={clave}"
+
+                    if motivo == "no_asociado":
+                        tipo = documento_root or "MensajeHacienda"
+                        self.parse_errors.append(
+                            f"[respuesta_no_asociada] {detalle} ({tipo} no asociado a ningún comprobante por clave)"
+                        )
+                    else:
+                        self.parse_errors.append(
+                            f"[respuesta_irrecuperable] {detalle}"
+                        )
 
                 if not df.empty:
                     for _, row in df.iterrows():

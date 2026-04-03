@@ -744,6 +744,7 @@ class CRXMLManager:
         t0 = time.perf_counter()
         df = pd.DataFrame(rows)
         associated = self.associate_hacienda_messages(df)
+        orphan_hidden_messages = self.find_unassociated_hidden_messages(associated)
         comprobantes = self.filter_comprobante_rows(associated)
         deduped, duplicate_files = self.remove_duplicate_hashes_with_audit(comprobantes)
         enriched = self.resolve_party_names_in_dataframe(deduped)
@@ -763,6 +764,7 @@ class CRXMLManager:
             total_files_found=len(xml_files),
             duplicates=duplicate_files,
             processing_time_seconds=processing_time_seconds,
+            respuesta_failed_files=orphan_hidden_messages,
         )
         self._persist_audit_report(report)
         return optimized, report
@@ -845,6 +847,7 @@ class CRXMLManager:
         total_files_found: int,
         duplicates: list[dict[str, str]],
         processing_time_seconds: float,
+        respuesta_failed_files: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Construye reporte de auditoría del lote de XML procesado."""
         failed_files = [
@@ -856,14 +859,31 @@ class CRXMLManager:
             for row in rows
             if str(row.get("_process_status", "")).lower() in {"failed", "invalid_xml"}
         ]
-        respuesta_failed_files = [
-            {
-                "archivo": str(row.get("archivo", "")),
-                "ruta": str(row.get("ruta", "")),
-            }
-            for row in rows
-            if str(row.get("_process_status", "")).lower() == "skipped"
-        ]
+        respuesta_failed = list(respuesta_failed_files or [])
+        respuesta_failed.extend(
+            [
+                {
+                    "archivo": str(row.get("archivo", "")),
+                    "ruta": str(row.get("ruta", "")),
+                    "documento_root": str(row.get("documento_root", "")),
+                    "clave_numerica": str(row.get("clave_numerica", "")),
+                    "motivo": str(row.get("motivo", "irrecuperable")),
+                }
+                for row in rows
+                if str(row.get("_process_status", "")).lower() == "skipped"
+            ]
+        )
+        deduped_respuesta_failed: list[dict[str, str]] = []
+        seen_failed_paths: set[str] = set()
+        for item in respuesta_failed:
+            path = str(item.get("ruta", "")).strip()
+            dedupe_key = path or str(item.get("archivo", "")).strip()
+            if dedupe_key and dedupe_key in seen_failed_paths:
+                continue
+            if dedupe_key:
+                seen_failed_paths.add(dedupe_key)
+            deduped_respuesta_failed.append(item)
+
         invalid_xml_files = sum(1 for row in rows if str(row.get("_process_status", "")).lower() == "invalid_xml")
         successfully_processed = sum(1 for row in rows if str(row.get("_process_status", "")).lower() == "ok")
 
@@ -876,7 +896,7 @@ class CRXMLManager:
             "total_files_found": total_files_found,
             "successfully_processed": successfully_processed,
             "failed_files": failed_files,
-            "respuesta_failed_files": respuesta_failed_files,
+            "respuesta_failed_files": deduped_respuesta_failed,
             "duplicate_files": duplicates,
             "invalid_xml_files": invalid_xml_files,
             "processing_time_seconds": processing_time_seconds,
@@ -884,12 +904,37 @@ class CRXMLManager:
             "files_by_status": {
                 "ok": successfully_processed,
                 "failed": len(failed_files),
-                "respuesta_failed": len(respuesta_failed_files),
+                "respuesta_failed": len(deduped_respuesta_failed),
                 "duplicates": len(duplicates),
                 "invalid_xml": invalid_xml_files,
             },
         }
         return report
+
+    def find_unassociated_hidden_messages(self, df: pd.DataFrame) -> list[dict[str, str]]:
+        """Detecta mensajes ocultables que no pertenecen a ningún comprobante cargado."""
+        if df.empty or "documento_root" not in df.columns:
+            return []
+        hidden_roots = {"MensajeHacienda", "MensajeReceptor"}
+        if "_message_associated" not in df.columns:
+            return []
+
+        hidden_messages = df[
+            df["documento_root"].astype(str).isin(hidden_roots)
+            & ~df["_message_associated"].fillna(False).astype(bool)
+        ]
+        findings: list[dict[str, str]] = []
+        for _, row in hidden_messages.iterrows():
+            findings.append(
+                {
+                    "archivo": str(row.get("archivo", "")),
+                    "ruta": str(row.get("ruta", "")),
+                    "documento_root": str(row.get("documento_root", "")),
+                    "clave_numerica": str(row.get("clave_numerica", "")),
+                    "motivo": "no_asociado",
+                }
+            )
+        return findings
 
     def _persist_audit_report(self, report: dict[str, Any]) -> None:
         pass  # App 3 no persiste audit logs
@@ -909,6 +954,17 @@ class CRXMLManager:
         ]:
             if col not in df.columns:
                 df[col] = ""
+        df["_message_associated"] = False
+        invoice_mask = df["documento_root"].astype(str).isin(self.DOCUMENT_ROOT_INVOICE_TYPES)
+        invoice_claves = set(
+            clave
+            for clave in df.loc[invoice_mask, "clave_numerica"].astype(str)
+            if len(clave) == 50
+        )
+        hidden_message_mask = df["documento_root"].astype(str).isin({"MensajeHacienda", "MensajeReceptor"})
+        if hidden_message_mask.any():
+            hidden_message_association = df.loc[hidden_message_mask, "clave_numerica"].astype(str).isin(invoice_claves)
+            df.loc[hidden_message_mask, "_message_associated"] = hidden_message_association.to_numpy()
         message_rows = df[
             (df["documento_root"].astype(str) == "MensajeHacienda")
             & (df["clave_numerica"].astype(str).str.len() > 0)
