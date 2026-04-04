@@ -6,7 +6,7 @@ _on_select_single() y _on_multi_select().
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -39,6 +39,13 @@ class SelectionVM:
     # ── Proveedor prefill ─────────────────────────────────────────────────────
     proveedor: str = ""
 
+    # ── Contexto visual del documento / lote ─────────────────────────────────
+    batch_count: int = 0
+    batch_emisor: str = ""
+    doc_total: str = ""
+    doc_fecha: str = ""
+    doc_tipo: str = ""
+
     # ── Botones opcionales (visible = grid; no visible = grid_remove) ─────────
     btn_recover_visible: bool = False
     btn_link_visible: bool = False
@@ -49,6 +56,7 @@ class SelectionVM:
     # ── Boton Clasificar (siempre visible; solo cambia estado y texto) ────────
     btn_classify_enabled: bool = True
     btn_classify_text: str = "Clasificar"
+    block_reason: str = ""
 
     # ── Panel clasificacion anterior ──────────────────────────────────────────
     prev_frame_visible: bool = True

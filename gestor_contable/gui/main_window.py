@@ -3557,7 +3557,7 @@ class App3Window(ctk.CTk):
                     "Cuarentena completada",
                     f"{movidos} archivo{'s' if movidos != 1 else ''} movido{'s' if movidos != 1 else ''} a cuarentena.\n"
                     f"Lote: {result['batch_id']}\n"
-                    "Ubicacion: .metadata/cuarentena_receptor/",
+                    "Para restaurar: Ver historial de cuarentenas (panel ORS).",
                 )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -3874,19 +3874,40 @@ class App3Window(ctk.CTk):
             ModalOverlay.show_warning(self, "Purga ORS con errores", msg)
 
     def _show_ors_purge_history(self):
-        """Modal de historial de purgas ORS consultable por lote."""
+        """Modal de historial de purgas (ORS + respuestas receptor) consultable por lote."""
         if not self.session:
             return
 
         import tkinter as tk
         from gestor_contable.config import metadata_dir as _metadata_dir
 
+        mdir = _metadata_dir(self.session.folder)
+
+        # Cargar lotes de ambos DBs y mezclarlos con su origen
+        all_batches: list[dict] = []
+        db_ors = db_receptor = None
         try:
-            mdir = _metadata_dir(self.session.folder)
-            purge_db = OrsPurgeDB(mdir)
-            batches = purge_db.get_batches()
-        except Exception as exc:
-            ModalOverlay.show_error(self, "Error", f"No se pudo leer el historial:\n{exc}")
+            db_ors = OrsPurgeDB(mdir)
+            for b in db_ors.get_batches():
+                b["_tipo"] = "ORS"
+                b["_db"] = db_ors
+                all_batches.append(b)
+        except Exception:
+            pass
+        try:
+            db_receptor = OrsPurgeDB(mdir, db_filename="receptor_purge.sqlite")
+            for b in db_receptor.get_batches():
+                b["_tipo"] = "Receptor"
+                b["_db"] = db_receptor
+                all_batches.append(b)
+        except Exception:
+            pass
+
+        # Ordenar por fecha descendente
+        all_batches.sort(key=lambda b: b.get("fecha", ""), reverse=True)
+
+        if not all_batches and db_ors is None and db_receptor is None:
+            ModalOverlay.show_error(self, "Error", "No se pudo leer el historial.")
             return
 
         overlay, card, close_fn = ModalOverlay.build(self)
@@ -3895,7 +3916,7 @@ class App3Window(ctk.CTk):
         hdr.pack(fill="x")
         ctk.CTkLabel(
             hdr,
-            text="Historial de purgas ORS",
+            text="Historial de cuarentenas",
             font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
@@ -3911,10 +3932,10 @@ class App3Window(ctk.CTk):
             command=close_fn,
         ).pack(side="right", padx=16, pady=10)
 
-        if not batches:
+        if not all_batches:
             ctk.CTkLabel(
                 card,
-                text="No hay purgas registradas para este cliente.",
+                text="No hay cuarentenas registradas para este cliente.",
                 font=ctk.CTkFont(family="Segoe UI", size=12),
                 text_color=MUTED,
             ).pack(expand=True)
@@ -3945,12 +3966,12 @@ class App3Window(ctk.CTk):
         )
         detail_header.grid(row=0, column=0, columnspan=2, padx=12, pady=8, sticky="w")
 
-        # Boton Restaurar (fila 1, visible solo cuando hay un lote seleccionado)
-        _current_batch_id: list[str] = [""]  # mutable closure
+        # Closure mutable: batch_id y su purge_db activos
+        _selected: list = ["", None]  # [batch_id, purge_db]
 
         def _do_restore():
-            bid = _current_batch_id[0]
-            if not bid:
+            bid, active_db = _selected
+            if not bid or active_db is None:
                 return
             if not ModalOverlay.ask_sync(
                 self,
@@ -3965,7 +3986,7 @@ class App3Window(ctk.CTk):
             btn_restore.configure(state="disabled", text="Restaurando...")
             threading.Thread(
                 target=self._restore_ors_batch_worker,
-                args=(bid, purge_db, close_fn),
+                args=(bid, active_db, close_fn),
                 daemon=True,
             ).start()
 
@@ -4001,14 +4022,17 @@ class App3Window(ctk.CTk):
         detail_sb.config(command=detail_txt.yview)
 
         def _load_batch_detail(batch_id: str, batch: dict):
-            _current_batch_id[0] = batch_id
+            active_db = batch["_db"]
+            _selected[0] = batch_id
+            _selected[1] = active_db
+            tipo = batch["_tipo"]
             detail_header.configure(
-                text=f"Lote {batch_id[:23]}  |  cedula: {batch['cedula']}  |  {batch['fecha']}",
+                text=f"[{tipo}]  Lote {batch_id[:23]}  |  {batch['fecha']}",
                 text_color=TEXT,
             )
             btn_restore.configure(state="normal")
             try:
-                archivos = purge_db.get_archivos_for_batch(batch_id)
+                archivos = active_db.get_archivos_for_batch(batch_id)
             except Exception as e:
                 archivos = []
                 logger.warning(f"Error cargando detalle de lote: {e}")
@@ -4020,19 +4044,21 @@ class App3Window(ctk.CTk):
             else:
                 for a in archivos:
                     resultado = a["resultado"]
-                    tipo = a["tipo_archivo"].upper()
+                    tipo_arch = a["tipo_archivo"].upper()
                     nombre_orig = Path(a["ruta_original"]).name
                     ruta_q = Path(a["ruta_cuarentena"]).name if a["ruta_cuarentena"] else "—"
                     detalle = f"  [{a['detalle']}]" if a.get("detalle") else ""
                     detail_txt.insert(
                         "end",
-                        f"[{resultado:14s}] [{tipo:3s}] {nombre_orig}  ->  {ruta_q}{detalle}\n",
+                        f"[{resultado:14s}] [{tipo_arch:20s}] {nombre_orig}  ->  {ruta_q}{detalle}\n",
                     )
             detail_txt.configure(state="disabled")
 
-        for i, batch in enumerate(batches):
+        for i, batch in enumerate(all_batches):
             bid = batch["batch_id"]
-            btn_text = f"{batch['fecha'][:19]}  ({batch['total_claves']} claves)"
+            tipo = batch["_tipo"]
+            tipo_color = DANGER if tipo == "ORS" else WARNING
+            btn_text = f"[{tipo}]  {batch['fecha'][:19]}  ({batch['total_archivos']} archivos)"
             ctk.CTkButton(
                 batch_list_frame,
                 text=btn_text,
@@ -4040,7 +4066,7 @@ class App3Window(ctk.CTk):
                 font=ctk.CTkFont(family="Segoe UI", size=11),
                 fg_color=CARD if i % 2 == 0 else SURFACE,
                 hover_color=BORDER,
-                text_color=TEXT,
+                text_color=tipo_color,
                 corner_radius=4,
                 command=lambda b=bid, bdata=batch: _load_batch_detail(b, bdata),
             ).grid(row=i, column=0, sticky="ew", padx=4, pady=2)
