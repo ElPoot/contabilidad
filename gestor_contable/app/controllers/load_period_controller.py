@@ -44,6 +44,7 @@ class SessionLoadResult:
     renames: list[dict]
     pdf_duplicates_rejected: dict
     load_months: set[tuple[int, int]]
+    receptor_response_files: list  # [{archivo, ruta, clave_numerica}, ...]
 
 
 @dataclass
@@ -210,6 +211,7 @@ def load_session_worker(
         renames=renames,
         pdf_duplicates_rejected=indexer.pdf_duplicates_rejected,
         load_months=load_months,
+        receptor_response_files=indexer.receptor_response_files,
     )
 
 

@@ -226,6 +226,8 @@ class FacturaIndexer:
         self.failed_xml_files: list[str] = []  # Nombres de XML que fallaron el parseo
         # PDFs rechazados por duplicado de clave: {path_rechazado: path_ganador}
         self.pdf_duplicates_rejected: dict[Path, Path] = {}
+        # MensajeHacienda que son respuesta a MensajeReceptor propio del cliente
+        self.receptor_response_files: list[dict] = []  # [{archivo, ruta, clave_numerica}, ...]
 
     def load_period(
         self,
@@ -239,6 +241,7 @@ class FacturaIndexer:
         self.audit_report = {}
         self.pdf_duplicates_rejected = {}
         self.failed_xml_files = []
+        self.receptor_response_files = []
 
         start_total = time.perf_counter()
 
@@ -302,7 +305,16 @@ class FacturaIndexer:
                     if clave:
                         detalle += f" | clave={clave}"
 
-                    if motivo == "no_asociado":
+                    if motivo == "respuesta_receptor":
+                        self.receptor_response_files.append({
+                            "archivo": nombre,
+                            "ruta": str(rf.get("ruta", "") or ""),
+                            "clave_numerica": clave,
+                        })
+                        self.parse_errors.append(
+                            f"[respuesta_receptor] {detalle}"
+                        )
+                    elif motivo == "no_asociado":
                         tipo = documento_root or "MensajeHacienda"
                         self.parse_errors.append(
                             f"[respuesta_no_asociada] {detalle} ({tipo} no asociado a ningún comprobante por clave)"

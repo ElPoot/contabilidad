@@ -48,8 +48,8 @@ class OrsPurgeDB:
     CREATE INDEX IF NOT EXISTS idx_archivos_batch  ON archivos (batch_id);
     """
 
-    def __init__(self, metadata_dir: Path):
-        self._path = metadata_dir / "ors_purge.sqlite"
+    def __init__(self, metadata_dir: Path, db_filename: str = "ors_purge.sqlite"):
+        self._path = metadata_dir / db_filename
         self._lock = threading.Lock()
         self._init_db()
 

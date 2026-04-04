@@ -912,7 +912,15 @@ class CRXMLManager:
         return report
 
     def find_unassociated_hidden_messages(self, df: pd.DataFrame) -> list[dict[str, str]]:
-        """Detecta mensajes ocultables que no pertenecen a ningún comprobante cargado."""
+        """Detecta mensajes ocultables que no pertenecen a ningún comprobante cargado.
+
+        Para MensajeHacienda huérfanos, distingue entre:
+        - "respuesta_receptor": Hacienda confirma recepción de un MensajeReceptor enviado
+          por el propio cliente. Se detecta leyendo el contenido del XML: si la cédula
+          en posición 9-20 de la clave numérica coincide con NumeroCedulaReceptor del
+          MensajeHacienda, el comprobante original fue emitido por el receptor (el cliente).
+        - "no_asociado": caso genuino donde no hay comprobante con esa clave.
+        """
         if df.empty or "documento_root" not in df.columns:
             return []
         hidden_roots = {"MensajeHacienda", "MensajeReceptor"}
@@ -925,13 +933,26 @@ class CRXMLManager:
         ]
         findings: list[dict[str, str]] = []
         for _, row in hidden_messages.iterrows():
+            clave = str(row.get("clave_numerica", "") or "").strip()
+            motivo = "no_asociado"
+
+            if str(row.get("documento_root", "")) == "MensajeHacienda" and len(clave) == 50:
+                # Extraer cédula del emisor del comprobante original (pos 9-20, 12 dígitos)
+                # y normalizar quitando ceros de padding izquierda para comparar con NumeroCedulaReceptor.
+                cedula_en_clave = clave[9:21].lstrip("0")
+                cedula_receptor = str(
+                    row.get("MensajeHacienda_NumeroCedulaReceptor", "") or ""
+                ).strip().lstrip("0")
+                if cedula_en_clave and cedula_receptor and cedula_en_clave == cedula_receptor:
+                    motivo = "respuesta_receptor"
+
             findings.append(
                 {
                     "archivo": str(row.get("archivo", "")),
                     "ruta": str(row.get("ruta", "")),
                     "documento_root": str(row.get("documento_root", "")),
-                    "clave_numerica": str(row.get("clave_numerica", "")),
-                    "motivo": "no_asociado",
+                    "clave_numerica": clave,
+                    "motivo": motivo,
                 }
             )
         return findings

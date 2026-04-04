@@ -209,6 +209,11 @@ Some NC (credit notes) PDFs contain **two claves**:
 - **IVA rates:** see `IVA_TARIFA_CODE_MAP` in `gestor_contable/core/iva_utils.py`
 - **Decimal parsing:** use `parse_decimal_value()` from `iva_utils.py` (handles EU and US formats)
 
+### XML Classification Rules (CRITICAL)
+- **NEVER classify XML files by filename or suffix patterns** (`_respuesta`, `_firmado`, `_NC`, etc.) — filenames are unreliable, set by external software and vary per vendor, causing false positives.
+- **ALWAYS read the XML content** to determine document type — use the root element tag (`FacturaElectronica`, `MensajeHacienda`, `MensajeReceptor`, `NotaCreditoElectronica`, etc.) extracted by `flatten_xml_stream()`.
+- **Build solutions from concrete data** — if a classification problem arises, read actual XML files to understand the real structure, then solve that specific problem. Do not generalize from filename patterns.
+
 ### Threading & UI
 - **UI runs on main thread** — customtkinter
 - **Heavy I/O on worker threads** — ThreadPoolExecutor

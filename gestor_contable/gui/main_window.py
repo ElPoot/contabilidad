@@ -10,6 +10,7 @@ from pathlib import Path
 from queue import Queue
 
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import filedialog, ttk
 
 import logging
@@ -46,6 +47,7 @@ from gestor_contable.core.factura_index import FacturaIndexer
 from gestor_contable.core.models import FacturaRecord
 from gestor_contable.core.session import ClientSession
 from gestor_contable.gui.icons import get_icon
+from gestor_contable.gui.classify_panel import ClassifyPanel, ClassifyPanelCallbacks
 from gestor_contable.gui.loading_modal import LoadingOverlay
 from gestor_contable.gui.modal_overlay import ModalOverlay
 from gestor_contable.gui.pdf_viewer import PDFViewer
@@ -703,6 +705,7 @@ class App3Window(ctk.CTk):
                     result.catalog, result.db, result.records,
                     result.parse_errors, result.failed_xml_files,
                     result.renames, result.pdf_duplicates_rejected, result.load_months,
+                    result.receptor_response_files,
                 )))
             except Exception as exc:
                 logger.exception("Error en worker")
@@ -731,7 +734,7 @@ class App3Window(ctk.CTk):
             self._show_error("Error al cargar cliente", message)
             return
 
-        generation, session, catalog_mgr, db, records, parse_errors, failed_xml_files, renames, pdf_duplicates_rejected, load_months = payload
+        generation, session, catalog_mgr, db, records, parse_errors, failed_xml_files, renames, pdf_duplicates_rejected, load_months, receptor_response_files = payload
         if generation != self._load_generation:
             return
         self.session = session
@@ -754,10 +757,7 @@ class App3Window(ctk.CTk):
         # Actualizar catálogo
         cats = catalog_mgr.categorias()
         self._catalog_categories = list(cats)
-        self._cat_cb.configure(values=cats)
-        if cats:
-            self._cat_var.set(cats[0])
-            self._on_categoria_change()
+        self._classify_panel.set_catalog(catalog_mgr, list(cats))
         self._sync_category_for_record(None)
 
         self.pdf_viewer.clear()
@@ -776,12 +776,15 @@ class App3Window(ctk.CTk):
         self._update_progress()
         self._set_status("Listo")
 
+        self._receptor_response_files = receptor_response_files or []
+
         if parse_errors:
             self._show_parse_errors_modal(
                 "Advertencias al cargar",
                 parse_errors,
                 records_count=len(records),
                 failed_xml_files=failed_xml_files,
+                receptor_response_files=self._receptor_response_files,
             )
 
         if renames:
@@ -1059,6 +1062,8 @@ class App3Window(ctk.CTk):
         self.tree.tag_configure("sin_xml",       background="#2d2d2d", foreground=MUTED)    # Gris oscuro
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Return>", lambda _e: self._classify_selected())
+        self.tree.bind("<Left>", lambda _e: self._step_classify_category(-1))
+        self.tree.bind("<Right>", lambda _e: self._step_classify_category(1))
 
     # ── PANEL CENTRAL -- VISOR PDF ─────────────────────────────────────────────
     def _build_pdf_panel(self, parent):
@@ -1081,11 +1086,12 @@ class App3Window(ctk.CTk):
         frame.grid_rowconfigure(1, weight=1)
 
         # Header fijo
-        top = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10, height=44)
+        top = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10, height=38)
         top.grid(row=0, column=0, sticky="ew")
         top.grid_propagate(False)
         ctk.CTkLabel(top, text="Clasificación",
-                      font=F_TITLE(), text_color=TEXT).pack(side="left", padx=12, pady=10)
+                      font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                      text_color=TEXT).pack(side="left", padx=12, pady=7)
 
         # Contenido scrollable
         scroll = ctk.CTkScrollableFrame(
@@ -1095,228 +1101,31 @@ class App3Window(ctk.CTk):
         )
         scroll.grid(row=1, column=0, sticky="nsew")
         scroll.grid_columnconfigure(0, weight=1)
-
-        # ── Pill Hacienda ─────────────────────────────────────────────────────
-        self._hacienda_lbl = ctk.CTkLabel(
-            scroll, text="",
-            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
-            text_color=SUCCESS, fg_color="#0d2a1e", corner_radius=8,
-            anchor="center",
+        callbacks = ClassifyPanelCallbacks(
+            on_classify=self._classify_selected,
+            on_auto_classify=self._auto_classify_current_tab,
+            on_recover=self._recover_selected,
+            on_link=self._link_omitted_to_xml,
+            on_delete_omitido=self._delete_omitido,
+            on_create_pdf=self._create_pdf_for_selected,
+            on_open_new_cuenta=self._open_new_cuenta_dialog,
+            on_open_dest_folder=self._open_dest_folder,
+            on_form_change=self._update_path_preview,
         )
-        self._hacienda_lbl.grid(row=0, column=0, sticky="ew",
-                                 padx=12, pady=(12, 0), ipadx=6, ipady=4)
+        self._classify_panel = ClassifyPanel(scroll, callbacks=callbacks)
+        self._classify_panel.grid(row=0, column=0, sticky="ew")
 
-        # ── Panel clasificación contable ──────────────────────────────────────
-        clf_border = ctk.CTkFrame(scroll, fg_color=BORDER, corner_radius=12)
-        clf_border.grid(row=1, column=0, sticky="ew", padx=12, pady=10)
-        clf = ctk.CTkFrame(clf_border, fg_color=CARD, corner_radius=10)
-        clf.pack(fill="both", expand=True, padx=1, pady=1)
-        clf.grid_columnconfigure(0, weight=1)
-
-        # row 0 -- título sección
-        ctk.CTkLabel(clf, text="CLASIFICACIÓN CONTABLE",
-                      font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
-                      text_color=TEAL).grid(row=0, column=0, sticky="w",
-                                             padx=12, pady=(12, 6))
-
-        # row 1-2 -- Categoría (siempre visible)
-        ctk.CTkLabel(clf, text="Categoría", font=F_SMALL(),
-                      text_color=MUTED).grid(row=1, column=0, sticky="w", padx=12)
-        self._cat_var = ctk.StringVar()
-        self._cat_cb = ctk.CTkComboBox(
-            clf, variable=self._cat_var, values=[],
-            state="readonly",
-            fg_color=SURFACE, border_color=BORDER,
-            button_color=BORDER, button_hover_color=TEAL,
-            text_color=TEXT, font=F_LABEL(),
-            dropdown_fg_color=CARD, dropdown_text_color=TEXT,
-            command=self._on_categoria_change,
-        )
-        self._cat_cb.grid(row=2, column=0, sticky="ew", padx=12, pady=(2, 8))
-
-        # row 3 -- Tipo (GASTOS: GENERALES/ESPECIFICOS | OGND: OGND/DNR/ORS/CNR)
-        self._tipo_frame = ctk.CTkFrame(clf, fg_color="transparent")
-        self._tipo_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self._tipo_frame, text="Tipo", font=F_SMALL(),
-                      text_color=MUTED).grid(row=0, column=0, sticky="w", padx=12)
-        self._tipo_var = ctk.StringVar()
-        self._tipo_cb = ctk.CTkComboBox(
-            self._tipo_frame, variable=self._tipo_var, values=[],
-            state="readonly",
-            fg_color=SURFACE, border_color=BORDER,
-            button_color=BORDER, button_hover_color=TEAL,
-            text_color=TEXT, font=F_LABEL(),
-            dropdown_fg_color=CARD, dropdown_text_color=TEXT,
-            command=self._on_subtipo_change,
-        )
-        self._tipo_cb.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
-        self._tipo_frame.grid(row=3, column=0, sticky="ew")
-        self._tipo_frame.grid_remove()  # oculto hasta que se seleccione GASTOS u OGND
-
-        # row 4 -- Cuenta (solo para GASTOS)
-        self._cuenta_frame = ctk.CTkFrame(clf, fg_color="transparent")
-        self._cuenta_frame.grid_columnconfigure(0, weight=1)
-
-        # Header row: Label + "New Account" button
-        header_frame = ctk.CTkFrame(self._cuenta_frame, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=12)
-        header_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(header_frame, text="Cuenta", font=F_SMALL(),
-                      text_color=MUTED).grid(row=0, column=0, sticky="w")
-        ctk.CTkButton(
-            header_frame, text="+", width=30, height=28,
-            fg_color=TEAL, hover_color=TEAL_DIM,
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
-            text_color="#0d1a18",
-            command=self._open_new_cuenta_dialog,
-        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
-
-        # Search filter
-        self._cuenta_search_var = ctk.StringVar()
-        self._cuenta_search_var.trace_add("write", self._filter_cuentas)
-        ctk.CTkEntry(
-            self._cuenta_frame, textvariable=self._cuenta_search_var,
-            placeholder_text="Buscar cuenta...",
-            fg_color=SURFACE, border_color=BORDER, text_color=TEXT,
-            font=F_LABEL(), height=28, corner_radius=6,
-        ).grid(row=1, column=0, sticky="ew", padx=12, pady=(4, 2))
-
-        # ComboBox
-        self._cuenta_var = ctk.StringVar()
-        self._cuenta_cb = ctk.CTkComboBox(
-            self._cuenta_frame, variable=self._cuenta_var, values=[],
-            state="readonly",
-            fg_color=SURFACE, border_color=BORDER,
-            button_color=BORDER, button_hover_color=TEAL,
-            text_color=TEXT, font=F_LABEL(),
-            dropdown_fg_color=CARD, dropdown_text_color=TEXT,
-            command=lambda _v: self._update_path_preview(),
-        )
-        self._cuenta_cb.grid(row=2, column=0, sticky="ew", padx=12, pady=(2, 8))
-        self._cuenta_frame.grid(row=4, column=0, sticky="ew")
-        self._cuenta_frame.grid_remove()
-
-        # row 5 -- Proveedor (COMPRAS y GASTOS)
-        self._prov_frame = ctk.CTkFrame(clf, fg_color="transparent")
-        self._prov_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self._prov_frame, text="Proveedor", font=F_SMALL(),
-                      text_color=MUTED).grid(row=0, column=0, sticky="w", padx=12)
-        self._prov_var = ctk.StringVar()
-        self._prov_var.trace_add("write", lambda *_: self.after(0, self._update_path_preview))
-        ctk.CTkEntry(
-            self._prov_frame, textvariable=self._prov_var,
-            fg_color=SURFACE, border_color=BORDER, text_color=TEXT,
-            font=F_LABEL(), height=34, corner_radius=8,
-        ).grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
-        self._prov_frame.grid(row=5, column=0, sticky="ew")
-
-        # row 6 -- Preview de ruta destino
-        self._preview_lbl = ctk.CTkLabel(
-            clf, text="",
-            font=ctk.CTkFont(family="Segoe UI", size=10),
-            text_color=MUTED,
-            wraplength=220, justify="left", anchor="w",
-        )
-        self._preview_lbl.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 4))
-
-        # row 7 -- Botón Recuperar (para PDFs huérfanos)
-        self._btn_recover = ctk.CTkButton(
-            clf, text="Recuperar PDF",
-            font=F_BTN(), fg_color=WARNING, hover_color="#e8a61c",
-            text_color="#0d1a18", corner_radius=10, height=40,
-            state="disabled",
-            command=self._recover_selected,
-        )
-        self._btn_recover.grid_remove()  # Ocultar por defecto, mostrar solo con huérfanos
-
-        # row 7 -- Botón Vincular (para PDFs omitidos)
-        self._btn_link = ctk.CTkButton(
-            clf, text="Vincular a XML",
-            image=get_icon("link", 18), compound="left",
-            font=F_BTN(), fg_color="#8b5cf6", hover_color="#7c3aed",
-            text_color="#0d1a18", corner_radius=10, height=40,
-            state="disabled",
-            command=self._link_omitted_to_xml,
-        )
-        self._btn_link.grid_remove()  # Ocultar por defecto, mostrar solo con omitidos
-
-        # row 7 -- Botón Borrar PDF (para PDFs omitidos)
-        self._btn_delete = ctk.CTkButton(
-            clf, text="Borrar PDF",
-            image=get_icon("trash", 18), compound="left",
-            font=F_BTN(), fg_color=DANGER, hover_color="#dc2626",
-            text_color="#0d1a18", corner_radius=10, height=40,
-            state="disabled",
-            command=self._delete_omitido,
-        )
-        self._btn_delete.grid_remove()  # Ocultar por defecto, mostrar solo con omitidos
-
-        # row 7 -- Botón Crear PDF (para XMLs sin PDF)
-        self._btn_create_pdf = ctk.CTkButton(
-            clf, text="Crear PDF",
-            image=get_icon("file_pdf", 18), compound="left",
-            font=F_BTN(), fg_color="#3b82f6", hover_color="#2563eb",
-            text_color="#0d1a18", corner_radius=10, height=40,
-            state="disabled",
-            command=self._create_pdf_for_selected,
-        )
-        self._btn_create_pdf.grid_remove()  # Ocultar por defecto
-
-        # row 8 -- Botón Auto-clasificar (para Ingresos y Sin Receptor)
-        self._btn_auto_classify = ctk.CTkButton(
-            clf, text="Clasificar todos",
-            font=F_BTN(), fg_color="#10b981", hover_color="#059669",
-            text_color="#0d1a18", corner_radius=10, height=40,
-            state="disabled",
-            command=self._auto_classify_current_tab,
-        )
-        self._btn_auto_classify.grid_remove()  # Ocultar por defecto
-
-        # row 9 -- Botón Clasificar
-        self._btn_classify = ctk.CTkButton(
-            clf, text="Clasificar",
-            image=get_icon("modal_success", 18), compound="left",
-            font=F_BTN(), fg_color=TEAL, hover_color=TEAL_DIM,
-            text_color="#0d1a18", corner_radius=10, height=40,
-            state="disabled",
-            command=self._classify_selected,
-        )
-        self._btn_classify.grid(row=9, column=0, sticky="ew", padx=12, pady=(0, 12))
-
-        # ── Clasificación anterior ────────────────────────────────────────────
-        self._prev_frame = ctk.CTkFrame(scroll, fg_color=CARD, corner_radius=10)
-        self._prev_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
-        self._prev_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self._prev_frame, text="ANTERIOR",
-                      font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
-                      text_color=MUTED).grid(row=0, column=0, sticky="w",
-                                              padx=10, pady=(8, 2))
-        self._prev_var = ctk.StringVar(value="--")
-        ctk.CTkLabel(self._prev_frame, textvariable=self._prev_var,
-                      font=F_SMALL(), text_color="#555e6e",
-                      justify="left", wraplength=200, anchor="w").grid(
-            row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
-
-        # Label ruta destino (tk.Label nativo para cursor hand2 y color exacto)
-        import tkinter as tk
-        self._prev_path_lbl = tk.Label(
-            self._prev_frame,
-            text="",
-            font=("Segoe UI", 10),
-            fg=TEAL,
-            bg=CARD,
-            cursor="hand2",
-            anchor="w",
-            justify="left",
-            wraplength=195,
-        )
-        self._prev_path_lbl.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
-        self._prev_path_lbl.bind("<Button-1>", self._open_dest_folder)
+        self._btn_classify = self._classify_panel.btn_classify
+        self._btn_auto_classify = self._classify_panel.btn_auto_classify
+        self._btn_create_pdf = self._classify_panel.btn_create_pdf
+        self._btn_recover = self._classify_panel.btn_recover
+        self._btn_link = self._classify_panel.btn_link
+        self._btn_delete = self._classify_panel.btn_delete
 
         # ── Accion de pestaña ORS: Purgar ORS ─────────────────────────────────
         # Visible solo cuando la pestaña activa es ORS; independiente de seleccion.
         ors_frame = ctk.CTkFrame(scroll, fg_color=BORDER, corner_radius=12)
-        ors_frame.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 10))
+        ors_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
         ors_inner = ctk.CTkFrame(ors_frame, fg_color=CARD, corner_radius=10)
         ors_inner.pack(fill="both", expand=True, padx=1, pady=1)
         ors_inner.grid_columnconfigure(0, weight=1)
@@ -1357,6 +1166,15 @@ class App3Window(ctk.CTk):
         self._ors_frame = ors_frame
         self._ors_frame.grid_remove()  # Ocultar hasta que la pestaña sea ORS
 
+    def _step_classify_category(self, step: int):
+        if not getattr(self, "_classify_panel", None):
+            return None
+        if not self.selected and not self.selected_records:
+            return None
+        if self._classify_panel.step_category(step):
+            return "break"
+        return None
+
     # ── PESTAÑAS DE FACTURAS DEL PERÍODO ────────────────────────────────────────
     def _on_tab_clicked(self, tab: str):
         """Maneja click en pestaña. Filtra registros y actualiza UI."""
@@ -1372,13 +1190,8 @@ class App3Window(ctk.CTk):
         # Limpiar estado de botones contextuales al cambiar de pestaña
         self.selected = None
         self.selected_records = []
-        self._btn_create_pdf.grid_remove()
-        self._btn_link.grid_remove()
-        self._btn_delete.grid_remove()
-        self._btn_recover.grid_remove()
-        self._btn_auto_classify.grid_remove()
-        self._btn_classify.grid_remove()
         self._sync_category_for_record(None)
+        self._classify_panel.clear_selection_state()
 
         # Panel ORS: mostrar solo en pestaña ORS (accion de pestaña, no de seleccion)
         if tab == "ors" and self.session:
@@ -1559,6 +1372,8 @@ class App3Window(ctk.CTk):
         if not sel:
             self.selected = None
             self.selected_records = []
+            self._sync_category_for_record(None)
+            self._classify_panel.clear_selection_state()
             return
 
         # Resolver todos los records seleccionados
@@ -1593,8 +1408,7 @@ class App3Window(ctk.CTk):
     def _on_multi_select(self, records: list[FacturaRecord]):
         """Maneja selección de múltiples facturas (modo lote)."""
         vm = build_multi_vm(records)
-        if vm.mode != "multi_mixed":
-            self.selected = records[0]
+        self.selected = records[0] if vm.mode != "multi_mixed" else None
         self._render_selection_vm(vm)
         self._sync_category_for_record(records[0] if vm.mode != "multi_mixed" else None)
 
@@ -1655,16 +1469,6 @@ class App3Window(ctk.CTk):
 
     def _render_selection_vm(self, vm: SelectionVM):
         """Aplica un SelectionVM a los widgets del panel derecho y visor."""
-        # Pill Hacienda
-        if vm.hacienda_text:
-            self._hacienda_lbl.configure(
-                text=vm.hacienda_text,
-                text_color=vm.hacienda_color,
-                fg_color=vm.hacienda_bg,
-            )
-        else:
-            self._hacienda_lbl.configure(text="", fg_color="transparent")
-
         # Visor PDF
         if vm.viewer_pdf_path is not None:
             self.pdf_viewer.load(vm.viewer_pdf_path)
@@ -1675,92 +1479,8 @@ class App3Window(ctk.CTk):
         else:
             self.pdf_viewer.clear()
 
-        # Proveedor
-        if vm.proveedor:
-            self._prov_var.set(vm.proveedor)
-
-        # Botones opcionales: ocultar todos, luego mostrar los visibles
-        self._btn_recover.grid_remove()
-        self._btn_link.grid_remove()
-        self._btn_delete.grid_remove()
-        self._btn_create_pdf.grid_remove()
-        self._btn_auto_classify.grid_remove()
-
-        # Asignar filas identicas al original segun que botones estan visibles
-        if vm.btn_recover_visible:
-            self._btn_recover.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
-            self._btn_recover.configure(state="normal")
-            classify_row = 9
-        elif vm.btn_link_visible:
-            self._btn_link.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
-            self._btn_link.configure(state="normal")
-            if vm.btn_delete_visible:
-                self._btn_delete.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 6))
-                self._btn_delete.configure(state="normal")
-            classify_row = 9
-        elif vm.btn_create_pdf_visible:
-            self._btn_create_pdf.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
-            self._btn_create_pdf.configure(state="normal")
-            classify_row = 8
-        elif vm.btn_auto_classify_visible:
-            self._btn_auto_classify.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
-            self._btn_auto_classify.configure(state="normal")
-            classify_row = 8
-        else:
-            classify_row = 7
-
-        self._btn_classify.grid(row=classify_row, column=0, sticky="ew", padx=12, pady=(0, 12))
-        self._btn_classify.configure(
-            state="normal" if vm.btn_classify_enabled else "disabled",
-            text=vm.btn_classify_text,
-        )
-
-        # Panel clasificacion anterior
-        if vm.prev_frame_visible:
-            self._prev_frame.grid()
-            self._prev_var.set(vm.prev_text)
-            self._set_prev_dest_path(vm.prev_dest_path)
-        else:
-            self._prev_frame.grid_remove()
-            self._set_prev_dest_path(None)
-
-    @staticmethod
-    def _format_prev_dest_path(path: Path) -> str:
-        """Formatea la ruta clasificada de forma legible para el panel ANTERIOR."""
-        try:
-            parts = list(path.parts)
-            cont_idx = next(i for i, part in enumerate(parts) if part == "Contabilidades")
-            rel_parts = parts[cont_idx + 1:]
-        except StopIteration:
-            rel_parts = list(path.parts[-5:])
-
-        if not rel_parts:
-            return str(path)
-
-        file_name = rel_parts[-1]
-        folders = rel_parts[:-1]
-        lines: list[str] = []
-
-        if len(folders) <= 3:
-            if folders:
-                lines.append(" / ".join(folders))
-        else:
-            lines.append(" / ".join(folders[:3]))
-            lines.append(" / ".join(folders[3:]))
-
-        lines.append(file_name)
-        return "\n".join(line for line in lines if line)
-
-    def _set_prev_dest_path(self, path: Path | None):
-        """Actualiza la ruta mostrada en ANTERIOR y conserva la ruta real para el click."""
-        self._prev_dest_path = path
-        if path is None:
-            self._prev_path_lbl.config(text="", cursor="arrow")
-            return
-        self._prev_path_lbl.config(
-            text=self._format_prev_dest_path(path),
-            cursor="hand2",
-        )
+        self._classify_panel.render(vm)
+        self._update_path_preview()
 
     def _forced_form_values_for_record(self, record: FacturaRecord | None) -> dict[str, str] | None:
         """Retorna valores forzados del formulario según el tipo real de transacción."""
@@ -1776,104 +1496,17 @@ class App3Window(ctk.CTk):
         return None
 
     def _sync_category_for_record(self, record: FacturaRecord | None):
-        """Sincroniza el combo de categoría con el contexto real del documento seleccionado."""
+        """Sincroniza el selector de categoría con el contexto del documento."""
         forced = self._forced_form_values_for_record(record)
-        if forced:
-            forced_cat = forced["categoria"]
-            forced_subtipo = forced.get("subtipo", "")
-            self._cat_cb.configure(values=[forced_cat], state="disabled")
-            self._cat_var.set(forced_cat)
-            self._on_categoria_change()
-            if forced_subtipo:
-                self._tipo_cb.configure(values=[forced_subtipo], state="disabled")
-                self._tipo_var.set(forced_subtipo)
-                self._update_path_preview()
-            else:
-                self._tipo_cb.configure(state="readonly")
-            return
-
         manual_cats = list(self._catalog_categories)
-        self._cat_cb.configure(values=manual_cats, state="readonly")
-        if manual_cats:
-            current = self._cat_var.get().strip().upper()
-            if current not in manual_cats:
-                self._cat_var.set(manual_cats[0])
-        else:
-            self._cat_var.set("")
-        self._tipo_cb.configure(state="readonly")
-        self._on_categoria_change()
-
-    # ── CATÁLOGO ──────────────────────────────────────────────────────────────
-    def _on_categoria_change(self, _value=None):
-        cat = self._cat_var.get()
-        mgr = self.catalog_mgr
-
-        if cat == "COMPRAS":
-            self._tipo_frame.grid_remove()
-            self._cuenta_frame.grid_remove()
-            self._prov_frame.grid()
-
-        elif cat == "ACTIVO":
-            self._tipo_frame.grid_remove()
-            self._cuenta_frame.grid_remove()
-            self._prov_frame.grid()
-
-        elif cat == "GASTOS":
-            tipos = mgr.subtipos("GASTOS") if mgr else []
-            self._tipo_cb.configure(values=tipos)
-            self._tipo_var.set(tipos[0] if tipos else "")
-            self._tipo_frame.grid()
-            self._cuenta_frame.grid()
-            self._prov_frame.grid()
-            self._on_subtipo_change()  # actualiza cuentas
-            return  # _on_subtipo_change llama a _update_path_preview
-
-        elif cat == "OGND":
-            tipos = mgr.subtipos("OGND") if mgr else ["OGND", "DNR", "ORS", "CNR"]
-            self._tipo_cb.configure(values=tipos)
-            self._tipo_var.set(tipos[0] if tipos else "")
-            self._tipo_frame.grid()
-            self._cuenta_frame.grid_remove()
-            self._prov_frame.grid_remove()
-
-        elif cat == "INGRESOS" or cat == "SIN_RECEPTOR":
-            # Ingresos y Sin Receptor: sin subtipo, cuenta, ni proveedor
-            self._tipo_frame.grid_remove()
-            self._cuenta_frame.grid_remove()
-            self._prov_frame.grid_remove()
-
-        self._update_path_preview()
-
-    def _on_subtipo_change(self, _value=None):
-        cat    = self._cat_var.get()
-        subtipo = self._tipo_var.get()
-        mgr    = self.catalog_mgr
-
-        if cat == "GASTOS" and mgr:
-            cuentas = mgr.cuentas("GASTOS", subtipo)
-            self._all_cuentas = cuentas  # Store unfiltered list
-            self._cuenta_search_var.set("")  # Clear search
-            self._cuenta_cb.configure(values=cuentas)
-            self._cuenta_var.set(cuentas[0] if cuentas else "")
-            self._cuenta_frame.grid()
-        else:
-            self._cuenta_frame.grid_remove()
-
-        self._update_path_preview()
-
-    def _filter_cuentas(self, *_args):
-        """Filter accounts by search term (case-insensitive substring match)."""
-        search_term = self._cuenta_search_var.get().strip().lower()
-        if search_term:
-            filtered = [c for c in self._all_cuentas if search_term in c.lower()]
-        else:
-            filtered = self._all_cuentas
-        self._cuenta_cb.configure(values=filtered)
-        # Auto-select first matching item if available
-        if filtered and not self._cuenta_var.get():
-            self._cuenta_var.set(filtered[0])
-        elif filtered and self._cuenta_var.get() not in filtered:
-            self._cuenta_var.set(filtered[0])
+        if forced:
+            self._classify_panel.sync_category(
+                manual_cats,
+                forced_cat=forced["categoria"],
+                forced_subtipo=forced.get("subtipo", ""),
+            )
+            return
+        self._classify_panel.sync_category(manual_cats)
 
     def _open_new_cuenta_dialog(self):
         """Open modal dialog to add a new account."""
@@ -1881,8 +1514,9 @@ class App3Window(ctk.CTk):
             self._show_warning("Atención", "Catálogo no disponible.")
             return
 
-        cat = self._cat_var.get()
-        subtipo = self._tipo_var.get()
+        form_values = self._classify_panel.get_form_values()
+        cat = form_values["cat"]
+        subtipo = form_values["subtipo"]
         if cat != "GASTOS" or not subtipo:
             self._show_warning("Atención", "Selecciona una categoría y tipo primero.")
             return
@@ -1891,45 +1525,45 @@ class App3Window(ctk.CTk):
             self,
             categoria=cat,
             subtipo=subtipo,
-            existing_cuentas=self._all_cuentas,
+            existing_cuentas=self.catalog_mgr.cuentas(cat, subtipo),
             catalog_mgr=self.catalog_mgr,
             on_success=self._on_nueva_cuenta_added,
         )
 
     def _on_nueva_cuenta_added(self, new_cuenta: str):
         """Called when a new account is successfully added."""
-        # Reload the subtipo to get updated list
-        self._on_subtipo_change()
-        # Select the new account
-        if new_cuenta in self._all_cuentas:
-            self._cuenta_var.set(new_cuenta)
+        self._classify_panel.refresh_current_options(new_cuenta)
         self._update_path_preview()
         self._set_status(f"Cuenta '{new_cuenta}' agregada.")
 
     def _update_path_preview(self):
         """Muestra la ruta de destino estimada debajo del formulario."""
         if not self.session:
-            self._preview_lbl.configure(text="")
+            self._classify_panel.set_path_preview("")
+            return
+        if not self.selected and not self.selected_records:
+            self._classify_panel.set_path_preview("")
             return
 
-        cat     = self._cat_var.get()
-        subtipo = self._tipo_var.get() if cat in ("GASTOS", "OGND") else ""
-        cuenta  = self._cuenta_var.get() if cat == "GASTOS" else ""
-        prov    = self._prov_var.get().strip() if cat in ("COMPRAS", "GASTOS", "ACTIVO") else ""
+        form_values = self._classify_panel.get_form_values()
+        cat = form_values["cat"]
+        subtipo = form_values["subtipo"] if cat in ("GASTOS", "OGND") else ""
+        cuenta = form_values["cuenta"] if cat == "GASTOS" else ""
+        prov = form_values["prov"].strip() if cat in ("COMPRAS", "GASTOS", "ACTIVO") else ""
         fecha   = (self.selected.fecha_emision if self.selected else "") or ""
 
         # Validar mínimos necesarios para construir la ruta
         if not cat:
-            self._preview_lbl.configure(text="")
+            self._classify_panel.set_path_preview("")
             return
         if cat in ("COMPRAS", "ACTIVO") and not prov:
-            self._preview_lbl.configure(text="")
+            self._classify_panel.set_path_preview("")
             return
         if cat == "GASTOS" and not (subtipo and cuenta and prov):
-            self._preview_lbl.configure(text="")
+            self._classify_panel.set_path_preview("")
             return
         if cat == "OGND" and not subtipo:
-            self._preview_lbl.configure(text="")
+            self._classify_panel.set_path_preview("")
             return
         # INGRESOS y SIN_RECEPTOR no necesitan validación (sin subtipo/cuenta/prov)
 
@@ -1937,9 +1571,9 @@ class App3Window(ctk.CTk):
             dest  = build_dest_folder(self.session.folder, fecha, cat, subtipo, cuenta, prov)
             parts = dest.parts
             snippet = (".../" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else str(dest) + "/"
-            self._preview_lbl.configure(text=snippet)
+            self._classify_panel.set_path_preview(snippet)
         except Exception:
-            self._preview_lbl.configure(text="")
+            self._classify_panel.set_path_preview("")
 
     def _on_filter(self):
         if not self.session:
@@ -3030,11 +2664,11 @@ class App3Window(ctk.CTk):
             )
             return
 
-        forced = self._forced_form_values_for_record(self.selected_records[0] if self.selected_records else self.selected)
-        cat    = forced["categoria"] if forced else self._cat_var.get().strip().upper()
-        subtipo = (forced.get("subtipo", "") if forced else self._tipo_var.get().strip().upper()) if cat in ("GASTOS", "OGND") else ""
-        cuenta  = self._cuenta_var.get().strip().upper() if cat == "GASTOS" else ""
-        prov    = self._prov_var.get().strip().upper() if cat in ("COMPRAS", "GASTOS", "ACTIVO") else ""
+        form_values = self._classify_panel.get_form_values()
+        cat = form_values["cat"].strip().upper()
+        subtipo = form_values["subtipo"].strip().upper() if cat in ("GASTOS", "OGND") else ""
+        cuenta = form_values["cuenta"].strip().upper() if cat == "GASTOS" else ""
+        prov = form_values["prov"].strip().upper() if cat in ("COMPRAS", "GASTOS", "ACTIVO") else ""
 
         if not cat:
             self._show_warning("Atención", "Selecciona una categoría.")
@@ -3307,7 +2941,7 @@ class App3Window(ctk.CTk):
     def _show_warning(self, title: str, msg: str):
         ModalOverlay.show_warning(self, title, msg)
 
-    def _show_parse_errors_modal(self, title: str, parse_errors: list[str], records_count: int = 0, failed_xml_files: list[str] | None = None):
+    def _show_parse_errors_modal(self, title: str, parse_errors: list[str], records_count: int = 0, failed_xml_files: list[str] | None = None, receptor_response_files: list | None = None):
         """Modal in-app con lista scrollable de advertencias y botón de exportar."""
         import tkinter as tk
 
@@ -3378,6 +3012,15 @@ class App3Window(ctk.CTk):
                 text_color=WARNING, border_width=1, border_color=WARNING,
                 command=ignore_failed_xml,
             ).pack(side="left", padx=8)
+        if receptor_response_files:
+            ctk.CTkButton(
+                btns,
+                text=f"Cuarentena respuestas receptor ({len(receptor_response_files)})",
+                width=240,
+                fg_color=SURFACE, hover_color=BORDER,
+                text_color=DANGER, border_width=1, border_color=DANGER,
+                command=lambda: self._purge_receptor_responses(receptor_response_files, close),
+            ).pack(side="left", padx=8)
         ctk.CTkButton(
             btns, text="Entendido", width=120,
             fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
@@ -3409,6 +3052,7 @@ class App3Window(ctk.CTk):
             "iva_mismatch":         [],
             "xml_duplicate":        [],
             "xml_failed":           [],
+            "respuesta_receptor":   [],
             "respuesta_failed":     [],
             "pdf_duplicate":        [],
             "other":                [],
@@ -3420,6 +3064,8 @@ class App3Window(ctk.CTk):
                 cats["iva_mismatch"].append(err)
             elif "duplicados descartados" in err or "XML(s) duplicados" in err:
                 cats["xml_duplicate"].append(err)
+            elif "[respuesta_receptor]" in err:
+                cats["respuesta_receptor"].append(err)
             elif "[respuesta_irrecuperable]" in err or "[respuesta_no_asociada]" in err:
                 cats["respuesta_failed"].append(err)
             elif "Error cargando carpeta XML" in err or (
@@ -3432,13 +3078,14 @@ class App3Window(ctk.CTk):
                 cats["other"].append(err)
 
         label_map = {
-            "total_mismatch":   "total_comprobante no cuadra  (subtotal + IVA ≠ total)",
-            "iva_mismatch":     "suma de IVAs no cuadra con impuesto_total",
-            "xml_duplicate":    "XML duplicados (descartados automáticamente)",
-            "xml_failed":       "XML fallidos / error de parseo",
-            "respuesta_failed": "Mensajes de respuesta con incidencia (irrecuperables o no asociados)",
-            "pdf_duplicate":    "PDF duplicado resuelto automáticamente",
-            "other":            "otros / sin categoría",
+            "total_mismatch":     "total_comprobante no cuadra  (subtotal + IVA ≠ total)",
+            "iva_mismatch":       "suma de IVAs no cuadra con impuesto_total",
+            "xml_duplicate":      "XML duplicados (descartados automáticamente)",
+            "xml_failed":         "XML fallidos / error de parseo",
+            "respuesta_receptor": "Respuestas Hacienda a confirmaciones receptor (normales, sin accion requerida)",
+            "respuesta_failed":   "Mensajes de respuesta con incidencia (irrecuperables o no asociados)",
+            "pdf_duplicate":      "PDF duplicado resuelto automáticamente",
+            "other":              "otros / sin categoría",
         }
 
         SEP = "=" * 80
@@ -3494,6 +3141,13 @@ class App3Window(ctk.CTk):
             "                   El archivo está corrupto o tiene formato inválido.",
             "                   Acción: revisión manual del archivo XML indicado.",
             "",
+            "  respuesta_receptor: MensajeHacienda que confirma recepcion de un MensajeReceptor",
+            "                   enviado por el propio cliente (confirmacion de aceptacion/rechazo",
+            "                   de factura recibida). NO son errores. Solo se reportan para",
+            "                   visibilidad. Detectados leyendo el contenido XML: cedula en",
+            "                   posicion 9-20 de la clave == NumeroCedulaReceptor del mensaje.",
+            "                   Accion: ninguna requerida. Opcional: mover a cuarentena.",
+            "",
             "  respuesta_failed: MensajeHacienda/MensajeReceptor con incidencia.",
             "                   Puede ser un _respuesta.xml irrecuperable o una respuesta",
             "                   que NO corresponde a ningún comprobante cargado por clave.",
@@ -3513,8 +3167,13 @@ class App3Window(ctk.CTk):
                 continue
             lines.append("")
             lines.append(f"  ── {label_map[cat].upper()} ({len(errs)}) ──")
-            for i, err in enumerate(errs, 1):
-                lines.append(f"  [{i:03d}] {err}")
+            if cat == "respuesta_receptor":
+                lines.append(f"  Total: {len(errs)} archivos. Son normales — Hacienda confirma recepcion")
+                lines.append("  de MensajeReceptor enviado por el cliente. No requieren accion.")
+                lines.append("  Puede moverlos a cuarentena desde el modal de advertencias al cargar.")
+            else:
+                for i, err in enumerate(errs, 1):
+                    lines.append(f"  [{i:03d}] {err}")
 
         lines += ["", SEP, "FIN DEL REPORTE", SEP]
 
@@ -3846,6 +3505,62 @@ class App3Window(ctk.CTk):
             ModalOverlay.show_success(self, "Limpieza completada", message)
 
         self._set_status(f"Limpieza: {len(deleted)} archivo(s) eliminado(s)")
+
+    # ── PURGA RESPUESTAS RECEPTOR ─────────────────────────────────────────────
+
+    def _purge_receptor_responses(self, receptor_files: list, close_modal_fn):
+        """Mueve los MensajeHacienda de respuesta receptor a cuarentena auditada."""
+        if not self.session or not receptor_files:
+            return
+
+        n = len(receptor_files)
+        confirmed = ModalOverlay.ask_sync(
+            self,
+            "Cuarentena respuestas receptor",
+            f"Se moveran {n} archivo{'s' if n != 1 else ''} a cuarentena.\n\n"
+            "Estos son confirmaciones de Hacienda a MensajeReceptor enviados\n"
+            "por el cliente. No son facturas. Pueden recuperarse desde:\n"
+            ".metadata/cuarentena_receptor/\n\n"
+            "¿Continuar?",
+            confirm_text="Mover a cuarentena",
+        )
+        if not confirmed:
+            return
+
+        close_modal_fn()
+
+        from gestor_contable.core.ors_purge import OrsPurgeDB
+        from gestor_contable.core.receptor_purge import execute_receptor_purge
+
+        metadata = self.session.folder / ".metadata"
+        metadata.mkdir(parents=True, exist_ok=True)
+        purge_db = OrsPurgeDB(metadata, db_filename="receptor_purge.sqlite")
+        client_folder = self.session.folder
+
+        def worker():
+            result = execute_receptor_purge(receptor_files, client_folder, purge_db)
+            self.after(0, lambda r=result: _on_done(r))
+
+        def _on_done(result: dict):
+            movidos = result["total_movidos"]
+            fallidos = result["total_fallidos"]
+            self._receptor_response_files = []
+            if fallidos:
+                self._show_warning(
+                    "Cuarentena completada con errores",
+                    f"Movidos: {movidos}  |  Fallidos: {fallidos}\n"
+                    f"Lote: {result['batch_id']}\n"
+                    "Revise .metadata/cuarentena_receptor/ para detalles.",
+                )
+            else:
+                self._show_info(
+                    "Cuarentena completada",
+                    f"{movidos} archivo{'s' if movidos != 1 else ''} movido{'s' if movidos != 1 else ''} a cuarentena.\n"
+                    f"Lote: {result['batch_id']}\n"
+                    "Ubicacion: .metadata/cuarentena_receptor/",
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ── PURGA ORS ─────────────────────────────────────────────────────────────
 
@@ -4369,7 +4084,7 @@ class App3Window(ctk.CTk):
 
     def _open_dest_folder(self, event=None):
         """Abre en el Explorador de Windows la carpeta donde está el PDF clasificado."""
-        ruta = self._prev_dest_path
+        ruta = event if isinstance(event, Path) else None
         if ruta is None and self.selected and self.db:
             db_rec = self._db_records.get(self.selected.clave)
             if db_rec and db_rec.get("ruta_destino"):
