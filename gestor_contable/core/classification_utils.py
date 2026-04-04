@@ -12,6 +12,20 @@ from gestor_contable.core.classifier import heal_classified_path
 logger = logging.getLogger(__name__)
 
 
+def _db_is_classified(db_rec: dict) -> bool:
+    """Devuelve True si el registro de BD cuenta como clasificado.
+
+    - estado="clasificado": clasificación completa (con PDF movido o ingreso con PDF).
+    - estado="pendiente_pdf" + categoria: ingreso/sin_receptor sin PDF con categoría asignada.
+    """
+    estado = db_rec.get("estado", "")
+    if estado == "clasificado":
+        return True
+    if estado == "pendiente_pdf" and str(db_rec.get("categoria") or "").strip():
+        return True
+    return False
+
+
 def _is_tiquete_electronico(record: FacturaRecord) -> bool:
     """Detecta Tiquete Electrónico por tipo_documento o por clave Hacienda.
 
@@ -128,9 +142,11 @@ def filter_records_by_tab(
     if tab == "sin_clave":
         # PDFs sin clave: no tienen clave válida (50 dígitos) o falta vinculación.
         # Excluir ya clasificados (PDF movido -> pdf_path=None en recarga, no es error).
+        # Excluir ingresos (el cliente es emisor): sus XMLs sin PDF no son un problema operativo aquí.
         return [
             r for r in non_omitted
             if not (db_records.get(r.clave, {}).get("estado") == "clasificado")
+            and get_transaction_type(r, client_cedula) != "ingreso"
             and (not r.clave or len(r.clave) != 50 or r.estado in ("pendiente_pdf", "sin_xml") or not r.pdf_path)
         ]
 
@@ -188,11 +204,13 @@ def get_tab_statistics(
 
     for tab in tabs:
         filtered = filter_records_by_tab(records, tab, client_cedula, db_records)
-        # Solo contar clasificados para registros sin razon_omisión
+        # Solo contar clasificados para registros sin razon_omisión.
+        # Un registro está clasificado si estado="clasificado", o si estado="pendiente_pdf"
+        # con categoría asignada (ingresos/sin_receptor sin PDF que no mueven archivo).
         clasificados = sum(
             1
             for r in filtered
-            if not r.razon_omisión and db_records.get(r.clave, {}).get("estado") == "clasificado"
+            if not r.razon_omisión and _db_is_classified(db_records.get(r.clave, {}))
         )
         total = len(filtered)
         porcentaje = int((clasificados / total * 100)) if total > 0 else 0

@@ -364,16 +364,20 @@ def classify_record(
       6. Registrar en BD
     """
     if record.pdf_path is None:
+        prev = db.get_record(record.clave) or {}
+        # Si el registro ya estaba "clasificado" (ej: ingreso sin PDF que no requiere mover
+        # archivo), preservar ese estado en lugar de degradar a "pendiente_pdf".
+        nuevo_estado = "clasificado" if prev.get("estado") == "clasificado" else "pendiente_pdf"
         db.upsert(
             clave_numerica=record.clave,
-            estado="pendiente_pdf",
+            estado=nuevo_estado,
             categoria=categoria,
             subtipo=subtipo,
             nombre_cuenta=nombre_cuenta,
             proveedor=proveedor,
             ruta_origen=str(record.xml_path or ""),
-            ruta_destino="",
-            sha256="",
+            ruta_destino=prev.get("ruta_destino", ""),
+            sha256=prev.get("sha256", ""),
             fecha_clasificacion=datetime.now().isoformat(timespec="seconds"),
             clasificado_por=user,
         )

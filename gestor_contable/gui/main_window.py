@@ -96,6 +96,22 @@ ESTADO_LABEL = {
     "sin_xml":       "sin XML",
 }
 
+def _is_effectively_classified(db_rec: dict, r) -> bool:
+    """Determina si un registro cuenta como clasificado para el contador de progreso.
+
+    Un registro está efectivamente clasificado si:
+    - Su estado en BD es "clasificado", O
+    - Su estado en BD es "pendiente_pdf" con una categoría asignada
+      (ingresos/sin_receptor sin PDF: ya tienen categoría pero no se mueve PDF).
+    """
+    estado = db_rec.get("estado") or getattr(r, "estado", "")
+    if estado == "clasificado":
+        return True
+    if estado == "pendiente_pdf" and str(db_rec.get("categoria") or "").strip():
+        return True
+    return False
+
+
 def _fmt_amount(value: str) -> str:
     """Formatea montos como App 2: 137 131,77 (miles con espacio, decimales con coma)."""
     try:
@@ -1358,8 +1374,10 @@ class App3Window(ctk.CTk):
         clf = sum(
             1
             for r in self.records
-            if ((self._db_records.get(r.clave, {}).get("estado") if self.db else None) or r.estado)
-            == "clasificado"
+            if _is_effectively_classified(
+                self._db_records.get(r.clave, {}) if self.db else {},
+                r,
+            )
         )
         pct = int(clf / total * 100) if total else 0
         self._progress_var.set(f"{clf}/{total}  ({pct}%)")

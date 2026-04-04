@@ -121,7 +121,7 @@ def build_single_vm(
     elif r.estado == "pendiente_pdf":
         vm.btn_create_pdf_visible = True
         vm.btn_classify_text = "Clasificar sin PDF"
-    elif active_tab in ("ingreso", "sin_receptor"):
+    elif active_tab in ("ingreso", "sin_receptor") and pdf_path is not None:
         vm.btn_auto_classify_visible = True
 
     # Clasificacion anterior
