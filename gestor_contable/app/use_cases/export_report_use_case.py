@@ -14,6 +14,7 @@ from pathlib import Path
 from gestor_contable.core.classification_utils import classify_transaction
 from gestor_contable.core.iva_utils import apply_exchange_rate, parse_decimal_value
 from gestor_contable.core.models import FacturaRecord
+from gestor_contable.core.report_paths import month_name_es
 
 
 # ── Helpers internos ─────────────────────────────────────────────────────────
@@ -31,11 +32,8 @@ def _parse_date_for_filename(text: str):
 
 
 def _month_name_es(dt: datetime) -> str:
-    months = {
-        1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL", 5: "MAYO", 6: "JUNIO",
-        7: "JULIO", 8: "AGOSTO", 9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
-    }
-    return months.get(dt.month, "MES")
+    return month_name_es(dt.month)
+
 
 
 def _format_amount_es(number: Decimal) -> str:
@@ -252,11 +250,22 @@ def _write_gasto_grouped(
 
 # ── API pública ──────────────────────────────────────────────────────────────
 
-def default_export_filename(client_name: str, from_date: str, to_date: str) -> str:
+def default_export_filename(
+    client_name: str,
+    from_date: str,
+    to_date: str,
+    *,
+    mes: int | None = None,
+    anio: int | None = None,
+) -> str:
     """Nombre de archivo sugerido para el reporte de exportación."""
-    base_dt = _parse_date_for_filename(from_date) or _parse_date_for_filename(to_date) or datetime.now()
-    year = base_dt.strftime("%Y")
-    month_txt = _month_name_es(base_dt)
+    if mes is None or anio is None:
+        base_dt = _parse_date_for_filename(from_date) or _parse_date_for_filename(to_date) or datetime.now()
+        anio = base_dt.year
+        mes = base_dt.month
+
+    year = f"{int(anio):04d}"
+    month_txt = month_name_es(int(mes))
     client_clean = (str(client_name or "REPORTE")
                     .replace("/", " ")
                     .replace("\\", " ")
@@ -264,6 +273,7 @@ def default_export_filename(client_name: str, from_date: str, to_date: str) -> s
     if len(client_clean) > 42:
         client_clean = client_clean[:42].strip()
     return f"PF-{year} - {client_clean} - REPORTE - {month_txt}.xlsx"
+
 
 
 def export_period_report(

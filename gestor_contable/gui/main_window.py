@@ -35,7 +35,13 @@ from gestor_contable.core.classification_utils import (
     get_classification_label,
     get_tab_statistics,
 )
-from gestor_contable.core.classifier import ClassificationDB, build_dest_folder, classify_record, heal_classified_path
+from gestor_contable.core.classifier import (
+    ClassificationDB,
+    _sanitize_folder,
+    build_dest_folder,
+    classify_record,
+    heal_classified_path,
+)
 from gestor_contable.core.duplicates_quarantine import (
     DuplicatesQuarantineDB,
     execute_duplicates_quarantine,
@@ -50,6 +56,7 @@ from gestor_contable.core.ors_purge import (
 )
 from gestor_contable.core.factura_index import FacturaIndexer
 from gestor_contable.core.models import FacturaRecord
+from gestor_contable.core.report_paths import month_folder_name, resolve_incremental_path
 from gestor_contable.core.session import ClientSession
 from gestor_contable.core import atv_client
 from gestor_contable.gui.icons import get_icon
@@ -1877,7 +1884,33 @@ class App3Window(ctk.CTk):
             self._active_calendar._safe_close()
             self._active_calendar = None
 
+    @staticmethod
+    def _detect_period_month_year(records: list[FacturaRecord], *fallback_dates: str) -> tuple[int, int]:
+        for record in records:
+            try:
+                dt = datetime.strptime((record.fecha_emision or "").strip(), "%d/%m/%Y")
+                return dt.month, dt.year
+            except ValueError:
+                continue
+
+        for raw_date in fallback_dates:
+            try:
+                dt = datetime.strptime((raw_date or "").strip(), "%d/%m/%Y")
+                return dt.month, dt.year
+            except ValueError:
+                continue
+
+        now = datetime.now()
+        return now.month, now.year
+
+    def _current_client_folder_name(self) -> str:
+        if self.session:
+            return self.session.folder.name
+        return _sanitize_folder(self._lbl_cliente.cget("text") or "CLIENTE")
+
+
     def _export_report(self):
+
         if not self.records:
             ModalOverlay.show_info(self, "Exportar", "No hay registros para exportar.")
             return
@@ -1886,36 +1919,37 @@ class App3Window(ctk.CTk):
         date_from_label = self.from_var.get().strip() or "01/01/1900"
         date_to_label = self.to_var.get().strip() or datetime.now().strftime("%d/%m/%Y")
 
-        default_name = default_export_filename(
-            self._lbl_cliente.cget("text"),
+        client_cedula = self._get_client_cedula()
+        period_records = [r for r in self._apply_date_filter(self.all_records) if not r.razon_omisión]
+        if not period_records:
+            ModalOverlay.show_info(self, "Exportar", "No hay registros válidos en el período seleccionado.")
+            return
+
+        mes_actual, anio_actual = self._detect_period_month_year(
+            period_records,
             self.from_var.get(),
             self.to_var.get(),
         )
-        target = filedialog.asksaveasfilename(
-            title="Exportar reporte",
-            defaultextension=".xlsx",
-            initialfile=default_name,
-            filetypes=[("Excel", "*.xlsx"), ("CSV", "*.csv")],
-            confirmoverwrite=True,
+        reportes_dir = (
+            network_drive()
+            / f"PF-{anio_actual}"
+            / "REPORTES"
+            / month_folder_name(mes_actual)
+            / self._current_client_folder_name()
         )
-        if not target:
-            return
-
-        target_path = Path(target)
-        if target_path.exists():
-            try:
-                target_path.unlink()
-            except PermissionError:
-                self._show_error(
-                    "Error al exportar",
-                    f"El archivo está abierto en otro programa.\nCiérralo e intenta de nuevo:\n{target}",
-                )
-                return
-
-        client_cedula = self._get_client_cedula()
-        period_records = [r for r in self._apply_date_filter(self.all_records) if not r.razon_omisión]
 
         try:
+            reportes_dir.mkdir(parents=True, exist_ok=True)
+            target_path = resolve_incremental_path(
+                reportes_dir,
+                default_export_filename(
+                    owner_name,
+                    self.from_var.get(),
+                    self.to_var.get(),
+                    mes=mes_actual,
+                    anio=anio_actual,
+                ),
+            )
             export_period_report(
                 period_records,
                 self._db_records if self.db else {},
@@ -1925,7 +1959,7 @@ class App3Window(ctk.CTk):
                 date_from_label,
                 date_to_label,
             )
-            ModalOverlay.show_info(self, "Exportar", f"Reporte guardado en:\n{target}")
+            ModalOverlay.show_info(self, "Exportar", f"Reporte guardado en:\n{target_path}")
             self._set_status("Reporte exportado")
         except Exception as exc:
             self._show_error("Error al exportar", str(exc))
@@ -1960,41 +1994,25 @@ class App3Window(ctk.CTk):
             ModalOverlay.show_info(self, "Corte", "No hay facturas válidas en el período seleccionado.")
             return
 
-        # Detectar mes/año del período para el nombre de archivo sugerido
-        mes_actual = datetime.now().month
-        anio_actual = datetime.now().year
-        for r in period_records:
-            try:
-                dt = datetime.strptime((r.fecha_emision or "").strip(), "%d/%m/%Y")
-                mes_actual = dt.month
-                anio_actual = dt.year
-                break
-            except ValueError:
-                pass
-
-        _meses_folder = {
-            1:"ENERO", 2:"FEBRERO", 3:"MARZO", 4:"ABRIL", 5:"MAYO", 6:"JUNIO",
-            7:"JULIO", 8:"AGOSTO", 9:"SEPTIEMBRE", 10:"OCTUBRE", 11:"NOVIEMBRE", 12:"DICIEMBRE",
-        }
-        mes_folder  = _meses_folder.get(mes_actual, f"{mes_actual:02d}")
-        cortes_dir  = network_drive() / f"PF-{anio_actual}" / "CORTES" / mes_folder
+        mes_actual, anio_actual = self._detect_period_month_year(
+            period_records,
+            self.from_var.get(),
+            self.to_var.get(),
+        )
+        cortes_dir = (
+            network_drive()
+            / f"PF-{anio_actual}"
+            / "CORTES"
+            / month_folder_name(mes_actual)
+            / client_name
+        )
         try:
             cortes_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             self._show_error("Error al guardar", f"No se pudo crear la carpeta de cortes:\n{cortes_dir}\n\n{exc}")
             return
 
-        filename    = default_filename(client_name, mes_actual, anio_actual)
-        target_path = cortes_dir / filename
-        if target_path.exists():
-            try:
-                target_path.unlink()
-            except PermissionError:
-                self._show_error(
-                    "Error al guardar",
-                    f"El archivo está abierto en otro programa.\nCiérralo e intenta de nuevo:\n{target_path}",
-                )
-                return
+        filename = default_filename(client_name, mes_actual, anio_actual)
 
         self._set_status("Generando corte...")
         self._progress_var.set("Clasificando facturas...")
@@ -2019,7 +2037,7 @@ class App3Window(ctk.CTk):
                 )
 
                 self.after(0, lambda: self._on_corte_done(
-                    resultados, target_path, client_name, mes_actual, anio_actual
+                    resultados, cortes_dir, filename, client_name, mes_actual, anio_actual
                 ))
             except Exception as exc:
                 logger.exception("Error al generar corte")
@@ -2034,7 +2052,8 @@ class App3Window(ctk.CTk):
     def _on_corte_done(
         self,
         resultados,
-        target_path: Path,
+        output_dir: Path,
+        output_filename: str,
         client_name: str,
         mes: int,
         anio: int,
@@ -2066,6 +2085,8 @@ class App3Window(ctk.CTk):
 
         def _escribir_excel(items_finales):
             try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                target_path = resolve_incremental_path(output_dir, output_filename)
                 generar_corte_excel(
                     resultados  = items_finales,
                     client_name = client_name,

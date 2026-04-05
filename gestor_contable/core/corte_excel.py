@@ -26,6 +26,7 @@ from gestor_contable.core.corte_engine import (
     CATEGORIA_AMBIGUO,
 )
 from gestor_contable.core.iva_utils import apply_exchange_rate, parse_decimal_value
+from gestor_contable.core.report_paths import month_abbr_es
 
 LOGGER = logging.getLogger(__name__)
 
@@ -449,8 +450,6 @@ def _abreviar_sociedad(name: str) -> str:
 
 def default_filename(client_name: str, mes: int, anio: int) -> str:
     """Nombre de archivo sugerido para el corte."""
-    meses = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",
-             7:"JUL",8:"AGO",9:"SET",10:"OCT",11:"NOV",12:"DIC"}
-    mes_str  = meses.get(mes, f"{mes:02d}")
+    mes_str  = month_abbr_es(mes)
     name_safe = _abreviar_sociedad(client_name or "CLIENTE").replace("/","").replace("\\","").strip()[:50]
     return f"CORTE {mes_str} {anio} - {name_safe}.xlsx"
