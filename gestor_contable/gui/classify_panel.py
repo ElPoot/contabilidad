@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Callable
 
 import customtkinter as ctk
-import tkinter as tk
 
 from gestor_contable.app.selection_vm import SelectionVM
 from gestor_contable.core.catalog import CatalogManager
 from gestor_contable.gui.icons import get_icon
+from gestor_contable.gui.fonts import get_font
 
 BG = "#0d0f14"
 SURFACE = "#13161e"
@@ -28,13 +28,12 @@ _CATEGORY_ORDER = ["COMPRAS", "GASTOS", "OGND", "ACTIVO"]
 _OGND_FALLBACK = ["OGND", "DNR", "ORS", "CNR"]
 
 
-def _font(size: int, weight: str = "normal") -> ctk.CTkFont:
-    return ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
 
 
 @dataclass(slots=True)
 class ClassifyPanelCallbacks:
     on_classify: Callable[[], None]
+    on_classify_safe: Callable[[], None]   # Valida estado del botón antes de clasificar
     on_auto_classify: Callable[[], None]
     on_recover: Callable[[], None]
     on_link: Callable[[], None]
@@ -43,6 +42,8 @@ class ClassifyPanelCallbacks:
     on_open_new_cuenta: Callable[[], None]
     on_open_dest_folder: Callable[[Path | None], None]
     on_form_change: Callable[[], None]
+    on_tab_out: Callable[[], None]          # Tab desde último widget → devolver foco al Treeview
+    on_shift_tab_out: Callable[[], None]    # Shift-Tab desde primer widget → devolver foco al Treeview
 
 
 class ClassifyPanel(ctk.CTkFrame):
@@ -56,7 +57,7 @@ class ClassifyPanel(ctk.CTkFrame):
         self._forced_category = ""
         self._forced_subtipo = ""
         self._last_manual_category = ""
-        self._manual_subtipos: dict[str, str] = {"GASTOS": "", "OGND": ""}
+        self._manual_subtipos: dict[str, str] = {"GASTOS": "GASTOS GENERALES", "OGND": ""}
         self._all_cuentas: list[str] = []
         self._filtered_cuentas: list[str] = []
         self._prev_dest_path: Path | None = None
@@ -122,12 +123,12 @@ class ClassifyPanel(ctk.CTkFrame):
             border_width=1,
             border_color="#1d5e53",
         )
-        self._batch_banner.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        self._batch_banner.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
         self._batch_banner.grid_columnconfigure(0, weight=1)
         self._batch_title = ctk.CTkLabel(
             self._batch_banner,
             text="",
-            font=_font(11, "bold"),
+            font=get_font(11, "bold"),
             text_color=TEXT,
             anchor="w",
         )
@@ -135,7 +136,7 @@ class ClassifyPanel(ctk.CTkFrame):
         self._batch_subtitle = ctk.CTkLabel(
             self._batch_banner,
             text="",
-            font=_font(10),
+            font=get_font(10),
             text_color=MUTED,
             anchor="w",
         )
@@ -144,51 +145,50 @@ class ClassifyPanel(ctk.CTkFrame):
         self._hacienda_lbl = ctk.CTkLabel(
             self,
             text="",
-            font=_font(10, "bold"),
+            font=get_font(9, "bold"),
             text_color=SUCCESS,
             fg_color="#0d2a1e",
-            corner_radius=8,
+            corner_radius=6,
             anchor="center",
+            height=22,
         )
-        self._hacienda_lbl.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6), ipadx=4, ipady=3)
+        self._hacienda_lbl.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 2))
 
         self._doc_strip = ctk.CTkFrame(
             self,
             fg_color=SURFACE,
-            corner_radius=10,
+            corner_radius=14,
             border_width=1,
             border_color=BORDER,
         )
-        self._doc_strip.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
+        self._doc_strip.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 6))
         for column in range(3):
             self._doc_strip.grid_columnconfigure(column, weight=1)
         self._doc_total_value = self._build_doc_metric(self._doc_strip, 0, "TOTAL")
         self._doc_fecha_value = self._build_doc_metric(self._doc_strip, 1, "FECHA")
         self._doc_tipo_value = self._build_doc_metric(self._doc_strip, 2, "TIPO")
 
-        card_border = ctk.CTkFrame(self, fg_color=BORDER, corner_radius=14)
-        card_border.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 8))
-        self._form_card = ctk.CTkFrame(card_border, fg_color=CARD, corner_radius=12)
-        self._form_card.pack(fill="both", expand=True, padx=1, pady=1)
+        self._form_card = ctk.CTkFrame(self, fg_color=CARD, border_width=1, border_color=BORDER, corner_radius=14)
+        self._form_card.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
         self._form_card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             self._form_card,
             text="CLASIFICACIÓN CONTABLE",
-            font=_font(9, "bold"),
+            font=get_font(9, "bold"),
             text_color=TEAL,
-        ).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 6))
+        ).grid(row=0, column=0, sticky="w", padx=12, pady=(8, 2))
 
         self._category_label = ctk.CTkLabel(
             self._form_card,
             text="Categoría",
-            font=_font(11),
+            font=get_font(11),
             text_color=MUTED,
         )
         self._category_label.grid(row=1, column=0, sticky="w", padx=12)
 
         self._category_slot = ctk.CTkFrame(self._form_card, fg_color="transparent")
-        self._category_slot.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 8))
+        self._category_slot.grid(row=2, column=0, sticky="ew", padx=12, pady=(3, 4))
         self._category_slot.grid_columnconfigure(0, weight=1)
 
         self._category_selector = ctk.CTkSegmentedButton(
@@ -201,15 +201,15 @@ class ClassifyPanel(ctk.CTkFrame):
             unselected_hover_color=BORDER,
             text_color=TEXT,
             command=self._on_category_changed,
-            height=30,
-            font=_font(10, "bold"),
+            height=26,
+            font=get_font(10, "bold"),
         )
         self._category_selector.grid(row=0, column=0, sticky="ew")
 
         self._forced_category_badge = ctk.CTkLabel(
             self._category_slot,
             text="",
-            font=_font(11, "bold"),
+            font=get_font(11, "bold"),
             fg_color="#153b36",
             text_color=TEAL,
             corner_radius=10,
@@ -219,7 +219,7 @@ class ClassifyPanel(ctk.CTkFrame):
 
         self._tipo_frame = ctk.CTkFrame(self._form_card, fg_color="transparent")
         self._tipo_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self._tipo_frame, text="Tipo", font=_font(10), text_color=MUTED).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(self._tipo_frame, text="Tipo", font=get_font(9), text_color=MUTED).grid(row=0, column=0, sticky="w")
         self._tipo_cb = ctk.CTkComboBox(
             self._tipo_frame,
             variable=self._tipo_var,
@@ -230,108 +230,79 @@ class ClassifyPanel(ctk.CTkFrame):
             button_color=BORDER,
             button_hover_color=TEAL,
             text_color=TEXT,
-            font=_font(12),
+            font=get_font(11),
             dropdown_fg_color=CARD,
             dropdown_text_color=TEXT,
             command=self._on_subtipo_changed,
-            height=32,
+            height=28,
         )
-        self._tipo_cb.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+        self._tipo_cb.grid(row=1, column=0, sticky="ew", pady=(2, 0))
 
         self._cuenta_frame = ctk.CTkFrame(self._form_card, fg_color="transparent")
         self._cuenta_frame.grid_columnconfigure(0, weight=1)
+        # Header: label "Cuenta" + search entry + boton "+" en UNA sola fila
         cuenta_header = ctk.CTkFrame(self._cuenta_frame, fg_color="transparent")
         cuenta_header.grid(row=0, column=0, sticky="ew")
-        cuenta_header.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(cuenta_header, text="Cuenta", font=_font(10), text_color=MUTED).grid(row=0, column=0, sticky="w")
+        cuenta_header.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(cuenta_header, text="Cuenta", font=get_font(9), text_color=MUTED, width=48).grid(row=0, column=0, sticky="w")
+        self._cuenta_search_entry = ctk.CTkEntry(
+            cuenta_header,
+            textvariable=self._cuenta_search_var,
+            placeholder_text="Buscar...",
+            fg_color=SURFACE,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=get_font(10),
+            height=26,
+        )
+        self._cuenta_search_entry.grid(row=0, column=1, sticky="ew", padx=(4, 4))
+        self._cuenta_search_entry.bind("<Down>", lambda _e: self._move_account_selection(1))
+        self._cuenta_search_entry.bind("<Up>", lambda _e: self._move_account_selection(-1))
+        self._cuenta_search_entry.bind("<Return>", lambda _e: self._confirm_and_advance())
+        self._cuenta_search_entry.bind("<Escape>", lambda _e: self._clear_account_search())
+        self._cuenta_search_entry.bind("<Tab>", lambda _e: self._on_tab_from_cuenta())
+        self._cuenta_search_entry.bind("<Shift-Tab>", lambda _e: self._on_shift_tab_to_tipo())
         ctk.CTkButton(
             cuenta_header,
             text="+",
-            width=28,
+            width=26,
             height=26,
             fg_color=TEAL,
             hover_color=TEAL_DIM,
             text_color=BG,
-            font=_font(11, "bold"),
+            font=get_font(11, "bold"),
             command=self.callbacks.on_open_new_cuenta,
-        ).grid(row=0, column=1, sticky="e")
-        self._cuenta_search_entry = ctk.CTkEntry(
-            self._cuenta_frame,
-            textvariable=self._cuenta_search_var,
-            placeholder_text="Buscar cuenta...",
-            fg_color=SURFACE,
-            border_color=BORDER,
-            text_color=TEXT,
-            font=_font(12),
-            height=32,
-        )
-        self._cuenta_search_entry.grid(row=1, column=0, sticky="ew", pady=(4, 4))
-        self._cuenta_search_entry.bind("<Down>", lambda _e: self._move_account_selection(1))
-        self._cuenta_search_entry.bind("<Up>", lambda _e: self._move_account_selection(-1))
-        self._cuenta_search_entry.bind("<Return>", lambda _e: self._confirm_account_selection())
-        self._cuenta_search_entry.bind("<Escape>", lambda _e: self._clear_account_search())
-
-        self._cuenta_results_lbl = ctk.CTkLabel(
-            self._cuenta_frame,
-            text="",
-            font=_font(10),
-            text_color=MUTED,
-            anchor="w",
-        )
-        self._cuenta_results_lbl.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        ).grid(row=0, column=2, sticky="e")
 
         self._cuenta_list = ctk.CTkScrollableFrame(
             self._cuenta_frame,
             fg_color=SURFACE,
-            corner_radius=10,
+            corner_radius=8,
             border_width=1,
             border_color=BORDER,
-            height=148,
+            height=90,
             scrollbar_button_color=BORDER,
             scrollbar_button_hover_color=MUTED,
         )
-        self._cuenta_list.grid(row=3, column=0, sticky="ew")
+        self._cuenta_list.grid(row=1, column=0, sticky="ew", pady=(3, 0))
         self._cuenta_list.grid_columnconfigure(0, weight=1)
 
         self._prov_frame = ctk.CTkFrame(self._form_card, fg_color="transparent")
         self._prov_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self._prov_frame, text="Proveedor", font=_font(10), text_color=MUTED).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(self._prov_frame, text="Proveedor", font=get_font(9), text_color=MUTED).grid(row=0, column=0, sticky="w")
         self._prov_entry = ctk.CTkEntry(
             self._prov_frame,
             textvariable=self._prov_var,
             fg_color=SURFACE,
             border_color=BORDER,
             text_color=TEXT,
-            font=_font(12),
-            height=34,
+            font=get_font(11),
+            height=30,
         )
-        self._prov_entry.grid(row=1, column=0, sticky="ew", pady=(3, 0))
-        self._prov_entry.bind("<Return>", lambda _e: self.callbacks.on_classify())
-
-        self._preview_frame = ctk.CTkFrame(
-            self._form_card,
-            fg_color=SURFACE,
-            corner_radius=10,
-            border_width=1,
-            border_color=BORDER,
-        )
-        self._preview_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            self._preview_frame,
-            text="Destino estimado",
-            font=_font(9, "bold"),
-            text_color=MUTED,
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
-        self._preview_lbl = ctk.CTkLabel(
-            self._preview_frame,
-            text="",
-            font=_font(9),
-            text_color=TEXT,
-            justify="left",
-            anchor="w",
-            wraplength=212,
-        )
-        self._preview_lbl.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
+        self._prov_entry.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self._prov_entry.bind("<Return>", lambda _e: self.callbacks.on_classify_safe())
+        self._prov_entry.bind("<Tab>", lambda _e: self._on_tab_from_proveedor())
+        self._prov_entry.bind("<Shift-Tab>", lambda _e: self._on_shift_tab_to_cuenta())
 
         self._actions_frame = ctk.CTkFrame(self._form_card, fg_color="transparent")
         self._actions_frame.grid_columnconfigure(0, weight=1)
@@ -339,7 +310,7 @@ class ClassifyPanel(ctk.CTkFrame):
         self._btn_recover = ctk.CTkButton(
             self._actions_frame,
             text="Recuperar PDF",
-            font=_font(13, "bold"),
+            font=get_font(13, "bold"),
             fg_color=WARNING,
             hover_color="#e8a61c",
             text_color=BG,
@@ -352,7 +323,7 @@ class ClassifyPanel(ctk.CTkFrame):
             text="Vincular a XML",
             image=get_icon("link", 18),
             compound="left",
-            font=_font(13, "bold"),
+            font=get_font(13, "bold"),
             fg_color="#0f766e",
             hover_color="#115e59",
             text_color=TEXT,
@@ -365,7 +336,7 @@ class ClassifyPanel(ctk.CTkFrame):
             text="Borrar PDF",
             image=get_icon("trash", 18),
             compound="left",
-            font=_font(13, "bold"),
+            font=get_font(13, "bold"),
             fg_color=DANGER,
             hover_color="#dc2626",
             text_color=BG,
@@ -378,7 +349,7 @@ class ClassifyPanel(ctk.CTkFrame):
             text="Crear PDF",
             image=get_icon("file_pdf", 18),
             compound="left",
-            font=_font(13, "bold"),
+            font=get_font(13, "bold"),
             fg_color="#2563eb",
             hover_color="#1d4ed8",
             text_color=TEXT,
@@ -389,7 +360,7 @@ class ClassifyPanel(ctk.CTkFrame):
         self._btn_auto_classify = ctk.CTkButton(
             self._actions_frame,
             text="Clasificar todos",
-            font=_font(13, "bold"),
+            font=get_font(13, "bold"),
             fg_color="#0891b2",
             hover_color="#0e7490",
             text_color=TEXT,
@@ -403,19 +374,21 @@ class ClassifyPanel(ctk.CTkFrame):
             text="Clasificar",
             image=get_icon("modal_success", 18),
             compound="left",
-            font=_font(14, "bold"),
+            font=get_font(14, "bold"),
             fg_color=TEAL,
             hover_color=TEAL_DIM,
-            text_color=BG,
+            text_color="#0d1a18",
             corner_radius=12,
-            height=46,
+            height=42,
+            border_width=1,
+            border_color="#3ee8d1",
             command=self.callbacks.on_classify,
         )
 
         self._block_reason_lbl = ctk.CTkLabel(
             self._form_card,
             text="",
-            font=_font(10),
+            font=get_font(10),
             text_color=WARNING,
             justify="left",
             anchor="w",
@@ -425,50 +398,49 @@ class ClassifyPanel(ctk.CTkFrame):
         self._prev_frame = ctk.CTkFrame(
             self,
             fg_color=CARD,
-            corner_radius=12,
+            corner_radius=14,
             border_width=1,
             border_color=BORDER,
+            cursor="hand2",
         )
         self._prev_frame.grid_columnconfigure(0, weight=1)
+        self._prev_frame.bind(
+            "<Button-1>",
+            lambda _e: self.callbacks.on_open_dest_folder(self._prev_dest_path),
+        )
         ctk.CTkLabel(
             self._prev_frame,
-            text="ANTERIOR",
-            font=_font(9, "bold"),
+            text="RUTA",
+            font=get_font(9, "bold"),
             text_color=MUTED,
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 2))
         self._prev_primary_lbl = ctk.CTkLabel(
             self._prev_frame,
             text="--",
-            font=_font(11, "bold"),
+            font=get_font(11, "bold"),
             text_color=TEXT,
             anchor="w",
             justify="left",
-            wraplength=220,
+            wraplength=240,
+            cursor="hand2",
         )
         self._prev_primary_lbl.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 2))
+        self._prev_primary_lbl.bind(
+            "<Button-1>",
+            lambda _e: self.callbacks.on_open_dest_folder(self._prev_dest_path),
+        )
         self._prev_secondary_lbl = ctk.CTkLabel(
             self._prev_frame,
             text="",
-            font=_font(10),
+            font=get_font(10),
             text_color=MUTED,
             anchor="w",
             justify="left",
-            wraplength=220,
-        )
-        self._prev_secondary_lbl.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 5))
-        self._prev_path_lbl = tk.Label(
-            self._prev_frame,
-            text="",
-            font=("Segoe UI", 10),
-            fg=TEAL,
-            bg=CARD,
+            wraplength=240,
             cursor="hand2",
-            anchor="w",
-            justify="left",
-            wraplength=215,
         )
-        self._prev_path_lbl.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 8))
-        self._prev_path_lbl.bind(
+        self._prev_secondary_lbl.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 2))
+        self._prev_secondary_lbl.bind(
             "<Button-1>",
             lambda _e: self.callbacks.on_open_dest_folder(self._prev_dest_path),
         )
@@ -495,34 +467,32 @@ class ClassifyPanel(ctk.CTkFrame):
         self._layout_form_rows()
 
     def _build_doc_metric(self, parent, column: int, label: str) -> ctk.CTkLabel:
-        ctk.CTkLabel(parent, text=label, font=_font(8, "bold"), text_color=MUTED).grid(
-            row=0, column=column, sticky="w", padx=10, pady=(6, 0)
+        ctk.CTkLabel(parent, text=label, font=get_font(8, "bold"), text_color=MUTED).grid(
+            row=0, column=column, sticky="ew", padx=2, pady=(4, 0)
         )
         value_widget = ctk.CTkLabel(
             parent,
             text="--",
-            font=_font(12, "bold"),
+            font=get_font(11, "bold"),
             text_color=TEXT,
-            anchor="w",
+            anchor="center",
         )
-        value_widget.grid(row=1, column=column, sticky="ew", padx=10, pady=(0, 6))
+        value_widget.grid(row=1, column=column, sticky="ew", padx=2, pady=(0, 4))
         return value_widget
 
     def _layout_form_rows(self):
         row = 3
-        self._tipo_frame.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self._tipo_frame.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 3))
         row += 1
-        self._cuenta_frame.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self._cuenta_frame.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 3))
         row += 1
-        self._prov_frame.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self._prov_frame.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 3))
         row += 1
-        self._preview_frame.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self._actions_frame.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 4))
         row += 1
-        self._actions_frame.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self._btn_classify.grid(row=row, column=0, sticky="ew", padx=12, pady=(2, 6))
         row += 1
-        self._btn_classify.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 4))
-        row += 1
-        self._block_reason_lbl.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 10))
+        self._block_reason_lbl.grid(row=row, column=0, sticky="ew", padx=12, pady=(0, 6))
 
     def set_catalog(self, mgr: CatalogManager | None, categories: list[str]):
         self.catalog_mgr = mgr
@@ -624,13 +594,8 @@ class ClassifyPanel(ctk.CTkFrame):
         }
 
     def set_path_preview(self, text: str):
-        preview = (text or "").strip()
-        if preview:
-            self._preview_lbl.configure(text=preview)
-            self._preview_frame.grid()
-        else:
-            self._preview_lbl.configure(text="")
-            self._preview_frame.grid_remove()
+        """No-op — preview eliminado. Se mantiene la firma para compatibilidad."""
+        pass
 
     def clear_selection_state(self):
         self._hide_context_buttons()
@@ -639,7 +604,6 @@ class ClassifyPanel(ctk.CTkFrame):
         self._doc_strip.grid_remove()
         self._prev_frame.grid_remove()
         self._set_prev_dest_path(None)
-        self.set_path_preview("")
         self._btn_classify.configure(state="disabled", text="Clasificar")
         self._set_block_reason("Selecciona una factura para empezar.")
 
@@ -743,10 +707,6 @@ class ClassifyPanel(ctk.CTkFrame):
 
     def _set_prev_dest_path(self, path: Path | None):
         self._prev_dest_path = path
-        if path is None:
-            self._prev_path_lbl.config(text="", cursor="arrow")
-            return
-        self._prev_path_lbl.config(text=self._format_prev_dest_path(path), cursor="hand2")
 
     @staticmethod
     def _split_previous_text(text: str) -> tuple[str, str]:
@@ -756,29 +716,6 @@ class ClassifyPanel(ctk.CTkFrame):
         if len(lines) == 1:
             return lines[0], ""
         return lines[0], "\n".join(lines[1:])
-
-    @staticmethod
-    def _format_prev_dest_path(path: Path) -> str:
-        try:
-            parts = list(path.parts)
-            cont_idx = next(i for i, part in enumerate(parts) if part == "Contabilidades")
-            rel_parts = parts[cont_idx + 1:]
-        except StopIteration:
-            rel_parts = list(path.parts[-5:])
-
-        if not rel_parts:
-            return str(path)
-
-        folders = rel_parts[:-1]
-        file_name = rel_parts[-1]
-        if len(folders) > 3:
-            folders = [" / ".join(folders[:2]), " / ".join(folders[2:])]
-        else:
-            folders = [" / ".join(folders)] if folders else []
-
-        lines = [line for line in folders if line]
-        lines.append(file_name)
-        return "\n".join(lines)
 
     def _ordered_categories(self, categories: list[str]) -> list[str]:
         normalized = {str(value).strip().upper() for value in categories if str(value).strip()}
@@ -867,7 +804,12 @@ class ClassifyPanel(ctk.CTkFrame):
             if remembered in clean_values:
                 selected = remembered
             else:
-                selected = clean_values[0] if clean_values else ""
+                # Para GASTOS, preferir GENERALES como default
+                if cat == "GASTOS":
+                    generales = next((v for v in clean_values if "GENERAL" in v), "")
+                    selected = generales or (clean_values[0] if clean_values else "")
+                else:
+                    selected = clean_values[0] if clean_values else ""
         self._tipo_cb.configure(values=clean_values, state="disabled" if disabled else "readonly")
         with self._suspend_callbacks():
             self._tipo_var.set(selected)
@@ -936,19 +878,24 @@ class ClassifyPanel(ctk.CTkFrame):
             widget.destroy()
 
         count = len(self._filtered_cuentas)
-        self._cuenta_results_lbl.configure(
-            text=f"{count} cuenta(s)" if count else "Sin cuentas que coincidan con la búsqueda"
-        )
+
+        # Actualizar placeholder del buscador con conteo
+        placeholder = f"Buscar en {count}..." if count else "Sin cuentas"
+        self._cuenta_search_entry.configure(placeholder_text=placeholder)
+
+        # Altura dinámica: mín 2 filas, máx 4 filas visibles (28px por item)
+        visible = min(max(count, 2), 4)
+        self._cuenta_list.configure(height=visible * 28)
 
         if not self._filtered_cuentas:
             empty = ctk.CTkLabel(
                 self._cuenta_list,
-                text="No hay cuentas para mostrar.",
-                font=_font(11),
+                text="Sin resultados.",
+                font=get_font(10),
                 text_color=MUTED,
                 anchor="w",
             )
-            empty.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+            empty.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
             self._bind_category_shortcuts(empty)
             return
 
@@ -961,13 +908,14 @@ class ClassifyPanel(ctk.CTkFrame):
                 fg_color="#153b36" if selected else "transparent",
                 hover_color="#214842" if selected else SURFACE,
                 text_color=TEAL if selected else TEXT,
-                corner_radius=8,
-                height=30,
+                corner_radius=6,
+                height=26,
                 border_width=1 if selected else 0,
                 border_color=TEAL if selected else SURFACE,
+                font=get_font(10),
                 command=lambda value=cuenta: self._select_account(value, notify=True),
             )
-            row.grid(row=index, column=0, sticky="ew", padx=6, pady=2)
+            row.grid(row=index, column=0, sticky="ew", padx=4, pady=1)
             self._bind_category_shortcuts(row)
 
     def _select_account(self, cuenta: str, notify: bool):
@@ -999,8 +947,84 @@ class ClassifyPanel(ctk.CTkFrame):
             self._select_account(current, notify=True)
         return "break"
 
+    def _confirm_and_advance(self):
+        """Enter en búsqueda de cuentas: confirma selección y avanza al proveedor."""
+        self._confirm_account_selection()
+        # Avanzar al campo proveedor si está visible
+        if self._prov_frame.winfo_ismapped():
+            self._prov_entry.focus_set()
+            self._prov_entry.select_range(0, "end")
+        return "break"
+
     def _clear_account_search(self):
         with self._suspend_callbacks():
             self._cuenta_search_var.set("")
         self._apply_account_filter(reset_selection=False, notify=False)
+        return "break"
+
+    # ── NAVEGACIÓN TAB ────────────────────────────────────────────────────────
+
+    def focus_first_interactive(self):
+        """Pone foco en el primer widget interactivo del panel.
+
+        Orden: tipo_cb (si visible) → cuenta_search (si visible) → prov_entry (si visible).
+        Si categoría es forzada, salta directo al primer campo de datos.
+        """
+        if self._tipo_frame.winfo_ismapped():
+            self._tipo_cb.focus_set()
+            return
+        if self._cuenta_frame.winfo_ismapped():
+            self._cuenta_search_entry.focus_set()
+            return
+        if self._prov_frame.winfo_ismapped():
+            self._prov_entry.focus_set()
+            self._prov_entry.select_range(0, "end")
+            return
+        # Sin campos interactivos (INGRESOS/SIN_RECEPTOR) → devolver foco
+        self.callbacks.on_tab_out()
+
+    def focus_last_interactive(self):
+        """Pone foco en el último widget interactivo (para Shift-Tab)."""
+        if self._prov_frame.winfo_ismapped():
+            self._prov_entry.focus_set()
+            self._prov_entry.select_range(0, "end")
+            return
+        if self._cuenta_frame.winfo_ismapped():
+            self._cuenta_search_entry.focus_set()
+            return
+        if self._tipo_frame.winfo_ismapped():
+            self._tipo_cb.focus_set()
+            return
+        self.callbacks.on_shift_tab_out()
+
+    def _on_tab_from_proveedor(self):
+        """Tab desde proveedor → devolver foco al Treeview."""
+        self.callbacks.on_tab_out()
+        return "break"
+
+    def _on_shift_tab_to_cuenta(self):
+        """Shift-Tab desde proveedor → cuenta (si visible) o tipo."""
+        if self._cuenta_frame.winfo_ismapped():
+            self._cuenta_search_entry.focus_set()
+        elif self._tipo_frame.winfo_ismapped():
+            self._tipo_cb.focus_set()
+        else:
+            self.callbacks.on_shift_tab_out()
+        return "break"
+
+    def _on_tab_from_cuenta(self):
+        """Tab desde cuenta → proveedor (si visible) o Tab out."""
+        if self._prov_frame.winfo_ismapped():
+            self._prov_entry.focus_set()
+            self._prov_entry.select_range(0, "end")
+        else:
+            self.callbacks.on_tab_out()
+        return "break"
+
+    def _on_shift_tab_to_tipo(self):
+        """Shift-Tab desde cuenta → tipo (si visible) o Shift-Tab out."""
+        if self._tipo_frame.winfo_ismapped():
+            self._tipo_cb.focus_set()
+        else:
+            self.callbacks.on_shift_tab_out()
         return "break"

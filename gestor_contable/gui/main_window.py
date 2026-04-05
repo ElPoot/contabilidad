@@ -36,6 +36,11 @@ from gestor_contable.core.classification_utils import (
     get_tab_statistics,
 )
 from gestor_contable.core.classifier import ClassificationDB, build_dest_folder, classify_record, heal_classified_path
+from gestor_contable.core.duplicates_quarantine import (
+    DuplicatesQuarantineDB,
+    execute_duplicates_quarantine,
+    restore_duplicates_batch,
+)
 from gestor_contable.core.ors_purge import (
     OrsPurgeDB,
     build_file_inventory,
@@ -68,18 +73,7 @@ DANGER  = "#f87171"
 SUCCESS = "#34d399"
 WARNING = "#fbbf24"
 
-# ── FUENTES (lazy -- se crean solo despues de que existe la ventana raiz) ─────
-_fonts: dict = {}
-
-def _f(key: str, size: int, weight: str = "normal") -> ctk.CTkFont:
-    if key not in _fonts:
-        _fonts[key] = ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
-    return _fonts[key]
-
-def F_TITLE()  -> ctk.CTkFont: return _f("mw_title",  11, "bold")
-def F_LABEL()  -> ctk.CTkFont: return _f("mw_label",  12)
-def F_SMALL()  -> ctk.CTkFont: return _f("mw_small",  11)
-def F_BTN()    -> ctk.CTkFont: return _f("mw_btn",    13, "bold")
+from gestor_contable.gui.fonts import *
 
 ESTADO_ICON = {
     "clasificado":   "OK",
@@ -155,19 +149,19 @@ def _apply_tree_style():
     style.configure("Dark.Treeview",
         background=CARD, foreground=TEXT,
         fieldbackground=CARD, borderwidth=0,
-        rowheight=19, font=("Segoe UI", 9),
+        rowheight=TREE_ROW_HEIGHT, font=(TREE_FONT_FAMILY, TREE_FONT_SIZE),
     )
     style.configure("Dark.Treeview.Heading",
         background=SURFACE, foreground=MUTED,
-        borderwidth=0, font=("Segoe UI", 8, "bold"),
+        borderwidth=0, font=(TREE_FONT_FAMILY, TREE_HEADING_SIZE, "bold"),
     )
     style.map("Dark.Treeview",
         background=[("selected", "#1a3a36")],
         foreground=[("selected", TEAL)],
     )
     style.configure("Dark.Vertical.TScrollbar",
-        background=SURFACE, troughcolor=BG,
-        borderwidth=0, arrowsize=12,
+        background=CARD, troughcolor=BG,
+        borderwidth=0, arrowsize=0,
     )
     _TREE_STYLE_DONE = True
 
@@ -404,7 +398,7 @@ class NewCuentaDialog(ctk.CTkToplevel):
         # Title
         ctk.CTkLabel(
             self._card, text="Agregar Nueva Cuenta",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            font=F_MODAL_SUBTITLE(),
             text_color=TEXT,
         ).pack(fill="x", padx=12, pady=(12, 8))
 
@@ -762,6 +756,10 @@ class App3Window(ctk.CTk):
         self._db_records = db.get_records_map()
         self._pdf_duplicates_rejected = pdf_duplicates_rejected  # {path_rechazado: path_ganador}
         self._detected_renames = renames
+        self._active_tab = "egreso"
+        self._update_tab_appearance(self._active_tab)
+        self._ors_frame.grid_remove()
+        self._btn_purge_ors.configure(state="disabled")
         self.records = self._apply_filters()
         self.selected = None
         self.selected_records = []
@@ -846,7 +844,7 @@ class App3Window(ctk.CTk):
                       fg_color="#1a3a36", corner_radius=8,
                       width=32, height=32).grid(row=0, column=0, padx=(16,8), pady=14)
         ctk.CTkLabel(hdr, text="Clasificador  Contable",
-                      font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+                      font=F_APP_TITLE(),
                       text_color=TEXT).grid(row=0, column=1, sticky="w", padx=(0, 12))
 
         # Info cliente activo (bloque izquierdo)
@@ -854,9 +852,9 @@ class App3Window(ctk.CTk):
         client_frame.grid(row=0, column=2, sticky="w")
 
         ctk.CTkLabel(client_frame, text="Cliente:",
-                      font=F_SMALL(), text_color=MUTED).pack(side="left", padx=(0,6))
+                      font=F_LABEL(), text_color=MUTED).pack(side="left", padx=(0,6))
         self._lbl_cliente = ctk.CTkLabel(client_frame, text="Sin sesión",
-                                          font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+                                          font=F_HEADING(),
                                           text_color=TEXT)
         self._lbl_cliente.pack(side="left")
         self._lbl_year = ctk.CTkLabel(client_frame, text="",
@@ -868,7 +866,7 @@ class App3Window(ctk.CTk):
         date_frame = ctk.CTkFrame(hdr, fg_color="transparent")
         date_frame.grid(row=0, column=3, sticky="e", padx=8)
 
-        ctk.CTkLabel(date_frame, text="Desde:", font=F_SMALL(),
+        ctk.CTkLabel(date_frame, text="Desde:", font=F_LABEL(),
                       text_color=MUTED).pack(side="left", padx=(0,4))
         self.from_var = ctk.StringVar()
         self._from_entry = ctk.CTkEntry(
@@ -879,15 +877,17 @@ class App3Window(ctk.CTk):
             fg_color=CARD,
             border_color=BORDER,
             text_color=TEXT,
-            font=F_SMALL(),
+            font=F_BODY(),
             height=32,
             corner_radius=8,
         )
         self._from_entry.pack(side="left")
-        ctk.CTkButton(date_frame, text="...", width=30, height=32,
-                      fg_color=SURFACE, hover_color=BORDER, command=lambda: self._open_date_picker("from")).pack(side="left", padx=(4, 8))
+        ctk.CTkButton(date_frame, text=" ", width=36, height=32,
+                      image=get_icon("calendar", 16), compound="left",
+                      fg_color=SURFACE, hover_color=BORDER, font=F_SMALL(), corner_radius=8,
+                      command=lambda: self._open_date_picker("from")).pack(side="left", padx=(4, 8))
 
-        ctk.CTkLabel(date_frame, text="Hasta:", font=F_SMALL(),
+        ctk.CTkLabel(date_frame, text="Hasta:", font=F_LABEL(),
                       text_color=MUTED).pack(side="left", padx=(10,4))
         self.to_var = ctk.StringVar()
         self._to_entry = ctk.CTkEntry(
@@ -898,31 +898,33 @@ class App3Window(ctk.CTk):
             fg_color=CARD,
             border_color=BORDER,
             text_color=TEXT,
-            font=F_SMALL(),
+            font=F_BODY(),
             height=32,
             corner_radius=8,
         )
         self._to_entry.pack(side="left")
-        ctk.CTkButton(date_frame, text="...", width=30, height=32,
-                      fg_color=SURFACE, hover_color=BORDER, command=lambda: self._open_date_picker("to")).pack(side="left", padx=(4, 8))
+        ctk.CTkButton(date_frame, text=" ", width=36, height=32,
+                      image=get_icon("calendar", 16), compound="left",
+                      fg_color=SURFACE, hover_color=BORDER, font=F_SMALL(), corner_radius=8,
+                      command=lambda: self._open_date_picker("to")).pack(side="left", padx=(4, 8))
 
         ctk.CTkButton(date_frame, text="Filtrar", width=70, height=32,
                        fg_color=TEAL, hover_color=TEAL_DIM, text_color="#0d1a18",
-                       font=F_SMALL(), corner_radius=8,
+                       font=F_BODY_BOLD(), corner_radius=8,
                        command=self._on_filter).pack(side="left", padx=(8,0))
 
         # Botón limpiar cache y recargar
         ctk.CTkButton(date_frame, text="Limpiar cache", width=130, height=32,
                        fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
                        border_color=WARNING, border_width=1,
-                       font=F_SMALL(), corner_radius=8,
+                       font=F_BODY_BOLD(), corner_radius=8,
                        command=self._clear_cache_and_reload).pack(side="left", padx=(8,0))
 
         # Botón cambiar cliente
         ctk.CTkButton(hdr, text="Cambiar cliente", width=150, height=32,
                        fg_color=CARD, hover_color=SURFACE, text_color=MUTED,
                        border_color=BORDER, border_width=1,
-                       font=F_SMALL(), corner_radius=8,
+                       font=F_BODY_BOLD(), corner_radius=8,
                        command=self._open_session_view).grid(
             row=0, column=4, padx=(10, 8), pady=14)
 
@@ -947,6 +949,7 @@ class App3Window(ctk.CTk):
             ("sin_clave", "Sin clave"),
             ("omitidos", "Omitidos"),
             ("huerfanos", "Huerfanos"),
+            ("rechazados", "Rechazados"),
         ]
 
         for tab_id, tab_label in tab_configs:
@@ -958,7 +961,7 @@ class App3Window(ctk.CTk):
                 fg_color=CARD,
                 hover_color=BORDER,
                 text_color=TEXT,
-                font=F_SMALL(),
+                font=F_BODY_BOLD(),
                 corner_radius=6,
                 command=lambda t=tab_id: self._on_tab_clicked(t),
             )
@@ -966,7 +969,7 @@ class App3Window(ctk.CTk):
             self._tab_buttons[tab_id] = btn
 
         # Marcar pestaña inicial como activa
-        self._update_tab_appearance("todas")
+        self._update_tab_appearance(self._active_tab)
 
         # Separador
         ctk.CTkFrame(self, fg_color=BORDER, height=1, corner_radius=0).grid(
@@ -981,7 +984,7 @@ class App3Window(ctk.CTk):
         body.grid_rowconfigure(0, weight=1)
         body.grid_columnconfigure(0, weight=33, minsize=360)  # lista
         body.grid_columnconfigure(1, weight=52, minsize=520)  # visor PDF
-        body.grid_columnconfigure(2, weight=15, minsize=260)  # clasificación
+        body.grid_columnconfigure(2, weight=18, minsize=280)  # clasificación
 
         self._build_list_panel(body)
         self._build_pdf_panel(body)
@@ -1000,46 +1003,56 @@ class App3Window(ctk.CTk):
         top.grid_propagate(False)
         top.grid_columnconfigure(0, weight=1)
 
+        # Título del panel — jerarquía clara
         ctk.CTkLabel(top, text="Facturas del período",
-                      font=F_TITLE(), text_color=TEXT).grid(
-            row=0, column=0, sticky="w", padx=14, pady=12)
+                      font=F_HEADING(), text_color=TEXT).grid(
+            row=0, column=0, sticky="w", padx=14, pady=10)
 
-        ctk.CTkButton(top, text="Exportar reporte", width=120, height=30,
-                      fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
-                      font=F_SMALL(), corner_radius=8,
-                      command=self._export_report).grid(row=0, column=2, sticky="e", padx=(0, 5))
+        # Badge de progreso — teal, compacto
+        self._progress_var = ctk.StringVar(value="")
+        ctk.CTkLabel(top, textvariable=self._progress_var,
+                      font=F_BODY_BOLD(), text_color=TEAL).grid(
+            row=0, column=1, sticky="w", padx=(0, 8))
 
-        ctk.CTkButton(top, text="Sanitizar", width=100, height=30,
-                      image=get_icon("broom", 16), compound="left",
-                      fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
-                      font=F_SMALL(), corner_radius=8,
-                      command=self._sanitize_folders).grid(row=0, column=3, sticky="e", padx=(0, 5))
+        # ── Acciones secundarias (mismo peso visual) ───────────────────────
+        _BTN_SEC = dict(
+            height=28, fg_color=SURFACE, hover_color=BORDER,
+            text_color=MUTED, font=F_LABEL(), corner_radius=6,
+        )
+        ctk.CTkButton(top, text="Exportar", width=85,
+                      **_BTN_SEC,
+                      command=self._export_report).grid(
+            row=0, column=2, sticky="e", padx=(0, 4))
 
-        ctk.CTkButton(top, text="Dupl.", width=100, height=30,
-                      image=get_icon("duplicate", 16), compound="left",
-                      fg_color=SURFACE, hover_color=BORDER, text_color=TEXT,
-                      font=F_SMALL(), corner_radius=8,
-                      command=self._find_duplicate_pdfs).grid(row=0, column=4, sticky="e", padx=(0, 5))
+        ctk.CTkButton(top, text="Sanitizar", width=85,
+                      image=get_icon("broom", 14), compound="left",
+                      **_BTN_SEC,
+                      command=self._sanitize_folders).grid(
+            row=0, column=3, sticky="e", padx=(0, 4))
 
-        ctk.CTkButton(top, text="Corte", width=100, height=30,
-                      image=get_icon("report", 16), compound="left",
+        ctk.CTkButton(top, text="Duplicados", width=96,
+                      image=get_icon("duplicate", 14), compound="left",
+                      **_BTN_SEC,
+                      command=self._find_duplicate_pdfs).grid(
+            row=0, column=4, sticky="e", padx=(0, 4))
+
+        # ── CTA principal (Corte) — destaca en teal ────────────────────────
+        ctk.CTkButton(top, text="Corte", width=90, height=30,
+                      image=get_icon("report", 14), compound="left",
                       fg_color=TEAL, hover_color=TEAL_DIM, text_color=BG,
-                      font=F_SMALL(), corner_radius=8,
-                      command=self._generar_corte).grid(row=0, column=5, sticky="e", padx=(0, 5))
+                      font=F_LABEL_BOLD(), corner_radius=6,
+                      command=self._generar_corte).grid(
+            row=0, column=5, sticky="e", padx=(0, 10))
 
+        # Consolidar — oculto hasta detectar renombrados
         self._btn_consolidar = ctk.CTkButton(
-            top, text="Consolidar", width=90, height=30,
+            top, text="Consolidar", width=90, height=28,
             fg_color=SURFACE, hover_color=BORDER, text_color=WARNING,
-            font=F_SMALL(), corner_radius=8,
+            font=F_LABEL(), corner_radius=6,
             command=self._consolidate_folders,
         )
         self._btn_consolidar.grid(row=0, column=6, sticky="e", padx=(0, 10))
         self._btn_consolidar.grid_remove()  # Oculto hasta detectar renombrados
-
-        self._progress_var = ctk.StringVar(value="")
-        ctk.CTkLabel(top, textvariable=self._progress_var,
-                      font=F_SMALL(), text_color=TEAL).grid(
-            row=0, column=1, sticky="e", padx=14)
 
         # Treeview con estilo oscuro
         tree_frame = ctk.CTkFrame(frame, fg_color=CARD, corner_radius=10)
@@ -1051,17 +1064,17 @@ class App3Window(ctk.CTk):
         cols = ("tipo", "fecha", "consecutivo", "emisor", "impuesto", "total")
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
                                   selectmode="extended", style="Dark.Treeview")
-        self.tree.heading("tipo",         text="Tipo")
-        self.tree.heading("fecha",        text="Fecha")
-        self.tree.heading("consecutivo",  text="Consecutivo")
-        self.tree.heading("emisor",       text="Emisor")
-        self.tree.heading("impuesto",     text="Impuesto")
-        self.tree.heading("total",        text="Total")
+        self.tree.heading("tipo",         text="TP", anchor="center")
+        self.tree.heading("fecha",        text="Fecha", anchor="center")
+        self.tree.heading("consecutivo",  text="Consecutivo", anchor="center")
+        self.tree.heading("emisor",       text="Emisor", anchor="center")
+        self.tree.heading("impuesto",     text="Impuesto", anchor="center")
+        self.tree.heading("total",        text="Total", anchor="center")
 
-        self.tree.column("tipo",         width=46,  stretch=False)
-        self.tree.column("fecha",        width=78,  stretch=False)
-        self.tree.column("consecutivo",  width=110, stretch=False)
-        self.tree.column("emisor",       width=140)
+        self.tree.column("tipo",         width=35,  stretch=False, anchor="center")
+        self.tree.column("fecha",        width=75,  stretch=False, anchor="center")
+        self.tree.column("consecutivo",  width=140, stretch=False, anchor="center")
+        self.tree.column("emisor",       width=200, anchor="w")
         self.tree.column("impuesto",     width=90,  stretch=False, anchor="e")
         self.tree.column("total",        width=96,  stretch=False, anchor="e")
 
@@ -1077,9 +1090,12 @@ class App3Window(ctk.CTk):
         self.tree.tag_configure("pendiente_pdf", background="#1a3d4d", foreground=TEXT)     # Azul oscuro
         self.tree.tag_configure("sin_xml",       background="#2d2d2d", foreground=MUTED)    # Gris oscuro
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
-        self.tree.bind("<Return>", lambda _e: self._classify_selected())
+        self.tree.bind("<Return>", lambda _e: self._on_tree_enter())
         self.tree.bind("<Left>", lambda _e: self._step_classify_category(-1))
         self.tree.bind("<Right>", lambda _e: self._step_classify_category(1))
+        self.tree.bind("<Tab>", lambda _e: self._on_tree_tab())
+        self.tree.bind("<Shift-Tab>", lambda _e: self._on_tree_shift_tab())
+        self.tree.bind("<Control-a>", lambda _e: self._on_tree_select_all())
 
     # ── PANEL CENTRAL -- VISOR PDF ─────────────────────────────────────────────
     def _build_pdf_panel(self, parent):
@@ -1106,7 +1122,7 @@ class App3Window(ctk.CTk):
         top.grid(row=0, column=0, sticky="ew")
         top.grid_propagate(False)
         ctk.CTkLabel(top, text="Clasificación",
-                      font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                      font=F_SECTION_TITLE(),
                       text_color=TEXT).pack(side="left", padx=12, pady=7)
 
         # Contenido scrollable
@@ -1119,6 +1135,7 @@ class App3Window(ctk.CTk):
         scroll.grid_columnconfigure(0, weight=1)
         callbacks = ClassifyPanelCallbacks(
             on_classify=self._classify_selected,
+            on_classify_safe=self._classify_selected_safe,
             on_auto_classify=self._auto_classify_current_tab,
             on_recover=self._recover_selected,
             on_link=self._link_omitted_to_xml,
@@ -1127,6 +1144,8 @@ class App3Window(ctk.CTk):
             on_open_new_cuenta=self._open_new_cuenta_dialog,
             on_open_dest_folder=self._open_dest_folder,
             on_form_change=self._update_path_preview,
+            on_tab_out=self._focus_tree,
+            on_shift_tab_out=self._focus_tree,
         )
         self._classify_panel = ClassifyPanel(scroll, callbacks=callbacks)
         self._classify_panel.grid(row=0, column=0, sticky="ew")
@@ -1140,23 +1159,21 @@ class App3Window(ctk.CTk):
 
         # ── Accion de pestaña ORS: Purgar ORS ─────────────────────────────────
         # Visible solo cuando la pestaña activa es ORS; independiente de seleccion.
-        ors_frame = ctk.CTkFrame(scroll, fg_color=BORDER, corner_radius=12)
-        ors_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
-        ors_inner = ctk.CTkFrame(ors_frame, fg_color=CARD, corner_radius=10)
-        ors_inner.pack(fill="both", expand=True, padx=1, pady=1)
+        ors_inner = ctk.CTkFrame(scroll, fg_color=CARD, border_width=1, border_color=BORDER, corner_radius=12)
+        ors_inner.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
         ors_inner.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             ors_inner,
             text="ACCIONES ORS",
-            font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
+            font=F_SECTION_LABEL(),
             text_color=DANGER,
         ).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 4))
 
         self._btn_purge_ors = ctk.CTkButton(
             ors_inner,
             text="Purgar ORS",
-            font=F_BTN(),
+            font=F_BUTTON(),
             fg_color=DANGER,
             hover_color="#dc2626",
             text_color="#0d1a18",
@@ -1179,7 +1196,7 @@ class App3Window(ctk.CTk):
         self._ors_history_lbl.grid(row=2, column=0, sticky="w", padx=12, pady=(0, 10))
         self._ors_history_lbl.bind("<Button-1>", lambda _e: self._show_ors_purge_history())
 
-        self._ors_frame = ors_frame
+        self._ors_frame = ors_inner
         self._ors_frame.grid_remove()  # Ocultar hasta que la pestaña sea ORS
 
     def _step_classify_category(self, step: int):
@@ -1190,6 +1207,56 @@ class App3Window(ctk.CTk):
         if self._classify_panel.step_category(step):
             return "break"
         return None
+
+    # ── TECLADO: ENTER / TAB / CTRL+A ────────────────────────────────────────────
+
+    def _on_tree_enter(self):
+        """Enter en el Treeview — solo clasifica si el botón está habilitado."""
+        if not self.selected and not self.selected_records:
+            return "break"
+        btn_state = str(self._btn_classify.cget("state"))
+        if btn_state == "disabled":
+            return "break"
+        self._classify_selected()
+        return "break"
+
+    def _classify_selected_safe(self):
+        """Clasificar con validación de estado del botón (para Enter en campos del panel)."""
+        btn_state = str(self._btn_classify.cget("state"))
+        if btn_state == "disabled":
+            return
+        self._classify_selected()
+
+    def _on_tree_tab(self):
+        """Tab en Treeview → foco al primer widget interactivo del panel derecho."""
+        if not self.selected and not self.selected_records:
+            return "break"
+        if getattr(self, "_classify_panel", None):
+            self._classify_panel.focus_first_interactive()
+        return "break"
+
+    def _on_tree_shift_tab(self):
+        """Shift-Tab en Treeview → foco al último widget del panel derecho."""
+        if not self.selected and not self.selected_records:
+            return "break"
+        if getattr(self, "_classify_panel", None):
+            self._classify_panel.focus_last_interactive()
+        return "break"
+
+    def _on_tree_select_all(self):
+        """Ctrl+A en Treeview → seleccionar todas las facturas visibles."""
+        all_items = self.tree.get_children()
+        if all_items:
+            self.tree.selection_set(all_items)
+            self.tree.focus(all_items[0])
+        return "break"
+
+    def _focus_tree(self):
+        """Devuelve foco al Treeview y restaura la selección visual."""
+        self.tree.focus_set()
+        sel = self.tree.selection()
+        if sel:
+            self.tree.focus(sel[0])
 
     # ── PESTAÑAS DE FACTURAS DEL PERÍODO ────────────────────────────────────────
     def _on_tab_clicked(self, tab: str):
@@ -1452,7 +1519,7 @@ class App3Window(ctk.CTk):
         return None
 
     def _resolve_previous_classification(self, r: FacturaRecord) -> tuple[str, Path | None]:
-        """Devuelve (texto_clasificacion_previa, ruta_destino) para el panel ANTERIOR."""
+        """Devuelve (texto_clasificacion_previa, ruta_destino) para el panel RUTA."""
         if not self.db:
             return "--", None
         prev = self._db_records.get(r.clave) or {}
@@ -1471,7 +1538,12 @@ class App3Window(ctk.CTk):
                 prev.get("proveedor"),
             ] if p
         )
-        prev_text = f"{crumbs}\n{prev.get('fecha_clasificacion', '')}"
+        # Construir linea secundaria con mes + fecha de clasificacion
+        mes_str = self._get_mes_str(r.fecha_emision) if r.fecha_emision else ""
+        fecha_clas = prev.get("fecha_clasificacion", "")
+        secondary_parts = [p for p in (mes_str, fecha_clas) if p]
+        secondary = " \u00b7 ".join(secondary_parts)
+        prev_text = f"{crumbs}\n{secondary}"
         ruta_dest = prev.get("ruta_destino", "")
         if not ruta_dest:
             return prev_text, None
@@ -2197,7 +2269,7 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(
             header,
             text=header_text,
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            font=F_MODAL_SUBTITLE(),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
 
@@ -2223,7 +2295,7 @@ class App3Window(ctk.CTk):
             ctk.CTkLabel(
                 list_frame,
                 text=label_text,
-                font=ctk.CTkFont(size=10),
+                font=F_MODAL_HINT(),
                 text_color=MUTED,
                 justify="left",
             ).pack(anchor="w", padx=12, pady=4)
@@ -2233,14 +2305,14 @@ class App3Window(ctk.CTk):
             ctk.CTkLabel(
                 list_frame,
                 text="Carpetas residuales con contenido (no se eliminaran):",
-                font=ctk.CTkFont(size=10, weight="bold"),
+                font=F_MODAL_HINT(),
                 text_color=WARNING,
             ).pack(anchor="w", padx=12, pady=(12, 2))
             for r in residuals_with_content:
                 ctk.CTkLabel(
                     list_frame,
                     text=f"  {r['mes']}/{r['path'].name}  [contiene archivos]",
-                    font=ctk.CTkFont(size=10),
+                    font=F_MODAL_HINT(),
                     text_color=MUTED,
                 ).pack(anchor="w", padx=12, pady=2)
 
@@ -2254,21 +2326,21 @@ class App3Window(ctk.CTk):
             ctk.CTkLabel(
                 footer,
                 text="Solo se eliminaran carpetas COMPLETAMENTE vacias",
-                font=ctk.CTkFont(size=10),
+                font=F_MODAL_HINT(),
                 text_color=WARNING,
             ).pack(anchor="w")
 
             ctk.CTkLabel(
                 footer,
                 text="Si hay error de acceso: Cierra Explorador Windows si esta abierto en estas carpetas",
-                font=ctk.CTkFont(size=9),
+                font=F_MODAL_MICRO(),
                 text_color=MUTED,
             ).pack(anchor="w", pady=(4, 0))
         else:
             ctk.CTkLabel(
                 footer,
                 text="Las carpetas residuales tienen archivos y no se eliminaran automaticamente.",
-                font=ctk.CTkFont(size=10),
+                font=F_MODAL_HINT(),
                 text_color=WARNING,
             ).pack(anchor="w")
 
@@ -2403,7 +2475,7 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(
             header,
             text="Seleccionar XML para vincular",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            font=F_MODAL_SUBTITLE(),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
 
@@ -2968,7 +3040,7 @@ class App3Window(ctk.CTk):
         # ── Header ───────────────────────────────────────────────────────────
         hdr = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=0)
         hdr.pack(fill="x")
-        ctk.CTkLabel(hdr, text=f"{title}", font=F_BTN(),
+        ctk.CTkLabel(hdr, text=f"{title}", font=F_BUTTON(),
                       text_color=WARNING).pack(side="left", padx=16, pady=12)
         ctk.CTkLabel(hdr,
                       text=f"{len(parse_errors)} advertencias  ·  {records_count} facturas cargadas",
@@ -3232,6 +3304,21 @@ class App3Window(ctk.CTk):
             ModalOverlay.show_info(self, "Limpiar duplicados", "No hay sesión activa")
             return
 
+        # Mostrar overlay de carga
+        if not hasattr(self, '_loading_overlay') or not self._loading_overlay:
+            self._loading_overlay = LoadingOverlay(self)
+            self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        else:
+            self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        self._loading_overlay.update_status("Escaneando duplicados...")
+        self.update_idletasks()
+
+        def _set_status(msg: str):
+            self.after(0, lambda m=msg: (
+                self._loading_overlay.update_status(m)
+                if hasattr(self, '_loading_overlay') and self._loading_overlay else None
+            ))
+
         # Detectar duplicados en thread
         def worker():
             from gestor_contable.core.classification_utils import (
@@ -3241,36 +3328,56 @@ class App3Window(ctk.CTk):
             )
             try:
                 # Tipo 1: PDFs descargados que ya fueron clasificados
+                _set_status("Comparando PDFs origen vs clasificados...")
                 pdf_redundantes = find_duplicates_pdf_origin_vs_classified(
                     self.session.folder,
                     self._db_records,
                 )
 
                 # Tipo 2: XMLs duplicados en la carpeta XML/
+                _set_status("Calculando hashes de XMLs en origen...")
                 xml_duplicados = find_duplicate_xmls_in_origin(self.session.folder)
 
                 # Tipo 3: PDFs con contenido idéntico en múltiples rutas dentro de PDF/
+                _set_status("Calculando hashes de PDFs en origen...")
                 pdf_duplicados_origen = find_duplicate_pdfs_within_origin(self.session.folder)
 
                 # Tipo 4: PDFs rechazados por el indexador (misma clave, peor candidato)
                 pdf_dup_rejected = dict(self._pdf_duplicates_rejected)
 
-                self.after(
-                    0,
-                    lambda: self._show_cleanup_modal(pdf_redundantes, xml_duplicados, pdf_duplicados_origen, pdf_dup_rejected)
-                )
+                def _done():
+                    if hasattr(self, '_loading_overlay') and self._loading_overlay:
+                        self._loading_overlay.grid_remove()
+                    self._show_cleanup_modal(pdf_redundantes, xml_duplicados, pdf_duplicados_origen, pdf_dup_rejected)
+
+                self.after(0, _done)
             except Exception as e:
-                self.after(0, lambda error=e: self._show_error("Error al escanear", str(error)))
+                def _err(error=e):
+                    if hasattr(self, '_loading_overlay') and self._loading_overlay:
+                        self._loading_overlay.grid_remove()
+                    self._show_error("Error al escanear", str(error))
+                self.after(0, _err)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_cleanup_modal(self, pdf_redundantes: list[dict], xml_duplicados: list[dict], pdf_duplicados_origen: list[dict] | None = None, pdf_dup_rejected: dict | None = None):
-        """Muestra modal con duplicados a limpiar: PDFs redundantes + XMLs + duplicados en origen + rechazados por indexador."""
+        """Muestra modal con duplicados a mover a cuarentena: PDFs redundantes + XMLs + duplicados en origen + rechazados por indexador."""
         pdf_duplicados_origen = pdf_duplicados_origen or []
-        pdf_dup_rejected = {k: v for k, v in (pdf_dup_rejected or {}).items() if k.exists()}  # solo los que aún están en disco
+        pdf_dup_rejected = {k: v for k, v in (pdf_dup_rejected or {}).items() if k.exists()}
         total = len(pdf_redundantes) + len(xml_duplicados) + sum(len(g["a_eliminar"]) for g in pdf_duplicados_origen) + len(pdf_dup_rejected)
         if total == 0:
-            ModalOverlay.show_info(self, "Limpiar duplicados", "No hay duplicados detectados")
+            self._set_status("Duplicados: sin hallazgos")
+            open_history = ModalOverlay.ask_sync(
+                self,
+                "Limpiar duplicados",
+                "No hay duplicados detectados en este escaneo.\n\n"
+                "Si necesita recuperar archivos enviados previamente a cuarentena, "
+                "puede abrir el historial de lotes restaurables.",
+                confirm_text="Ver historial",
+                cancel_text="Cerrar",
+            )
+            if open_history:
+                self._show_duplicates_restore_history()
             return
 
         overlay, modal, close_fn = ModalOverlay.build(self)
@@ -3281,15 +3388,15 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(
             header,
             text=f"Se encontraron {total} archivo(s) redundante(s)",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            font=F_MODAL_SUBTITLE(),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
 
-        # Body scrollable
+        # Body
         body = ctk.CTkFrame(modal, fg_color=BG)
         body.pack(fill="both", expand=True, padx=12, pady=12)
 
-        # Crear Treeview para listar duplicados
+        # Treeview
         tree_frame = ctk.CTkFrame(body, fg_color=CARD, corner_radius=8)
         tree_frame.pack(fill="both", expand=True, pady=(0, 12))
         tree_frame.grid_rowconfigure(0, weight=1)
@@ -3314,18 +3421,13 @@ class App3Window(ctk.CTk):
         tree.column("tipo", width=200, anchor="w")
         tree.column("archivo", width=500, anchor="w")
         tree.column("accion", width=150, anchor="center")
-
         tree.heading("tipo", text="Tipo")
         tree.heading("archivo", text="Archivo")
-        tree.heading("accion", text="Acción")
-
+        tree.heading("accion", text="Accion")
         tree.grid(row=0, column=0, sticky="nsew")
 
-        # Listas para ejecutar eliminación
-        to_delete_pdf = []              # PDFs ya clasificados redundantes en origen
-        to_delete_xml = []              # XMLs duplicados
-        to_delete_pdf_origen = []       # PDFs duplicados dentro de PDF/
-        to_delete_pdf_dup_rejected = [] # PDFs rechazados por indexador (misma clave)
+        # Lista unificada para cuarentena: [(tipo_str, Path)]
+        files_to_quarantine: list[tuple[str, Path]] = []
 
         # ─ SECCIÓN 1: PDFs redundantes (descargados que ya fueron clasificados)
         if pdf_redundantes:
@@ -3334,24 +3436,9 @@ class App3Window(ctk.CTk):
                 en_pdf = pdf_item["en_pdf"]
                 en_clasificado = pdf_item["en_clasificado"]
                 sha256 = pdf_item["sha256"][:8] + "..."
-
-                to_delete_pdf.append(en_pdf)
-                tree.insert(
-                    parent_pdf,
-                    "end",
-                    text="",
-                    values=(
-                        f"SHA256: {sha256}",
-                        en_pdf.name[:60],
-                        "ELIMINAR"
-                    )
-                )
-                tree.insert(
-                    parent_pdf,
-                    "end",
-                    text="",
-                    values=("", f"  → Ya clasificado en: {en_clasificado.parent.name}", "Mantener")
-                )
+                files_to_quarantine.append(("pdf_redundante", en_pdf))
+                tree.insert(parent_pdf, "end", text="", values=(f"SHA256: {sha256}", en_pdf.name[:60], "CUARENTENA"))
+                tree.insert(parent_pdf, "end", text="", values=("", f"  Ya clasificado en: {en_clasificado.parent.name}", "Mantener"))
 
         # ─ SECCIÓN 2: XMLs duplicados (copias innecesarias)
         if xml_duplicados:
@@ -3360,23 +3447,10 @@ class App3Window(ctk.CTk):
                 mantener = xml_group["mantener"]
                 a_eliminar = xml_group["a_eliminar"]
                 sha256 = xml_group["sha256"][:8] + "..."
-
-                # Agregar a lista de eliminación
-                to_delete_xml.extend(a_eliminar)
-
-                tree.insert(
-                    parent_xml,
-                    "end",
-                    text="",
-                    values=(f"SHA256: {sha256}", mantener.name[:60], "Mantener")
-                )
+                tree.insert(parent_xml, "end", text="", values=(f"SHA256: {sha256}", mantener.name[:60], "Mantener"))
                 for xml_dup in a_eliminar:
-                    tree.insert(
-                        parent_xml,
-                        "end",
-                        text="",
-                        values=("", xml_dup.name[:60], "ELIMINAR")
-                    )
+                    files_to_quarantine.append(("xml_duplicado", xml_dup))
+                    tree.insert(parent_xml, "end", text="", values=("", xml_dup.name[:60], "CUARENTENA"))
 
         # ─ SECCIÓN 3: PDFs duplicados físicamente dentro de PDF/
         if pdf_duplicados_origen:
@@ -3384,39 +3458,27 @@ class App3Window(ctk.CTk):
             for grupo in pdf_duplicados_origen:
                 mantener = grupo["mantener"]
                 sha256 = grupo["sha256"][:8] + "..."
-                tree.insert(
-                    parent_dup, "end", text="",
-                    values=(f"SHA256: {sha256}", f"{mantener.name[:50]}  ({mantener.parent.name}/)", "Mantener")
-                )
+                tree.insert(parent_dup, "end", text="", values=(f"SHA256: {sha256}", f"{mantener.name[:50]}  ({mantener.parent.name}/)", "Mantener"))
                 for dup_path in grupo["a_eliminar"]:
-                    to_delete_pdf_origen.append(dup_path)
-                    tree.insert(
-                        parent_dup, "end", text="",
-                        values=("", f"  {dup_path.name[:50]}  ({dup_path.parent.name}/)", "ELIMINAR")
-                    )
+                    files_to_quarantine.append(("pdf_duplicado_origen", dup_path))
+                    tree.insert(parent_dup, "end", text="", values=("", f"  {dup_path.name[:50]}  ({dup_path.parent.name}/)", "CUARENTENA"))
 
         # ─ SECCIÓN 4: PDFs rechazados por indexador (misma clave, peor candidato)
         if pdf_dup_rejected:
             parent_rej = tree.insert("", "end", text="", values=("PDFs descartados por clave duplicada", "", ""))
             for rej_path, winner_path in pdf_dup_rejected.items():
-                to_delete_pdf_dup_rejected.append(rej_path)
+                files_to_quarantine.append(("pdf_rechazado", rej_path))
                 rej_size = rej_path.stat().st_size if rej_path.exists() else 0
-                tree.insert(
-                    parent_rej, "end", text="",
-                    values=(
-                        f"({rej_size} B)",
-                        f"{rej_path.name[:50]}  ({rej_path.parent.name}/)",
-                        "ELIMINAR"
-                    )
-                )
-                tree.insert(
-                    parent_rej, "end", text="",
-                    values=(
-                        "",
-                        f"  Ganador: {winner_path.name[:50]}  ({winner_path.parent.name}/)",
-                        "Mantener"
-                    )
-                )
+                tree.insert(parent_rej, "end", text="", values=(f"({rej_size} B)", f"{rej_path.name[:50]}  ({rej_path.parent.name}/)", "CUARENTENA"))
+                tree.insert(parent_rej, "end", text="", values=("", f"  Ganador: {winner_path.name[:50]}  ({winner_path.parent.name}/)", "Mantener"))
+
+        # Nota informativa
+        ctk.CTkLabel(
+            body,
+            text="Los archivos se moveran a .metadata/duplicates_quarantine/ y pueden restaurarse por lote.",
+            font=F_MODAL_HINT(),
+            text_color=MUTED,
+        ).pack(anchor="w", pady=(0, 4))
 
         # Footer con botones
         footer = ctk.CTkFrame(modal, fg_color=BG)
@@ -3424,22 +3486,30 @@ class App3Window(ctk.CTk):
 
         def proceed():
             close_fn()
-            if to_delete_pdf or to_delete_xml or to_delete_pdf_origen or to_delete_pdf_dup_rejected:
-                self._execute_cleanup(to_delete_pdf, to_delete_xml, to_delete_pdf_origen, to_delete_pdf_dup_rejected)
+            if files_to_quarantine:
+                self._execute_duplicates_quarantine(files_to_quarantine)
             else:
-                ModalOverlay.show_info(self, "Limpiar", "No hay archivos para eliminar")
-
-        def cancel():
-            close_fn()
+                ModalOverlay.show_info(self, "Cuarentena", "No hay archivos para mover")
 
         ctk.CTkButton(
             footer,
-            text="Eliminar redundantes",
-            fg_color=DANGER,
-            hover_color="#dc2626",
+            text="Mover a cuarentena",
+            fg_color=WARNING,
+            hover_color="#d97706",
+            text_color=BG,
+            font=F_BTN_PRIMARY(),
+            command=proceed,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            footer,
+            text="Restaurar lote...",
+            fg_color=SURFACE,
+            hover_color=BORDER,
             text_color=TEXT,
-            command=proceed
-        ).pack(side="left", padx=8)
+            font=F_MODAL_BODY(),
+            command=lambda: (close_fn(), self._show_duplicates_restore_history()),
+        ).pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
             footer,
@@ -3447,82 +3517,191 @@ class App3Window(ctk.CTk):
             fg_color=SURFACE,
             hover_color=BORDER,
             text_color=TEXT,
-            command=cancel
-        ).pack(side="left", padx=8)
+            command=close_fn,
+        ).pack(side="left")
 
-    def _execute_cleanup(self, to_delete_pdf: list[Path], to_delete_xml: list[Path], to_delete_pdf_origen: list[Path] | None = None, to_delete_pdf_dup_rejected: list[Path] | None = None):
-        """Ejecuta eliminación de archivos redundantes (PDFs + XMLs + PDFs duplicados en origen)."""
-        deleted = []
-        errors = []
+    def _execute_duplicates_quarantine(self, files_to_quarantine: list[tuple[str, Path]]):
+        """Mueve archivos redundantes a cuarentena auditada en worker thread."""
+        from gestor_contable.config import metadata_dir as _metadata_dir
+
+        mdir = _metadata_dir(self.session.folder)
+        quarantine_db = DuplicatesQuarantineDB(mdir)
 
         def worker():
-            # Eliminar PDFs redundantes (descargados que ya fueron clasificados)
-            for pdf_path in to_delete_pdf:
-                try:
-                    if not pdf_path.exists():
-                        logger.warning(f"Archivo no existe: {pdf_path}")
-                        continue
-                    pdf_path.unlink()
-                    deleted.append(f"PDF: {pdf_path.name}")
-                    logger.info(f"PDF redundante eliminado: {pdf_path}")
-                except Exception as e:
-                    errors.append(f"Error eliminando PDF {pdf_path.name}: {e}")
-
-            # Eliminar XMLs duplicados (copias innecesarias)
-            for xml_path in to_delete_xml:
-                try:
-                    if not xml_path.exists():
-                        logger.warning(f"Archivo no existe: {xml_path}")
-                        continue
-                    xml_path.unlink()
-                    deleted.append(f"XML: {xml_path.name}")
-                    logger.info(f"XML duplicado eliminado: {xml_path}")
-                except Exception as e:
-                    errors.append(f"Error eliminando XML {xml_path.name}: {e}")
-
-            # Eliminar PDFs duplicados dentro de PDF/ (mismo contenido, distinta ruta)
-            for pdf_path in (to_delete_pdf_origen or []):
-                try:
-                    if not pdf_path.exists():
-                        logger.warning(f"Archivo no existe: {pdf_path}")
-                        continue
-                    pdf_path.unlink()
-                    deleted.append(f"PDF dup: {pdf_path.name}")
-                    logger.info(f"PDF duplicado en origen eliminado: {pdf_path}")
-                except Exception as e:
-                    errors.append(f"Error eliminando PDF {pdf_path.name}: {e}")
-
-            # Eliminar PDFs rechazados por indexador (misma clave, peor candidato)
-            for pdf_path in (to_delete_pdf_dup_rejected or []):
-                try:
-                    if not pdf_path.exists():
-                        logger.warning(f"Archivo no existe: {pdf_path}")
-                        continue
-                    pdf_path.unlink()
-                    deleted.append(f"PDF rechazado: {pdf_path.name}")
-                    logger.info(f"PDF rechazado por indexador eliminado: {pdf_path}")
-                except Exception as e:
-                    errors.append(f"Error eliminando PDF {pdf_path.name}: {e}")
-
-            self.after(0, lambda: self._show_cleanup_result(deleted, errors))
+            try:
+                summary = execute_duplicates_quarantine(files_to_quarantine, mdir, quarantine_db)
+                self.after(0, lambda: self._on_duplicates_quarantine_done(summary))
+            except Exception as exc:
+                self.after(0, lambda e=exc: ModalOverlay.show_error(self, "Error en cuarentena", str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_cleanup_result(self, deleted: list[str], errors: list[str]):
-        """Muestra resultado de la limpieza de duplicados."""
-        message = f"{len(deleted)} archivo(s) eliminado(s)\n\n"
-        for item in deleted[:10]:
-            message += f"  • {item}\n"
-        if len(deleted) > 10:
-            message += f"  ... y {len(deleted) - 10} más"
+    def _on_duplicates_quarantine_done(self, summary: dict):
+        """Callback UI tras completar cuarentena de duplicados."""
+        batch_id = summary["batch_id"]
+        movidos = summary["movidos"]
+        fallidos = summary["fallidos"]
 
-        if errors:
-            message += f"\n\n{len(errors)} error(es):\n" + "\n".join(f"  • {e}" for e in errors[:5])
-            ModalOverlay.show_warning(self, "Limpieza completada", message)
+        msg_lines = [
+            f"Lote: {batch_id}",
+            f"Archivos en cuarentena: {movidos}",
+        ]
+        if fallidos:
+            msg_lines.append(f"Errores: {fallidos}")
+        msg_lines.append("")
+        msg_lines.append("Puede restaurar este lote desde:")
+        msg_lines.append("Duplicados > Restaurar lote...")
+
+        msg = "\n".join(msg_lines)
+        if fallidos == 0:
+            ModalOverlay.show_success(self, "Cuarentena completada", msg)
         else:
-            ModalOverlay.show_success(self, "Limpieza completada", message)
+            ModalOverlay.show_warning(self, "Cuarentena con errores", msg)
 
-        self._set_status(f"Limpieza: {len(deleted)} archivo(s) eliminado(s)")
+        self._set_status(f"Cuarentena duplicados: {movidos} archivo(s) movido(s)")
+
+    def _show_duplicates_restore_history(self):
+        """Modal de historial de cuarentenas de duplicados — permite restaurar por lote."""
+        import tkinter as tk
+        from gestor_contable.config import metadata_dir as _metadata_dir
+
+        if not self.session:
+            ModalOverlay.show_info(self, "Restaurar", "No hay sesion activa")
+            return
+
+        mdir = _metadata_dir(self.session.folder)
+        quarantine_db = DuplicatesQuarantineDB(mdir)
+        batches = quarantine_db.list_batches()
+
+        overlay, card, close_fn = ModalOverlay.build(self)
+
+        # Header
+        hdr = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=0)
+        hdr.pack(fill="x")
+        ctk.CTkLabel(
+            hdr,
+            text="Historial de cuarentena de duplicados",
+            font=F_MODAL_TITLE(),
+            text_color=TEXT,
+        ).pack(side="left", padx=16, pady=12)
+
+        if not batches:
+            ctk.CTkLabel(
+                card,
+                text="No hay lotes en cuarentena para este cliente.",
+                font=F_MODAL_BODY(),
+                text_color=MUTED,
+            ).pack(padx=24, pady=32)
+            ctk.CTkButton(card, text="Cerrar", fg_color=SURFACE, border_width=1,
+                          border_color=BORDER, text_color=TEXT, command=close_fn).pack(pady=(0, 24))
+            return
+
+        # Lista de lotes
+        list_frame = ctk.CTkFrame(card, fg_color=SURFACE, corner_radius=6)
+        list_frame.pack(fill="both", expand=True, padx=16, pady=(8, 8))
+
+        sb = tk.Scrollbar(list_frame)
+        sb.pack(side="right", fill="y")
+        txt = tk.Text(
+            list_frame,
+            wrap="none",
+            bg=SURFACE,
+            fg=TEXT,
+            relief="flat",
+            font=("Consolas", 10),
+            bd=0,
+            padx=10,
+            pady=8,
+            yscrollcommand=sb.set,
+            state="normal",
+        )
+        txt.pack(fill="both", expand=True)
+        sb.config(command=txt.yview)
+
+        for b in batches:
+            fecha = b["fecha"][:19].replace("T", " ")
+            txt.insert("end", f"Lote: {b['batch_id']}  |  {fecha}  |  {b['total_archivos']} archivo(s)\n")
+        txt.configure(state="disabled")
+
+        # Selector de lote
+        ctk.CTkLabel(card, text="ID del lote a restaurar:", font=F_MODAL_BODY(),
+                     text_color=MUTED).pack(anchor="w", padx=16, pady=(8, 2))
+
+        batch_options = [b["batch_id"] for b in batches]
+        batch_var = ctk.StringVar(value=batch_options[0] if batch_options else "")
+        ctk.CTkOptionMenu(
+            card,
+            values=batch_options,
+            variable=batch_var,
+            fg_color=SURFACE,
+            button_color=BORDER,
+            button_hover_color=TEAL,
+            text_color=TEXT,
+            font=F_MODAL_BODY(),
+        ).pack(fill="x", padx=16, pady=(0, 8))
+
+        error_lbl = ctk.CTkLabel(card, text="", font=F_MODAL_SUBTEXT(), text_color=DANGER)
+        error_lbl.pack(padx=16, pady=(0, 4))
+
+        def _on_restore():
+            selected = batch_var.get().strip()
+            if not selected:
+                error_lbl.configure(text="Seleccione un lote.")
+                return
+            confirmed = ModalOverlay.ask_sync(
+                self,
+                "Restaurar lote",
+                f"Se restauraran los archivos del lote {selected}\na sus ubicaciones originales.\n\n¿Continuar?",
+            )
+            if not confirmed:
+                return
+            close_fn()
+
+            def _worker():
+                try:
+                    result = restore_duplicates_batch(selected, quarantine_db)
+                    self.after(0, lambda r=result: self._on_duplicates_restore_done(r))
+                except Exception as exc:
+                    self.after(0, lambda e=exc: ModalOverlay.show_error(self, "Error al restaurar", str(e)))
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(pady=(0, 24))
+        ctk.CTkButton(
+            btn_row,
+            text="Restaurar lote",
+            width=160,
+            fg_color=TEAL,
+            hover_color=TEAL_DIM,
+            text_color=BG,
+            font=F_BTN_PRIMARY(),
+            command=_on_restore,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btn_row,
+            text="Cerrar",
+            width=120,
+            fg_color=SURFACE,
+            border_width=1,
+            border_color=BORDER,
+            text_color=TEXT,
+            font=F_BTN_SECONDARY(),
+            command=close_fn,
+        ).pack(side="left")
+
+    def _on_duplicates_restore_done(self, result: dict):
+        """Callback UI tras restaurar un lote de cuarentena de duplicados."""
+        restaurados = result["restaurados"]
+        fallidos = result["fallidos"]
+        msg = f"Archivos restaurados: {restaurados}"
+        if fallidos:
+            msg += f"\nErrores: {fallidos}"
+        if fallidos == 0:
+            ModalOverlay.show_success(self, "Restauracion completada", msg)
+        else:
+            ModalOverlay.show_warning(self, "Restauracion con errores", msg)
+        self._set_status(f"Restauracion duplicados: {restaurados} archivo(s)")
 
     # ── PURGA RESPUESTAS RECEPTOR ─────────────────────────────────────────────
 
@@ -3598,7 +3777,7 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(
             card,
             text="Purgar ORS — Verificacion de cedula",
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            font=F_MODAL_TITLE(),
             text_color=DANGER,
         ).pack(padx=24, pady=(24, 4))
 
@@ -3611,7 +3790,7 @@ class App3Window(ctk.CTk):
                 "el emisor O el receptor sea exactamente esa cedula.\n"
                 "Ningun registro fuera del ORS es afectado."
             ),
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=F_MODAL_BODY(),
             text_color=MUTED,
             justify="center",
         ).pack(padx=24, pady=(0, 16))
@@ -3624,7 +3803,7 @@ class App3Window(ctk.CTk):
             fg_color=SURFACE,
             border_color=BORDER,
             text_color=TEXT,
-            font=ctk.CTkFont(family="Segoe UI", size=13),
+            font=F_BTN_SECONDARY(),
             height=40,
             justify="center",
         )
@@ -3634,7 +3813,7 @@ class App3Window(ctk.CTk):
         error_lbl = ctk.CTkLabel(
             card,
             text="",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
+            font=F_MODAL_SUBTEXT(),
             text_color=DANGER,
         )
         error_lbl.pack(padx=24, pady=(0, 8))
@@ -3658,7 +3837,7 @@ class App3Window(ctk.CTk):
             fg_color=DANGER,
             hover_color="#dc2626",
             text_color="#0d1a18",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            font=F_BTN_PRIMARY(),
             command=_on_confirm,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
@@ -3669,7 +3848,7 @@ class App3Window(ctk.CTk):
             border_width=1,
             border_color=BORDER,
             text_color=TEXT,
-            font=ctk.CTkFont(family="Segoe UI", size=13),
+            font=F_BTN_SECONDARY(),
             command=close_fn,
         ).pack(side="left")
 
@@ -3719,13 +3898,13 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(
             hdr,
             text="Previsualizacion de purga ORS",
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            font=F_MODAL_TITLE(),
             text_color=DANGER,
         ).pack(side="left", padx=16, pady=12)
         ctk.CTkLabel(
             hdr,
             text=f"Cedula: {cedula}",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=F_MODAL_BODY(),
             text_color=MUTED,
         ).pack(side="right", padx=16, pady=12)
 
@@ -3739,16 +3918,16 @@ class App3Window(ctk.CTk):
         ]:
             row_f = ctk.CTkFrame(summary, fg_color="transparent")
             row_f.pack(fill="x", padx=12, pady=3)
-            ctk.CTkLabel(row_f, text=label, font=ctk.CTkFont(family="Segoe UI", size=12),
+            ctk.CTkLabel(row_f, text=label, font=F_CARD_LABEL(),
                          text_color=MUTED, anchor="w").pack(side="left")
-            ctk.CTkLabel(row_f, text=value, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            ctk.CTkLabel(row_f, text=value, font=F_CARD_VALUE(),
                          text_color=TEXT, anchor="e").pack(side="right")
 
         # Lista de claves
         ctk.CTkLabel(
             card,
             text="Documentos que seran movidos a cuarentena:",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
+            font=F_MODAL_SUBTEXT(),
             text_color=MUTED,
         ).pack(anchor="w", padx=16, pady=(4, 2))
 
@@ -3787,7 +3966,7 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(
             card,
             text="Los archivos se moveran a .ors_quarantine/ dentro de la carpeta del cliente.",
-            font=ctk.CTkFont(family="Segoe UI", size=10),
+            font=F_MODAL_HINT(),
             text_color=MUTED,
         ).pack(padx=16, pady=(0, 4))
 
@@ -3811,7 +3990,7 @@ class App3Window(ctk.CTk):
             fg_color=DANGER,
             hover_color="#dc2626",
             text_color="#0d1a18",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            font=F_BTN_PRIMARY(),
             command=_on_confirm,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
@@ -3822,7 +4001,7 @@ class App3Window(ctk.CTk):
             border_width=1,
             border_color=BORDER,
             text_color=TEXT,
-            font=ctk.CTkFont(family="Segoe UI", size=13),
+            font=F_BTN_SECONDARY(),
             command=close_fn,
         ).pack(side="left")
 
@@ -3935,7 +4114,7 @@ class App3Window(ctk.CTk):
         ctk.CTkLabel(
             hdr,
             text="Historial de cuarentenas",
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            font=F_MODAL_TITLE(),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
         ctk.CTkButton(
@@ -3946,7 +4125,7 @@ class App3Window(ctk.CTk):
             border_width=1,
             border_color=BORDER,
             text_color=TEXT,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=F_MODAL_BODY(),
             command=close_fn,
         ).pack(side="right", padx=16, pady=10)
 
@@ -3954,7 +4133,7 @@ class App3Window(ctk.CTk):
             ctk.CTkLabel(
                 card,
                 text="No hay cuarentenas registradas para este cliente.",
-                font=ctk.CTkFont(family="Segoe UI", size=12),
+                font=F_MODAL_BODY(),
                 text_color=MUTED,
             ).pack(expand=True)
             return
@@ -3979,7 +4158,7 @@ class App3Window(ctk.CTk):
         detail_header = ctk.CTkLabel(
             detail_frame,
             text="Seleccione un lote para ver el detalle",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=F_MODAL_BODY(),
             text_color=MUTED,
         )
         detail_header.grid(row=0, column=0, columnspan=2, padx=12, pady=8, sticky="w")
@@ -4015,7 +4194,7 @@ class App3Window(ctk.CTk):
             fg_color=WARNING,
             hover_color="#e8a61c",
             text_color="#0d1a18",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            font=F_MODAL_SUBTITLE(),
             state="disabled",
             command=_do_restore,
         )
@@ -4081,7 +4260,7 @@ class App3Window(ctk.CTk):
                 batch_list_frame,
                 text=btn_text,
                 anchor="w",
-                font=ctk.CTkFont(family="Segoe UI", size=11),
+                font=F_BTN_LIST(),
                 fg_color=CARD if i % 2 == 0 else SURFACE,
                 hover_color=BORDER,
                 text_color=tipo_color,
