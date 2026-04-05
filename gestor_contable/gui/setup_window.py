@@ -6,6 +6,7 @@ from pathlib import Path
 from tkinter import filedialog
 
 import customtkinter as ctk
+from gestor_contable.gui.fonts import *
 
 logger = logging.getLogger(__name__)
 
@@ -93,19 +94,19 @@ class SetupWindow(ctk.CTk):
         ctk.CTkLabel(
             header, text="📊",
             fg_color="#1a3a36", corner_radius=8,
-            width=32, height=32, font=ctk.CTkFont(size=16),
+            width=32, height=32, font=F_AVATAR(),
         ).grid(row=0, column=0, padx=(16, 8), pady=12)
 
         ctk.CTkLabel(
             header,
             text="Clasificador Contable",
-            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+            font=F_HEADING(),
             text_color=TEXT,
         ).grid(row=0, column=1, sticky="w")
 
         ctk.CTkLabel(
             header, text="Configuración inicial",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
+            font=F_LABEL(),
             fg_color=CARD, text_color=MUTED, corner_radius=20,
         ).grid(row=0, column=2, padx=16, ipadx=10, ipady=3)
 
@@ -116,7 +117,7 @@ class SetupWindow(ctk.CTk):
             warn.grid_propagate(False)
             ctk.CTkLabel(
                 warn, text=f"⚠  {self._reason}",
-                font=ctk.CTkFont(family="Segoe UI", size=11),
+                font=F_LABEL(),
                 text_color=WARNING,
             ).pack(side="left", padx=16, pady=8)
         else:
@@ -129,7 +130,7 @@ class SetupWindow(ctk.CTk):
 
         ctk.CTkLabel(
             intro, text="Primera configuración",
-            font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"),
+            font=F_TITLE(),
             text_color=TEXT, anchor="w",
         ).pack(anchor="w")
 
@@ -137,27 +138,24 @@ class SetupWindow(ctk.CTk):
             intro,
             text="Indica dónde está tu carpeta de OneDrive.\n"
                  "El sistema la montará automáticamente como disco Z: cada vez que abras la app.",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=F_BODY(),
             text_color=MUTED, justify="left", anchor="w",
         ).pack(anchor="w", pady=(4, 0))
 
         # ── Tarjeta de configuración ──────────────────────────────────────────
-        card_border = ctk.CTkFrame(self, fg_color=BORDER, corner_radius=16)
-        card_border.grid(row=3, column=0, sticky="nsew", padx=40, pady=24)
-
-        card = ctk.CTkFrame(card_border, fg_color=CARD, corner_radius=14)
-        card.pack(fill="both", expand=True, padx=1, pady=1)
+        card = ctk.CTkFrame(self, fg_color=CARD, border_width=1, border_color=BORDER, corner_radius=14)
+        card.grid(row=3, column=0, sticky="nsew", padx=40, pady=24)
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             card, text="CARPETA DE ONEDRIVE",
-            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+            font=F_SMALL_BOLD(),
             text_color=TEAL, anchor="w",
         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=24, pady=(20, 0))
 
         ctk.CTkLabel(
             card, text="Ruta de la carpeta local de OneDrive en este equipo",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
+            font=F_LABEL(),
             text_color=MUTED, anchor="w",
         ).grid(row=1, column=0, columnspan=2, sticky="w", padx=24, pady=(8, 4))
 
@@ -171,7 +169,7 @@ class SetupWindow(ctk.CTk):
             placeholder_text="Ej: C:/Users/TuNombre/OneDrive",
             fg_color=SURFACE, border_color=BORDER,
             text_color=TEXT, placeholder_text_color="#3a4055",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=F_BODY(),
             height=40, corner_radius=10,
         )
         self._path_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
@@ -180,7 +178,7 @@ class SetupWindow(ctk.CTk):
         ctk.CTkButton(
             path_row,
             text="Examinar",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=F_BODY(),
             fg_color=SURFACE, hover_color=BORDER,
             text_color=TEXT, border_color=BORDER, border_width=1,
             height=40, corner_radius=10, width=90,
@@ -190,7 +188,7 @@ class SetupWindow(ctk.CTk):
         # Feedback de validación
         self._feedback = ctk.CTkLabel(
             card, text="",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
+            font=F_LABEL(),
             text_color=MUTED, anchor="w",
         )
         self._feedback.grid(row=3, column=0, columnspan=2, sticky="w", padx=24, pady=(6, 0))
@@ -201,7 +199,7 @@ class SetupWindow(ctk.CTk):
         ctk.CTkLabel(
             hint,
             text="  La app usará:  <OneDrive>/DATA/PF-{año}/CLIENTES/",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
+            font=F_LABEL(),
             text_color=MUTED, anchor="w",
         ).pack(anchor="w", padx=8, pady=8)
 
@@ -209,7 +207,7 @@ class SetupWindow(ctk.CTk):
         self._btn_save = ctk.CTkButton(
             card,
             text="Guardar y continuar  ->",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            font=F_BUTTON(),
             fg_color=TEAL, hover_color=TEAL_DIM,
             text_color="#0d1a18",
             height=44, corner_radius=12,

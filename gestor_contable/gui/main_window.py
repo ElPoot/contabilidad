@@ -51,6 +51,7 @@ from gestor_contable.core.ors_purge import (
 from gestor_contable.core.factura_index import FacturaIndexer
 from gestor_contable.core.models import FacturaRecord
 from gestor_contable.core.session import ClientSession
+from gestor_contable.core import atv_client
 from gestor_contable.gui.icons import get_icon
 from gestor_contable.gui.classify_panel import ClassifyPanel, ClassifyPanelCallbacks
 from gestor_contable.gui.loading_modal import LoadingOverlay
@@ -806,6 +807,76 @@ class App3Window(ctk.CTk):
             self.after(100, lambda r=renames: self._show_rename_warning(r))
         else:
             self._btn_consolidar.grid_remove()
+
+        # Recuperar respuestas de Hacienda faltantes via ATV (si hay credenciales)
+        self.after(600, self._start_atv_recovery)
+
+    def _start_atv_recovery(self) -> None:
+        """Consulta ATV automaticamente para facturas sin respuesta de Hacienda."""
+        if not atv_client.has_credentials():
+            return
+
+        targets = [
+            r for r in self.all_records
+            if (r.estado_hacienda == ""
+                and r.estado not in ("sin_xml", "huerfano")
+                and r.xml_path is not None
+                and len(r.clave) == 50)
+        ]
+        if not targets:
+            return
+
+        generation = self._load_generation
+        total = len(targets)
+        self._set_status(f"ATV: verificando {total} factura(s) sin respuesta de Hacienda...")
+
+        q: Queue = Queue()
+
+        def _worker():
+            saved = 0
+            for i, record in enumerate(targets):
+                result = atv_client.query_invoice_status(record.clave)
+                q.put(("progress", i + 1, total, result.get("ind_estado", "...")))
+
+                xml_bytes = result.get("respuesta_xml_bytes")
+                ind = result.get("ind_estado", "")
+                if xml_bytes and ind not in ("no_encontrado", "desconocido", ""):
+                    out = record.xml_path.parent / f"{record.clave}_MH.xml"
+                    if not out.exists():
+                        try:
+                            out.write_bytes(xml_bytes)
+                            saved += 1
+                        except Exception as exc:
+                            logger.warning("ATV: no se pudo guardar XML para %s: %s", record.clave, exc)
+
+            q.put(("done", saved))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self.after(200, lambda: self._poll_atv_recovery(q, generation))
+
+    def _poll_atv_recovery(self, q: Queue, generation: int) -> None:
+        """Actualiza el status bar con el progreso de la recuperacion ATV."""
+        if generation != self._load_generation:
+            return  # la sesion cambio, descartar
+
+        while not q.empty():
+            msg = q.get()
+            kind = msg[0]
+
+            if kind == "progress":
+                _, current, total, ind_estado = msg
+                self._set_status(f"ATV: {current}/{total} — {ind_estado}")
+
+            elif kind == "done":
+                saved = msg[1]
+                if saved > 0:
+                    self._set_status(f"ATV: {saved} respuesta(s) recuperada(s) — recargando...")
+                    self.after(800, lambda: self._load_session(self.session, reset_dates=False))
+                else:
+                    self._set_status("Listo")
+                return
+
+        self.after(200, lambda: self._poll_atv_recovery(q, generation))
 
     def _apply_pdf_enrichment(self, generation: int, enriched_records: list[FacturaRecord], parse_errors: list[str]):
         """Ya no se usa (PDFs cargados en _load_session). Mantenido por compatibilidad."""

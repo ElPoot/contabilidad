@@ -17,6 +17,7 @@ from gestor_contable.core.client_profiles import load_profiles
 from gestor_contable.version import __version__
 from gestor_contable.core.session import ClientSession, resolve_client_session
 from gestor_contable.core.settings import get_setting
+from gestor_contable.core import atv_client
 
 # ── PALETA ────────────────────────────────────────────────────────────────────
 BG       = "#0d0f14"
@@ -31,22 +32,7 @@ DANGER   = "#f87171"
 SUCCESS  = "#34d399"
 WARNING  = "#fbbf24"
 
-# ── FUENTES (lazy -- se crean solo después de que existe la ventana raíz) ──────
-_fonts: dict = {}
-
-def _f(key: str, size: int, weight: str = "normal") -> ctk.CTkFont:
-    if key not in _fonts:
-        _fonts[key] = ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
-    return _fonts[key]
-
-def F_TITLE()   -> ctk.CTkFont: return _f("title",   30, "bold")
-def F_HEADING() -> ctk.CTkFont: return _f("heading", 16, "bold")
-def F_LABEL()   -> ctk.CTkFont: return _f("label",   12)
-def F_SMALL()   -> ctk.CTkFont: return _f("small",   11)
-def F_BTN()     -> ctk.CTkFont: return _f("btn",     13, "bold")
-def F_AVATAR()  -> ctk.CTkFont: return _f("avatar",  16, "bold")
-def F_NAME()    -> ctk.CTkFont: return _f("name",    13, "bold")
-def F_META()    -> ctk.CTkFont: return _f("meta",    11)
+from gestor_contable.gui.fonts import *
 
 
 def _digits(text: str) -> str:
@@ -270,34 +256,34 @@ class ClientCard(ctk.CTkFrame):
     def __init__(self, parent, client: dict, on_click, **kwargs):
         super().__init__(
             parent,
-            fg_color=BORDER,
-            corner_radius=14,
+            fg_color=CARD,
+            border_width=1,
+            border_color=BORDER,
+            corner_radius=16,
             **kwargs,
         )
         self._client = client
         self._on_click = on_click
 
-        self._inner = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12)
-        self._inner.pack(fill="both", expand=True, padx=1, pady=1)
-        self._inner.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(1, weight=1)
 
         # Avatar
         initials = _initials(client["nombre"])
-        avatar = ctk.CTkFrame(self._inner, fg_color="#1a3a36", corner_radius=10,
-                               width=44, height=44)
-        avatar.grid(row=0, column=0, rowspan=2, padx=(12, 10), pady=12, sticky="ns")
+        avatar = ctk.CTkFrame(self, fg_color="#1a3a36", corner_radius=12,
+                               width=48, height=48)
+        avatar.grid(row=0, column=0, rowspan=2, padx=(16, 14), pady=16, sticky="ns")
         avatar.grid_propagate(False)
         ctk.CTkLabel(avatar, text=initials, font=F_AVATAR(),
                      text_color=TEAL).place(relx=.5, rely=.5, anchor="center")
 
         # Nombre
         nombre_truncado = client["nombre"][:42] + "..." if len(client["nombre"]) > 42 else client["nombre"]
-        ctk.CTkLabel(self._inner, text=nombre_truncado, font=F_NAME(),
+        ctk.CTkLabel(self, text=nombre_truncado, font=F_SUBHEADING(),
                      text_color=TEXT, anchor="w").grid(
-            row=0, column=1, sticky="sw", pady=(12, 1))
+            row=0, column=1, sticky="sw", pady=(18, 2))
 
         # Pills de estado
-        pills_frame = ctk.CTkFrame(self._inner, fg_color="transparent")
+        pills_frame = ctk.CTkFrame(self, fg_color="transparent")
         pills_frame.grid(row=1, column=1, sticky="nw", pady=(0, 12))
 
         if client["pendientes"] > 0:
@@ -324,24 +310,22 @@ class ClientCard(ctk.CTkFrame):
                          corner_radius=20, padx=8, pady=2).pack(side="left")
 
         # Flecha
-        self._arrow = ctk.CTkLabel(self._inner, text="->", font=F_HEADING(),
+        self._arrow = ctk.CTkLabel(self, text="->", font=F_HEADING(),
                                     text_color=MUTED)
-        self._arrow.grid(row=0, column=2, rowspan=2, padx=(0, 14))
+        self._arrow.grid(row=0, column=2, rowspan=2, padx=(0, 18))
 
         # Hover
-        for w in [self, self._inner, avatar, self._arrow, pills_frame]:
+        for w in [self, avatar, self._arrow, pills_frame]:
             w.bind("<Enter>", self._on_enter)
             w.bind("<Leave>", self._on_leave)
             w.bind("<Button-1>", self._on_click_evt)
 
     def _on_enter(self, _e=None):
-        self.configure(fg_color=TEAL_DIM)
-        self._inner.configure(fg_color="#1a2535")
+        self.configure(fg_color="#1a2535", border_color=TEAL_DIM)
         self._arrow.configure(text_color=TEAL)
 
     def _on_leave(self, _e=None):
-        self.configure(fg_color=BORDER)
-        self._inner.configure(fg_color=CARD)
+        self.configure(fg_color=CARD, border_color=BORDER)
         self._arrow.configure(text_color=MUTED)
 
     def _on_click_evt(self, _e=None):
@@ -386,11 +370,8 @@ class _CedulaDialog(ctk.CTkToplevel):
 
     # ── Construcción ───────────────────────────────────────────────────────────
     def _build(self):
-        outer = ctk.CTkFrame(self, fg_color=BORDER, corner_radius=20)
-        outer.pack(fill="both", expand=True, padx=2, pady=2)
-
-        frame = ctk.CTkFrame(outer, fg_color=CARD, corner_radius=18)
-        frame.pack(fill="both", expand=True, padx=1, pady=1)
+        frame = ctk.CTkFrame(self, fg_color=CARD, border_width=1, border_color=BORDER, corner_radius=18)
+        frame.pack(fill="both", expand=True, padx=2, pady=2)
         frame.grid_columnconfigure(0, weight=1)
 
         # Título
@@ -400,14 +381,14 @@ class _CedulaDialog(ctk.CTkToplevel):
         ).grid(row=0, column=0, sticky="w", padx=28, pady=(24, 2))
         ctk.CTkLabel(
             frame, text="Esta carpeta no tiene cédula registrada.",
-            font=F_SMALL(), text_color=MUTED,
+            font=F_MICRO_BOLD(), text_color=MUTED,
         ).grid(row=1, column=0, sticky="w", padx=28)
 
         # Nombre de carpeta actual
         box = ctk.CTkFrame(frame, fg_color=SURFACE, corner_radius=10)
         box.grid(row=2, column=0, sticky="ew", padx=28, pady=(14, 0))
         ctk.CTkLabel(box, text="CARPETA ACTUAL",
-                     font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
+                     font=F_LABEL_BOLD(),
                      text_color=MUTED).pack(anchor="w", padx=14, pady=(10, 0))
         nombre = self._client["nombre"]
         truncado = nombre[:55] + "..." if len(nombre) > 55 else nombre
@@ -442,7 +423,7 @@ class _CedulaDialog(ctk.CTkToplevel):
 
         self._status_label = ctk.CTkLabel(
             self._status_frame, text="Ingresa la cédula para verificar",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=F_BODY(),
             text_color=MUTED, anchor="w")
         self._status_label.grid(row=0, column=1, sticky="ew", pady=10)
 
@@ -453,7 +434,7 @@ class _CedulaDialog(ctk.CTkToplevel):
         # Botón confirmar
         self._btn = ctk.CTkButton(
             frame, text="Verificar y continuar  ->",
-            font=F_BTN(), fg_color=TEAL, hover_color=TEAL_DIM,
+            font=F_BUTTON_LG(), fg_color=TEAL, hover_color=TEAL_DIM,
             text_color="#0d1a18", corner_radius=12, height=46,
             state="disabled", command=self._on_confirm,
         )
@@ -661,13 +642,13 @@ class SessionView(ctk.CTkFrame):
 
         logo_icon = ctk.CTkLabel(header, text="📊",
                                   fg_color="#1a3a36", corner_radius=8,
-                                  width=32, height=32, font=ctk.CTkFont(size=16))
+                                  width=32, height=32, font=F_AVATAR())
         logo_icon.grid(row=0, column=0, padx=(16, 8), pady=12)
 
         ctk.CTkLabel(
             header,
             text="Clasificador  Contable",
-            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+            font=F_TITLE(),
             text_color=TEXT,
         ).grid(row=0, column=1, sticky="w")
 
@@ -675,7 +656,21 @@ class SessionView(ctk.CTkFrame):
             header, text=f"v{__version__}",
             font=F_SMALL(), text_color=MUTED,
             fg_color=CARD, corner_radius=20,
-        ).grid(row=0, column=2, padx=16, pady=12, ipadx=10, ipady=3)
+        ).grid(row=0, column=2, padx=(16, 8), pady=12, ipadx=10, ipady=3)
+
+        ctk.CTkButton(
+            header,
+            text="⚙",
+            font=F_BODY(),
+            width=32, height=32,
+            fg_color="transparent", hover_color=BORDER,
+            text_color=MUTED, corner_radius=8,
+            command=self._open_atv_settings,
+        ).grid(row=0, column=3, padx=(0, 12), pady=12)
+
+    def _open_atv_settings(self) -> None:
+        """Abre el modal de configuración de credenciales ATV."""
+        ATVSettingsModal(self)
 
     def _build_left(self):
         left = ctk.CTkFrame(self, fg_color="transparent")
@@ -687,24 +682,21 @@ class SessionView(ctk.CTkFrame):
                       font=F_TITLE(), text_color=TEXT).grid(
             row=0, column=0, sticky="w")
         ctk.CTkLabel(left, text="Ingresa la cédula del cliente para cargar\nsu carpeta de documentos",
-                      font=F_LABEL(), text_color=MUTED, justify="left").grid(
+                      font=F_BODY(), text_color=MUTED, justify="left").grid(
             row=1, column=0, sticky="w", pady=(6, 28))
 
-        card_border = ctk.CTkFrame(left, fg_color=BORDER, corner_radius=20)
-        card_border.grid(row=2, column=0, sticky="new")
-
-        card = ctk.CTkFrame(card_border, fg_color=CARD, corner_radius=18)
-        card.pack(fill="both", expand=True, padx=1, pady=1)
+        card = ctk.CTkFrame(left, fg_color=CARD, border_width=1, border_color=BORDER, corner_radius=16)
+        card.grid(row=2, column=0, sticky="new")
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(card, text="NUEVA SESIÓN",
-                      font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                      font=F_LABEL_BOLD(),
                       text_color=TEAL).grid(row=0, column=0, sticky="w",
-                                            padx=24, pady=(22, 0))
+                                            padx=28, pady=(28, 0))
 
         ctk.CTkLabel(card, text="Cédula jurídica o física",
-                      font=F_SMALL(), text_color=MUTED).grid(
-            row=1, column=0, sticky="w", padx=24, pady=(14, 4))
+                      font=F_LABEL(), text_color=MUTED).grid(
+            row=1, column=0, sticky="w", padx=28, pady=(18, 6))
 
         self._cedula_entry = ctk.CTkEntry(
             card,
@@ -712,20 +704,20 @@ class SessionView(ctk.CTkFrame):
             fg_color=SURFACE,
             border_color=BORDER,
             text_color=TEXT,
-            placeholder_text_color="#3a4055",
-            font=F_LABEL(),
-            height=44,
-            corner_radius=12,
+            placeholder_text_color="#4b5563",
+            font=F_HEADING(),
+            height=50,
+            corner_radius=14,
         )
-        self._cedula_entry.grid(row=2, column=0, sticky="ew", padx=24)
+        self._cedula_entry.grid(row=2, column=0, sticky="ew", padx=28)
         self._cedula_entry.bind("<KeyRelease>", self._on_cedula_change)
         self._cedula_entry.bind("<Return>", self._on_enter_key)
 
         # Preview del nombre
         self._preview_frame = ctk.CTkFrame(
-            card, fg_color="#0d2a1e", corner_radius=10, height=42)
+            card, fg_color="#1a1e2a", corner_radius=12, height=48)
         self._preview_frame.grid(row=3, column=0, sticky="ew",
-                                  padx=24, pady=(10, 0))
+                                  padx=28, pady=(14, 0))
         self._preview_frame.grid_columnconfigure(1, weight=1)
         self._preview_frame.grid_propagate(False)
 
@@ -736,29 +728,29 @@ class SessionView(ctk.CTkFrame):
 
         self._preview_name = ctk.CTkLabel(
             self._preview_frame, text="Ingresa una cédula para buscar",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=F_BODY(),
             text_color=MUTED, anchor="w")
-        self._preview_name.grid(row=0, column=1, sticky="ew", pady=10)
+        self._preview_name.grid(row=0, column=1, sticky="w", pady=10, padx=(0, 14))
 
         self._preview_status = ctk.CTkLabel(
             self._preview_frame, text="",
             font=F_SMALL(), text_color=MUTED)
-        self._preview_status.grid(row=0, column=2, padx=(0, 14), pady=10)
+        self._preview_status.grid(row=0, column=2, padx=(0, 16), pady=12)
 
         self._btn_continuar = ctk.CTkButton(
             card,
             text="Continuar  ->",
-            font=F_BTN(),
+            font=F_BUTTON_LG(),
             fg_color=TEAL,
             hover_color=TEAL_DIM,
             text_color="#0d1a18",
-            corner_radius=12,
-            height=46,
+            corner_radius=14,
+            height=50,
             state="disabled",
             command=self._on_continuar,
         )
         self._btn_continuar.grid(row=4, column=0, sticky="ew",
-                                  padx=24, pady=(14, 24))
+                                  padx=28, pady=(18, 28))
 
         # Auto-foco al abrir
         self.after(100, lambda: self._cedula_entry.focus_set())
@@ -788,7 +780,7 @@ class SessionView(ctk.CTkFrame):
 
         self._count_badge = ctk.CTkLabel(
             title_row, text="0",
-            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            font=F_LABEL_BOLD(),
             fg_color=TEAL, text_color="#0d1a18",
             corner_radius=20, width=28, height=20,
         )
@@ -801,14 +793,14 @@ class SessionView(ctk.CTkFrame):
         # Buscador de clientes
         self._search_entry = ctk.CTkEntry(
             right,
-            placeholder_text="Filtrar clientes...",
+            placeholder_text="🔍 Filtrar clientes...",
             fg_color=SURFACE,
             border_color=BORDER,
             text_color=TEXT,
-            placeholder_text_color="#3a4055",
-            font=F_SMALL(),
-            height=36,
-            corner_radius=10,
+            placeholder_text_color="#4b5563",
+            font=F_BODY(),
+            height=40,
+            corner_radius=12,
         )
         self._search_entry.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         self._search_entry.bind("<KeyRelease>", self._on_search_change)
@@ -859,7 +851,7 @@ class SessionView(ctk.CTkFrame):
                 corner_radius=16,
             )
             empty.grid(row=0, column=0, sticky="ew", pady=20, padx=4)
-            ctk.CTkLabel(empty, text="📂", font=ctk.CTkFont(size=32),
+            ctk.CTkLabel(empty, text="📂", font=F_TITLE(),
                           text_color=MUTED).pack(pady=(28, 8))
 
             if self._all_clients:
@@ -1037,3 +1029,141 @@ class SessionView(ctk.CTkFrame):
         self._preview_dot.configure(text_color=DANGER)
         self._preview_name.configure(text=short, text_color=DANGER)
         self._preview_status.configure(text="✗", text_color=DANGER)
+
+
+# ── Modal de configuración ATV ────────────────────────────────────────────────
+
+class ATVSettingsModal(ctk.CTkToplevel):
+    """
+    Ventana pequeña para configurar credenciales ATV.
+    Se abre desde el botón de ajustes en el header de la pantalla de inicio.
+    Credenciales almacenadas en Windows Credential Manager via keyring.
+    """
+
+    def __init__(self, parent: ctk.CTkFrame) -> None:
+        super().__init__(parent)
+        self.title("Ajustes ATV")
+        self.geometry("440x320")
+        self.resizable(False, False)
+        self.configure(fg_color=BG)
+        self.grab_set()  # modal
+
+        self.update_idletasks()
+        px = parent.winfo_rootx() + (parent.winfo_width()  - 440) // 2
+        py = parent.winfo_rooty() + (parent.winfo_height() - 320) // 2
+        self.geometry(f"440x320+{px}+{py}")
+
+        self._build()
+
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            self, text="Credenciales ATV",
+            font=F_TITLE(), text_color=TEXT, anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=24, pady=(20, 2))
+
+        ctk.CTkLabel(
+            self,
+            text="Se guardan cifradas en Windows Credential Manager.\nNunca se escriben en disco.",
+            font=F_LABEL(), text_color=MUTED, justify="left", anchor="w",
+        ).grid(row=1, column=0, sticky="w", padx=24, pady=(0, 14))
+
+        self._entry_usuario = ctk.CTkEntry(
+            self,
+            placeholder_text="Usuario ATV",
+            fg_color=SURFACE, border_color=BORDER,
+            text_color=TEXT, placeholder_text_color="#3a4055",
+            font=F_BODY(), height=38, corner_radius=10,
+        )
+        self._entry_usuario.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 8))
+
+        self._entry_clave = ctk.CTkEntry(
+            self,
+            placeholder_text="Clave ATV",
+            fg_color=SURFACE, border_color=BORDER,
+            text_color=TEXT, placeholder_text_color="#3a4055",
+            font=F_BODY(), height=38, corner_radius=10,
+            show="*",
+        )
+        self._entry_clave.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 6))
+        self._entry_clave.bind("<FocusIn>", self._on_clave_focus)
+
+        self._status = ctk.CTkLabel(
+            self, text="", font=F_LABEL(), text_color=MUTED, anchor="w",
+        )
+        self._status.grid(row=4, column=0, sticky="w", padx=24, pady=(0, 12))
+
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.grid(row=5, column=0, sticky="ew", padx=24, pady=(0, 20))
+        btn_row.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkButton(
+            btn_row,
+            text="Guardar",
+            font=F_BODY(),
+            fg_color=TEAL, hover_color=TEAL_DIM,
+            text_color="#0d1a18",
+            height=38, corner_radius=10,
+            command=self._save,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        self._btn_forget = ctk.CTkButton(
+            btn_row,
+            text="Olvidar",
+            font=F_BODY(),
+            fg_color="transparent", hover_color="#2a1a1a",
+            text_color=DANGER, border_color=DANGER, border_width=1,
+            height=38, corner_radius=10, width=90,
+            command=self._forget,
+        )
+        self._btn_forget.grid(row=0, column=1)
+
+        self._refresh_status()
+
+    def _refresh_status(self) -> None:
+        if atv_client.has_credentials():
+            usuario = atv_client.get_usuario()
+            self._entry_usuario.delete(0, "end")
+            self._entry_usuario.insert(0, usuario)
+            self._entry_clave.delete(0, "end")
+            self._entry_clave.insert(0, "placeholder")
+            self._status.configure(text="Credenciales guardadas", text_color=SUCCESS)
+            self._btn_forget.configure(state="normal")
+        else:
+            self._status.configure(text="Sin credenciales configuradas", text_color=MUTED)
+            self._btn_forget.configure(state="disabled")
+
+    def _on_clave_focus(self, _event=None) -> None:
+        if self._entry_clave.get() == "placeholder":
+            self._entry_clave.delete(0, "end")
+
+    def _save(self) -> None:
+        usuario = self._entry_usuario.get().strip()
+        clave   = self._entry_clave.get()
+
+        if not usuario:
+            self._status.configure(text="Ingresa el usuario ATV", text_color=DANGER)
+            return
+        if not clave or clave == "placeholder":
+            self._status.configure(text="Ingresa la clave ATV", text_color=DANGER)
+            return
+
+        try:
+            atv_client.save_credentials(usuario, clave)
+            self._entry_clave.delete(0, "end")
+            self._entry_clave.insert(0, "placeholder")
+            self._status.configure(text="Credenciales guardadas", text_color=SUCCESS)
+            self._btn_forget.configure(state="normal")
+        except Exception as exc:
+            self._status.configure(text=f"Error: {exc}", text_color=DANGER)
+
+    def _forget(self) -> None:
+        try:
+            atv_client.delete_credentials()
+            self._entry_usuario.delete(0, "end")
+            self._entry_clave.delete(0, "end")
+            self._refresh_status()
+        except Exception as exc:
+            self._status.configure(text=f"Error: {exc}", text_color=DANGER)
+
