@@ -26,6 +26,23 @@ def _db_is_classified(db_rec: dict) -> bool:
     return False
 
 
+def get_hacienda_review_status(record: FacturaRecord) -> str | None:
+    """Determina el estado de revision Hacienda para bloqueo de clasificacion.
+
+    Returns:
+        "rechazada"     — Hacienda rechazo la factura.
+        "sin_respuesta" — la factura tiene XML/clave pero no se obtuvo respuesta.
+        None            — sin bloqueo (aceptada, o sin XML).
+    """
+    estado = (record.estado_hacienda or "").strip().lower()
+    if "rechaz" in estado:
+        return "rechazada"
+    if not estado and record.xml_path is not None and len(record.clave) == 50:
+        if record.estado not in ("sin_xml", "huerfano"):
+            return "sin_respuesta"
+    return None
+
+
 def _is_tiquete_electronico(record: FacturaRecord) -> bool:
     """Detecta Tiquete Electrónico por tipo_documento o por clave Hacienda.
 
@@ -508,7 +525,7 @@ def find_duplicates_pdf_origin_vs_classified(
         hash_val = record.get("sha256")
         if ruta_destino and hash_val:
             classified_path = Path(ruta_destino)
-            if hash_val not in sha256_to_classified:
+            if classified_path.exists() and hash_val not in sha256_to_classified:
                 sha256_to_classified[hash_val] = classified_path
 
     # Escanear PDFs en PDF/ y buscar duplicados
@@ -579,39 +596,40 @@ def find_duplicate_xmls_in_origin(
     cache_hits = 0
     processed = 0
 
-    for xml_path in xml_folder.rglob("*.xml"):
-        try:
-            processed += 1
-            if processed % 1000 == 0:
-                logger.info(f"Escaneo duplicados XML: {processed} procesados ({cache_hits} hits de cache)")
+    try:
+        for xml_path in xml_folder.rglob("*.xml"):
+            try:
+                processed += 1
+                if processed % 1000 == 0:
+                    logger.info(f"Escaneo duplicados XML: {processed} procesados ({cache_hits} hits de cache)")
 
-            xml_hash = None
-            if xml_cache:
-                try:
-                    stat = xml_path.stat()
-                    key = xml_cache._make_key(xml_path)
-                    cached = cache_map.get(key)
-                    if cached:
-                        mtime, size, data_json = cached
-                        if abs(stat.st_mtime - mtime) < 0.01 and stat.st_size == size:
-                            row = json.loads(data_json)
-                            if "xml_hash" in row:
-                                xml_hash = row["xml_hash"]
-                                cache_hits += 1
-                except Exception:
-                    pass
+                xml_hash = None
+                if xml_cache:
+                    try:
+                        stat = xml_path.stat()
+                        key = xml_cache._make_key(xml_path)
+                        cached = cache_map.get(key)
+                        if cached:
+                            mtime, size, data_json = cached
+                            if abs(stat.st_mtime - mtime) < 0.01 and stat.st_size == size:
+                                row = json.loads(data_json)
+                                if "xml_hash" in row:
+                                    xml_hash = row["xml_hash"]
+                                    cache_hits += 1
+                    except Exception:
+                        pass
 
-            if not xml_hash:
-                xml_hash = sha256_file(xml_path)
+                if not xml_hash:
+                    xml_hash = sha256_file(xml_path)
 
-            if xml_hash not in sha256_groups:
-                sha256_groups[xml_hash] = []
-            sha256_groups[xml_hash].append(xml_path)
-        except Exception as e:
-            logger.warning(f"No se pudo calcular SHA256 de {xml_path}: {e}")
-
-    if xml_cache:
-        xml_cache.close()
+                if xml_hash not in sha256_groups:
+                    sha256_groups[xml_hash] = []
+                sha256_groups[xml_hash].append(xml_path)
+            except Exception as e:
+                logger.warning(f"No se pudo calcular SHA256 de {xml_path}: {e}")
+    finally:
+        if xml_cache:
+            xml_cache.close()
 
     # Filtrar solo grupos con 2+ copias
     for sha256, copias in sha256_groups.items():
