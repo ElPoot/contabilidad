@@ -500,18 +500,16 @@ def find_duplicates_pdf_origin_vs_classified(
         return redundantes
 
     # Mapeo: SHA256 -> ruta en Contabilidades (desde BD)
-    sha256_to_classified = {}
+    # Ya no re-calculamos el hash leyendo el archivo desde el servidor,
+    # utilizamos el 'sha256' guardado en la base de datos de clasificaciones.
+    sha256_to_classified: dict[str, Path] = {}
     for record in db_records.values():
         ruta_destino = record.get("ruta_destino")
-        if ruta_destino:
-            try:
-                classified_path = Path(ruta_destino)
-                if classified_path.exists():
-                    hash_val = sha256_file(classified_path)
-                    if hash_val not in sha256_to_classified:
-                        sha256_to_classified[hash_val] = classified_path
-            except Exception as e:
-                logger.warning(f"No se pudo calcular SHA256 de {ruta_destino}: {e}")
+        hash_val = record.get("sha256")
+        if ruta_destino and hash_val:
+            classified_path = Path(ruta_destino)
+            if hash_val not in sha256_to_classified:
+                sha256_to_classified[hash_val] = classified_path
 
     # Escanear PDFs en PDF/ y buscar duplicados
     for pdf_path in pdf_folder.rglob("*.pdf"):
@@ -562,17 +560,58 @@ def find_duplicate_xmls_in_origin(
     if not xml_folder.exists():
         return duplicados
 
+    from gestor_contable.config import metadata_dir
+    from gestor_contable.core.xml_cache import XMLCacheManager
+    import json
+
+    # Intentar cargar caché de XMLs para evitar re-hashear
+    cache_map = {}
+    xml_cache = None
+    try:
+        mdir = metadata_dir(client_folder)
+        xml_cache = XMLCacheManager(mdir / "xml_cache.db", xml_root=xml_folder)
+        cache_map = xml_cache.load_all()
+    except Exception as e:
+        logger.warning(f"No se pudo cargar cache XML: {e}")
+
     # Mapeo: SHA256 -> lista de rutas
     sha256_groups = {}
+    cache_hits = 0
+    processed = 0
 
     for xml_path in xml_folder.rglob("*.xml"):
         try:
-            xml_hash = sha256_file(xml_path)
+            processed += 1
+            if processed % 1000 == 0:
+                logger.info(f"Escaneo duplicados XML: {processed} procesados ({cache_hits} hits de cache)")
+
+            xml_hash = None
+            if xml_cache:
+                try:
+                    stat = xml_path.stat()
+                    key = xml_cache._make_key(xml_path)
+                    cached = cache_map.get(key)
+                    if cached:
+                        mtime, size, data_json = cached
+                        if abs(stat.st_mtime - mtime) < 0.01 and stat.st_size == size:
+                            row = json.loads(data_json)
+                            if "xml_hash" in row:
+                                xml_hash = row["xml_hash"]
+                                cache_hits += 1
+                except Exception:
+                    pass
+
+            if not xml_hash:
+                xml_hash = sha256_file(xml_path)
+
             if xml_hash not in sha256_groups:
                 sha256_groups[xml_hash] = []
             sha256_groups[xml_hash].append(xml_path)
         except Exception as e:
             logger.warning(f"No se pudo calcular SHA256 de {xml_path}: {e}")
+
+    if xml_cache:
+        xml_cache.close()
 
     # Filtrar solo grupos con 2+ copias
     for sha256, copias in sha256_groups.items():
@@ -622,12 +661,43 @@ def find_duplicate_pdfs_within_origin(
     if not pdf_folder.exists():
         return duplicados
 
+    from gestor_contable.config import metadata_dir
+    from gestor_contable.core.pdf_cache import PDFCacheManager
+
+    pdf_cache = None
+    try:
+        mdir = metadata_dir(client_folder)
+        cache_file = mdir / "pdf_cache.json"
+        pdf_cache = PDFCacheManager(cache_file, pdf_root=pdf_folder)
+    except Exception as e:
+        logger.warning(f"No se pudo cargar cache PDF: {e}")
+
     sha256_groups: dict[str, list[Path]] = {}
+    cache_hits = 0
+    processed = 0
 
     for pdf_path in pdf_folder.rglob("*.pdf"):
         try:
-            h = sha256_file(pdf_path)
-            sha256_groups.setdefault(h, []).append(pdf_path)
+            processed += 1
+            if processed % 250 == 0:
+                logger.info(f"Escaneo duplicados PDF origen: {processed} procesados ({cache_hits} hits de cache)")
+
+            pdf_hash = None
+            if pdf_cache:
+                try:
+                    entry = pdf_cache._get_entry(pdf_path)
+                    if entry and "checksum" in entry:
+                        stat = pdf_path.stat()
+                        if abs(stat.st_mtime - entry.get("mtime", 0)) < 0.01 and stat.st_size == entry.get("size", -1):
+                            pdf_hash = entry["checksum"]
+                            cache_hits += 1
+                except Exception:
+                    pass
+
+            if not pdf_hash:
+                pdf_hash = sha256_file(pdf_path)
+
+            sha256_groups.setdefault(pdf_hash, []).append(pdf_path)
         except Exception as e:
             logger.warning(f"No se pudo calcular SHA256 de {pdf_path}: {e}")
 
@@ -894,5 +964,3 @@ def consolidate_duplicate_client_folders(
             pass
 
     return moved, errors
-
-    return renames
