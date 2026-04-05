@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import shutil
@@ -29,6 +30,58 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def safe_move_file(source: Path, dest: Path, *, retries: int = 12) -> None:
+    """Mueve un archivo usando el protocolo atomico SHA256.
+
+    1. SHA256 del original
+    2. copy2 preservando metadata
+    3. SHA256 de la copia
+    4. Si mismatch: elimina copia, raise
+    5. Si match: elimina original con retry loop
+    """
+    source_hash = sha256_file(source)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        shutil.copy2(str(source), str(dest))
+    except Exception as err:
+        with contextlib.suppress(OSError):
+            if dest.exists():
+                dest.unlink()
+        raise RuntimeError(
+            f"No se pudo copiar el archivo hacia {dest}.\n"
+            f"Se eliminó cualquier copia parcial para mantener la integridad.\n"
+            f"Error: {err}"
+        ) from err
+
+    dest_hash = sha256_file(dest)
+    if dest_hash != source_hash:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"SHA256 mismatch al mover {source.name}.\n"
+            f"Original: {source_hash}\nCopia: {dest_hash}\n"
+            f"La copia corrupta fue eliminada. Original intacto."
+        )
+
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            source.unlink()
+            return
+        except PermissionError as err:
+            last_err = err
+            time.sleep(0.2 * (attempt + 1))
+        except OSError as err:
+            last_err = err
+            break
+
+    dest.unlink(missing_ok=True)
+    raise RuntimeError(
+        f"Copia verificada pero no se pudo eliminar el original: {source.name}\n"
+        f"Copia eliminada para evitar duplicados. Error: {last_err}"
+    )
 
 
 def _sanitize_folder(name: str) -> str:
@@ -179,7 +232,7 @@ class ClassificationDB:
         self._ensure()
 
     def _ensure(self) -> None:
-        with self._lock, sqlite3.connect(self.path) as conn:
+        with self._lock, contextlib.closing(sqlite3.connect(self.path)) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS clasificaciones (
@@ -217,14 +270,14 @@ class ClassificationDB:
     ]
 
     def get_estado(self, clave: str) -> str | None:
-        with self._lock, sqlite3.connect(self.path) as conn:
+        with self._lock, contextlib.closing(sqlite3.connect(self.path)) as conn:
             row = conn.execute(
                 "SELECT estado FROM clasificaciones WHERE clave_numerica=?", (clave,)
             ).fetchone()
             return row[0] if row else None
 
     def get_record(self, clave: str) -> dict | None:
-        with self._lock, sqlite3.connect(self.path) as conn:
+        with self._lock, contextlib.closing(sqlite3.connect(self.path)) as conn:
             row = conn.execute(
                 f"SELECT {', '.join(self._COLS)} FROM clasificaciones "
                 "WHERE clave_numerica=?",
@@ -234,7 +287,7 @@ class ClassificationDB:
 
     def get_records_map(self) -> dict[str, dict]:
         """Carga todas las clasificaciones en memoria para evitar consultas por fila."""
-        with self._lock, sqlite3.connect(self.path) as conn:
+        with self._lock, contextlib.closing(sqlite3.connect(self.path)) as conn:
             rows = conn.execute(
                 f"SELECT {', '.join(self._COLS)} FROM clasificaciones"
             ).fetchall()
@@ -249,7 +302,7 @@ class ClassificationDB:
         update_sql = ", ".join(
             f"{k}=excluded.{k}" for k in self._COLS if k != "clave_numerica"
         )
-        with self._lock, sqlite3.connect(self.path) as conn:
+        with self._lock, contextlib.closing(sqlite3.connect(self.path)) as conn:
             conn.execute(
                 f"""
                 INSERT INTO clasificaciones({cols_sql})
@@ -262,7 +315,7 @@ class ClassificationDB:
 
     def update_ruta_destino(self, clave: str, nueva_ruta: str) -> None:
         """Actualiza SOLO ruta_destino sin tocar ningún otro campo del registro."""
-        with self._lock, sqlite3.connect(self.path) as conn:
+        with self._lock, contextlib.closing(sqlite3.connect(self.path)) as conn:
             conn.execute(
                 "UPDATE clasificaciones SET ruta_destino=? WHERE clave_numerica=?",
                 (nueva_ruta, clave),
@@ -311,26 +364,23 @@ def recover_orphaned_pdf(
             logging.info(f"PDF ya está en ubicación correcta: {ruta_esperada}")
             return True
 
-        # Mover archivo con retry loop (como en classify_record)
-        for attempt in range(12):
-            try:
-                shutil.move(str(archivo_actual), str(ruta_esperada))
-                logging.info(
-                    f"Recuperado PDF: {archivo_actual.name}\n"
-                    f"  De: {archivo_actual}\n"
-                    f"  A:  {ruta_esperada}"
-                )
+        # Mover archivo con protocolo atomico SHA256
+        try:
+            safe_move_file(archivo_actual, ruta_esperada)
+            logging.info(
+                f"Recuperado PDF: {archivo_actual.name}\n"
+                f"  De: {archivo_actual}\n"
+                f"  A:  {ruta_esperada}"
+            )
 
-                # Actualizar BD
-                db.upsert(
-                    clave_numerica=clave,
-                    ruta_destino=str(ruta_esperada),
-                )
-                return True
-            except PermissionError:
-                time.sleep(0.2 * (attempt + 1))
-            except OSError:
-                break
+            # Actualizar BD
+            db.upsert(
+                clave_numerica=clave,
+                ruta_destino=str(ruta_esperada),
+            )
+            return True
+        except (RuntimeError, OSError):
+            pass
 
         raise RuntimeError(f"No se pudo mover PDF después de 12 intentos")
 

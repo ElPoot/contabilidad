@@ -33,6 +33,7 @@ from gestor_contable.core.classification_utils import (
     classify_transaction,
     filter_records_by_tab,
     get_classification_label,
+    get_hacienda_review_status,
     get_tab_statistics,
 )
 from gestor_contable.core.classifier import (
@@ -174,103 +175,6 @@ def _apply_tree_style():
     _TREE_STYLE_DONE = True
 
 
-class DatePickerPopup(ctk.CTkToplevel):
-    def __init__(self, parent, on_pick, initial_value: str = ""):
-        super().__init__(parent)
-        self.title("Seleccionar fecha")
-        self.configure(fg_color=CARD)
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-        self._on_pick = on_pick
-
-        dt = self._parse_date(initial_value) or datetime.today()
-        self._year = dt.year
-        self._month = dt.month
-
-        self._body = ctk.CTkFrame(self, fg_color=CARD)
-        self._body.pack(padx=8, pady=8, fill="both", expand=True)
-        self._draw()
-
-    @staticmethod
-    def _parse_date(text: str):
-        raw = (text or "").strip()
-        if not raw:
-            return None
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(raw, fmt)
-            except ValueError:
-                continue
-        return None
-
-    def _draw(self):
-        for w in self._body.winfo_children():
-            w.destroy()
-
-        top = ctk.CTkFrame(self._body, fg_color="transparent")
-        top.pack(fill="x", padx=4, pady=(2, 8))
-        ctk.CTkButton(top, text="<", width=32, height=28, fg_color=SURFACE,
-                      hover_color=BORDER, command=self._prev_month).pack(side="left")
-        ctk.CTkLabel(top, text=f"{calendar.month_name[self._month]} {self._year}",
-                      text_color=TEXT, font=F_LABEL()).pack(side="left", expand=True)
-        ctk.CTkButton(top, text=">", width=32, height=28, fg_color=SURFACE,
-                      hover_color=BORDER, command=self._next_month).pack(side="right")
-
-        grid = ctk.CTkFrame(self._body, fg_color="transparent")
-        grid.pack(padx=4, pady=(0, 8))
-        for i, name in enumerate(["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]):
-            ctk.CTkLabel(grid, text=name, text_color=MUTED, font=F_SMALL()).grid(row=0, column=i, padx=3, pady=2)
-
-        for r, week in enumerate(calendar.monthcalendar(self._year, self._month), start=1):
-            for c, day in enumerate(week):
-                if day == 0:
-                    ctk.CTkLabel(grid, text=" ", width=30).grid(row=r, column=c, padx=2, pady=2)
-                    continue
-                ctk.CTkButton(
-                    grid,
-                    text=str(day),
-                    width=30,
-                    height=28,
-                    fg_color=SURFACE,
-                    hover_color=TEAL_DIM,
-                    text_color=TEXT,
-                    command=lambda dd=day: self._pick_day(dd),
-                ).grid(row=r, column=c, padx=2, pady=2)
-
-        bottom = ctk.CTkFrame(self._body, fg_color="transparent")
-        bottom.pack(fill="x", padx=4)
-        ctk.CTkButton(bottom, text="Hoy", width=70, fg_color=SURFACE, hover_color=BORDER,
-                      command=self._pick_today).pack(side="left")
-        ctk.CTkButton(bottom, text="Limpiar", width=80, fg_color=SURFACE, hover_color=BORDER,
-                      command=lambda: self._emit("")).pack(side="right")
-
-    def _prev_month(self):
-        self._month -= 1
-        if self._month == 0:
-            self._month = 12
-            self._year -= 1
-        self._draw()
-
-    def _next_month(self):
-        self._month += 1
-        if self._month == 13:
-            self._month = 1
-            self._year += 1
-        self._draw()
-
-    def _pick_day(self, day: int):
-        self._emit(f"{day:02d}/{self._month:02d}/{self._year:04d}")
-
-    def _pick_today(self):
-        now = datetime.today()
-        self._emit(f"{now.day:02d}/{now.month:02d}/{now.year:04d}")
-
-    def _emit(self, value: str):
-        self._on_pick(value)
-        self.destroy()
-
-
 def _parse_date_any(text: str):
     raw = (text or "").strip()
     if not raw:
@@ -283,76 +187,16 @@ def _parse_date_any(text: str):
     return None
 
 
-class DatePickerDropdown(ctk.CTkToplevel):
-    """Calendario anclado tipo dropdown (sin barra de título)."""
+class _BaseDatePicker(ctk.CTkToplevel):
+    """Clase base para calendarios con lógica compartida de navegación y dibujo."""
 
-    def __init__(self, parent, on_pick, initial_value: str = "", x: int = 120, y: int = 120):
+    def __init__(self, parent, on_pick, initial_value: str = ""):
         super().__init__(parent)
-        self.overrideredirect(True)
-        # CTkToplevel no permite transparencia en fg_color.
         self.configure(fg_color=CARD)
-        self.attributes("-topmost", True)
         self._on_pick = on_pick
         dt = _parse_date_any(initial_value) or datetime.today()
         self._year = dt.year
         self._month = dt.month
-        self.geometry(f"290x270+{x}+{y}")
-
-        self._card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER)
-        self._card.pack(fill="both", expand=True)
-
-        self.bind("<Escape>", lambda _e: self._safe_close())
-        self.bind("<FocusOut>", lambda _e: self._safe_close())
-
-        self._draw()
-        self.after(10, self.focus_force)
-
-    def _safe_close(self):
-        try:
-            self.destroy()
-        except Exception:
-            pass
-
-    def _draw(self):
-        for w in self._card.winfo_children():
-            w.destroy()
-
-        top = ctk.CTkFrame(self._card, fg_color="transparent")
-        top.pack(fill="x", padx=8, pady=(8, 6))
-        ctk.CTkButton(top, text="◀", width=30, height=28, fg_color=SURFACE,
-                      hover_color=BORDER, command=self._prev_month).pack(side="left")
-        ctk.CTkLabel(top, text=f"{calendar.month_name[self._month]} {self._year}",
-                     text_color=TEXT, font=F_LABEL()).pack(side="left", expand=True)
-        ctk.CTkButton(top, text="▶", width=30, height=28, fg_color=SURFACE,
-                      hover_color=BORDER, command=self._next_month).pack(side="right")
-
-        grid = ctk.CTkFrame(self._card, fg_color="transparent")
-        grid.pack(padx=8, pady=(0, 8))
-        for i, name in enumerate(["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]):
-            ctk.CTkLabel(grid, text=name, text_color=MUTED, font=F_SMALL()).grid(row=0, column=i, padx=3, pady=2)
-
-        for r, week in enumerate(calendar.monthcalendar(self._year, self._month), start=1):
-            for c, day in enumerate(week):
-                if day == 0:
-                    ctk.CTkLabel(grid, text=" ", width=30).grid(row=r, column=c, padx=2, pady=2)
-                    continue
-                ctk.CTkButton(
-                    grid,
-                    text=str(day),
-                    width=30,
-                    height=28,
-                    fg_color=SURFACE,
-                    hover_color=TEAL_DIM,
-                    text_color=TEXT,
-                    command=lambda dd=day: self._pick_day(dd),
-                ).grid(row=r, column=c, padx=2, pady=2)
-
-        bottom = ctk.CTkFrame(self._card, fg_color="transparent")
-        bottom.pack(fill="x", padx=8, pady=(0, 8))
-        ctk.CTkButton(bottom, text="Hoy", width=70, fg_color=SURFACE, hover_color=BORDER,
-                      command=self._pick_today).pack(side="left")
-        ctk.CTkButton(bottom, text="Limpiar", width=80, fg_color=SURFACE, hover_color=BORDER,
-                      command=lambda: self._emit("")).pack(side="right")
 
     def _prev_month(self):
         self._month -= 1
@@ -378,6 +222,96 @@ class DatePickerDropdown(ctk.CTkToplevel):
     def _emit(self, value: str):
         self._on_pick(value)
         self._safe_close()
+
+    def _safe_close(self):
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
+    def _draw_calendar(self, container):
+        for w in container.winfo_children():
+            w.destroy()
+
+        top = ctk.CTkFrame(container, fg_color="transparent")
+        top.pack(fill="x", padx=8, pady=(8, 6))
+        ctk.CTkButton(top, text="◀", width=30, height=28, fg_color=SURFACE,
+                      hover_color=BORDER, command=self._prev_month).pack(side="left")
+        ctk.CTkLabel(top, text=f"{calendar.month_name[self._month]} {self._year}",
+                     text_color=TEXT, font=F_LABEL()).pack(side="left", expand=True)
+        ctk.CTkButton(top, text="▶", width=30, height=28, fg_color=SURFACE,
+                      hover_color=BORDER, command=self._next_month).pack(side="right")
+
+        grid = ctk.CTkFrame(container, fg_color="transparent")
+        grid.pack(padx=8, pady=(0, 8))
+        for i, name in enumerate(["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]):
+            ctk.CTkLabel(grid, text=name, text_color=MUTED, font=F_SMALL()).grid(row=0, column=i, padx=3, pady=2)
+
+        for r, week in enumerate(calendar.monthcalendar(self._year, self._month), start=1):
+            for c, day in enumerate(week):
+                if day == 0:
+                    ctk.CTkLabel(grid, text=" ", width=30).grid(row=r, column=c, padx=2, pady=2)
+                    continue
+                ctk.CTkButton(
+                    grid,
+                    text=str(day),
+                    width=30,
+                    height=28,
+                    fg_color=SURFACE,
+                    hover_color=TEAL_DIM,
+                    text_color=TEXT,
+                    command=lambda dd=day: self._pick_day(dd),
+                ).grid(row=r, column=c, padx=2, pady=2)
+
+        bottom = ctk.CTkFrame(container, fg_color="transparent")
+        bottom.pack(fill="x", padx=8, pady=(0, 8))
+        ctk.CTkButton(bottom, text="Hoy", width=70, fg_color=SURFACE, hover_color=BORDER,
+                      command=self._pick_today).pack(side="left")
+        ctk.CTkButton(bottom, text="Limpiar", width=80, fg_color=SURFACE, hover_color=BORDER,
+                      command=lambda: self._emit("")).pack(side="right")
+
+    def _draw(self):
+        raise NotImplementedError("Subclasses must implement _draw()")
+
+
+class DatePickerPopup(_BaseDatePicker):
+    """Versión modal con barra de título (para edición de fecha en formulario)."""
+
+    def __init__(self, parent, on_pick, initial_value: str = ""):
+        super().__init__(parent, on_pick, initial_value)
+        self.title("Seleccionar fecha")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self._body = ctk.CTkFrame(self, fg_color=CARD)
+        self._body.pack(padx=8, pady=8, fill="both", expand=True)
+        self._draw()
+
+    def _draw(self):
+        self._draw_calendar(self._body)
+
+
+class DatePickerDropdown(_BaseDatePicker):
+    """Calendario anclado tipo dropdown (sin barra de título)."""
+
+    def __init__(self, parent, on_pick, initial_value: str = "", x: int = 120, y: int = 120):
+        super().__init__(parent, on_pick, initial_value)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.geometry(f"290x270+{x}+{y}")
+
+        self._card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER)
+        self._card.pack(fill="both", expand=True)
+
+        self.bind("<Escape>", lambda _e: self._safe_close())
+        self.bind("<FocusOut>", lambda _e: self._safe_close())
+
+        self._draw()
+        self.after(10, self.focus_force)
+
+    def _draw(self):
+        self._draw_calendar(self._card)
 
 
 class NewCuentaDialog(ctk.CTkToplevel):
@@ -616,6 +550,9 @@ class App3Window(ctk.CTk):
         self._range_load_queue: Queue = Queue()             # Cola para resultados de carga de rango
         self._tab_buttons: dict[str, ctk.CTkButton] = {}  # Botones de pestanas
         self._catalog_categories: list[str] = []          # Categorias manuales del catalogo (egresos)
+        self._receptor_response_files: list = []
+        self._hidden_response_files_by_clave: dict[str, list[dict]] = {}
+        self._ors_autopurge_summary: dict = {"moved_files": [], "batch_ids": []}
 
         _apply_tree_style()
 
@@ -724,6 +661,8 @@ class App3Window(ctk.CTk):
                     result.parse_errors, result.failed_xml_files,
                     result.renames, result.pdf_duplicates_rejected, result.load_months,
                     result.receptor_response_files,
+                    result.hidden_response_files_by_clave,
+                    result.ors_autopurge_summary,
                 )))
             except Exception as exc:
                 logger.exception("Error en worker")
@@ -752,7 +691,7 @@ class App3Window(ctk.CTk):
             self._show_error("Error al cargar cliente", message)
             return
 
-        generation, session, catalog_mgr, db, records, parse_errors, failed_xml_files, renames, pdf_duplicates_rejected, load_months, receptor_response_files = payload
+        generation, session, catalog_mgr, db, records, parse_errors, failed_xml_files, renames, pdf_duplicates_rejected, load_months, receptor_response_files, hidden_response_files_by_clave, ors_autopurge_summary = payload
         if generation != self._load_generation:
             return
         self.session = session
@@ -764,6 +703,11 @@ class App3Window(ctk.CTk):
         self._db_records = db.get_records_map()
         self._pdf_duplicates_rejected = pdf_duplicates_rejected  # {path_rechazado: path_ganador}
         self._detected_renames = renames
+        self._hidden_response_files_by_clave = self._merge_hidden_response_files_by_clave(
+            None,
+            hidden_response_files_by_clave,
+        )
+        self._ors_autopurge_summary = self._normalize_ors_autopurge_summary(ors_autopurge_summary)
         self._active_tab = "egreso"
         self._update_tab_appearance(self._active_tab)
         self._ors_frame.grid_remove()
@@ -796,11 +740,14 @@ class App3Window(ctk.CTk):
         logger.info(f"_refresh_tree() tardó {refresh_time:.2f}s para {len(self.records)} registros")
 
         self._update_progress()
-        self._set_status("Listo")
+        self._set_status(self._format_ors_autopurge_status("Listo"))
 
         self._receptor_response_files = receptor_response_files or []
+        ors_autopurge_notice = self._build_ors_autopurge_notice()
 
         if parse_errors:
+            if ors_autopurge_notice:
+                parse_errors = [ors_autopurge_notice, *parse_errors]
             self._show_parse_errors_modal(
                 "Advertencias al cargar",
                 parse_errors,
@@ -808,6 +755,8 @@ class App3Window(ctk.CTk):
                 failed_xml_files=failed_xml_files,
                 receptor_response_files=self._receptor_response_files,
             )
+        elif ors_autopurge_notice:
+            ModalOverlay.show_info(self, "Auto-saneo ORS", ors_autopurge_notice)
 
         if renames:
             self._btn_consolidar.grid()
@@ -1094,31 +1043,31 @@ class App3Window(ctk.CTk):
 
         # ── Acciones secundarias (mismo peso visual) ───────────────────────
         _BTN_SEC = dict(
-            height=28, fg_color=SURFACE, hover_color=BORDER,
-            text_color=MUTED, font=F_LABEL(), corner_radius=6,
+            height=32, fg_color=SURFACE, hover_color=BORDER,
+            text_color=TEXT, font=F_BODY_BOLD(), corner_radius=8,
         )
-        ctk.CTkButton(top, text="Exportar", width=85,
+        ctk.CTkButton(top, text="Exportar", width=100,
+                      image=get_icon("download", 16), compound="left",
                       **_BTN_SEC,
                       command=self._export_report).grid(
             row=0, column=2, sticky="e", padx=(0, 4))
 
-        ctk.CTkButton(top, text="Sanitizar", width=85,
-                      image=get_icon("broom", 14), compound="left",
+        ctk.CTkButton(top, text="Sanitizar", width=100,
+                      image=get_icon("broom", 16), compound="left",
                       **_BTN_SEC,
                       command=self._sanitize_folders).grid(
             row=0, column=3, sticky="e", padx=(0, 4))
 
-        ctk.CTkButton(top, text="Duplicados", width=96,
-                      image=get_icon("duplicate", 14), compound="left",
+        ctk.CTkButton(top, text="Duplicados", width=110,
+                      image=get_icon("duplicate", 16), compound="left",
                       **_BTN_SEC,
                       command=self._find_duplicate_pdfs).grid(
             row=0, column=4, sticky="e", padx=(0, 4))
 
-        # ── CTA principal (Corte) — destaca en teal ────────────────────────
-        ctk.CTkButton(top, text="Corte", width=90, height=30,
-                      image=get_icon("report", 14), compound="left",
-                      fg_color=TEAL, hover_color=TEAL_DIM, text_color=BG,
-                      font=F_LABEL_BOLD(), corner_radius=6,
+        # ── CTA principal (Corte) — destaca por icono ligeramente más grande ──────
+        ctk.CTkButton(top, text="Corte", width=100,
+                      image=get_icon("report", 18), compound="left",
+                      **_BTN_SEC,
                       command=self._generar_corte).grid(
             row=0, column=5, sticky="e", padx=(0, 10))
 
@@ -1812,7 +1761,16 @@ class App3Window(ctk.CTk):
                     ))
 
                 result = load_range_worker(session, missing_months, _progress)
-                self._range_load_queue.put(("ok", (generation, result.new_records, result.loaded_months)))
+                self._range_load_queue.put((
+                    "ok",
+                    (
+                        generation,
+                        result.new_records,
+                        result.loaded_months,
+                        result.hidden_response_files_by_clave,
+                        result.ors_autopurge_summary,
+                    ),
+                ))
             except Exception as exc:
                 logger.exception("Error en range worker")
                 self._range_load_queue.put(("error", (generation, str(exc))))
@@ -1838,7 +1796,7 @@ class App3Window(ctk.CTk):
             self._show_error("Error al cargar periodo", message)
             return
 
-        generation, new_records, loaded_months = payload
+        generation, new_records, loaded_months, hidden_response_files_by_clave, ors_autopurge_summary = payload
         if generation != self._range_load_generation:
             return
 
@@ -1846,6 +1804,11 @@ class App3Window(ctk.CTk):
             self._records_map[r.clave] = r
         self._loaded_months |= loaded_months
         self.all_records = list(self._records_map.values())
+        self._hidden_response_files_by_clave = self._merge_hidden_response_files_by_clave(
+            self._hidden_response_files_by_clave,
+            hidden_response_files_by_clave,
+        )
+        self._ors_autopurge_summary = self._normalize_ors_autopurge_summary(ors_autopurge_summary)
 
         self.records = self._apply_filters()
         self.selected = None
@@ -1853,7 +1816,10 @@ class App3Window(ctk.CTk):
         self.pdf_viewer.clear()
         self._refresh_tree()
         self._update_progress()
-        self._set_status("Filtro aplicado")
+        self._set_status(self._format_ors_autopurge_status("Filtro aplicado"))
+        ors_autopurge_notice = self._build_ors_autopurge_notice()
+        if ors_autopurge_notice:
+            ModalOverlay.show_info(self, "Auto-saneo ORS", ors_autopurge_notice)
 
     def _open_date_picker(self, target: str):
         self._close_date_picker()
@@ -1908,9 +1874,7 @@ class App3Window(ctk.CTk):
             return self.session.folder.name
         return _sanitize_folder(self._lbl_cliente.cget("text") or "CLIENTE")
 
-
     def _export_report(self):
-
         if not self.records:
             ModalOverlay.show_info(self, "Exportar", "No hay registros para exportar.")
             return
@@ -1988,7 +1952,7 @@ class App3Window(ctk.CTk):
             r for r in self._apply_date_filter(self.all_records)
             if not r.razon_omisión
             and classify_transaction(r, client_cedula) != "ors"
-            and r.estado_hacienda != "Rechazada"
+            and get_hacienda_review_status(r) != "rechazada"
         ]
         if not period_records:
             ModalOverlay.show_info(self, "Corte", "No hay facturas válidas en el período seleccionado.")
@@ -2836,7 +2800,10 @@ class App3Window(ctk.CTk):
 
         # Bloquear clasificación de facturas rechazadas por Hacienda
         all_selected = self.selected_records if self.selected_records else ([self.selected] if self.selected else [])
-        rechazados = [r for r in all_selected if r.estado_hacienda == "Rechazada"]
+        rechazados = [
+            r for r in all_selected
+            if get_hacienda_review_status(r) == "rechazada"
+        ]
         if rechazados:
             nombres = "\n".join(r.emisor_nombre[:50] for r in rechazados[:5])
             suffix = f"\n... y {len(rechazados) - 5} más" if len(rechazados) > 5 else ""
@@ -3117,6 +3084,71 @@ class App3Window(ctk.CTk):
     def _set_status(self, text: str):
         self._status_var.set(text)
 
+    @staticmethod
+    def _normalize_ors_autopurge_summary(summary: dict | None) -> dict:
+        base = summary or {}
+        return {
+            "moved_files": list(base.get("moved_files", []) or []),
+            "batch_ids": list(base.get("batch_ids", []) or []),
+        }
+
+    @staticmethod
+    def _merge_hidden_response_files_by_clave(
+        current: dict[str, list[dict]] | None,
+        incoming: dict[str, list[dict]] | None,
+    ) -> dict[str, list[dict]]:
+        """Fusiona respuestas ocultas por clave sin perder meses ya cargados."""
+        merged: dict[str, list[dict]] = {}
+        seen_by_clave: dict[str, set[str]] = {}
+
+        for source in (current, incoming):
+            for clave, entries in (source or {}).items():
+                clave_norm = str(clave or "").strip()
+                if not clave_norm:
+                    continue
+
+                bucket = merged.setdefault(clave_norm, [])
+                seen = seen_by_clave.setdefault(clave_norm, set())
+
+                for entry in entries or []:
+                    item = dict(entry or {})
+                    ruta = str(item.get("ruta", "") or "").strip()
+                    archivo = str(item.get("archivo", "") or "").strip()
+                    documento_root = str(item.get("documento_root", "") or "").strip()
+                    dedupe_key = ruta or f"{archivo}|{documento_root}|{clave_norm}"
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    bucket.append(item)
+
+        return merged
+
+    def _format_ors_autopurge_status(self, base_text: str) -> str:
+        moved_files = self._ors_autopurge_summary.get("moved_files", [])
+        batch_ids = self._ors_autopurge_summary.get("batch_ids", [])
+        if not moved_files:
+            return base_text
+        return (
+            f"{base_text} · ORS auto-saneó {len(moved_files)} respuesta(s) "
+            f"en {len(batch_ids)} lote(s)"
+        )
+
+    def _build_ors_autopurge_notice(self) -> str:
+        moved_files = self._ors_autopurge_summary.get("moved_files", [])
+        batch_ids = self._ors_autopurge_summary.get("batch_ids", [])
+        if not moved_files:
+            return ""
+        lotes = ", ".join(batch_ids[:3])
+        suffix = ""
+        if len(batch_ids) > 3:
+            suffix = f" y {len(batch_ids) - 3} lote(s) más"
+        return (
+            f"[auto_saneo_ors] Se movieron {len(moved_files)} respuesta(s) huérfana(s) "
+            f"a {len(batch_ids)} lote(s) ORS activo(s).\n"
+            f"Lotes: {lotes}{suffix}\n"
+            "Revise Historial de cuarentenas para el detalle."
+        )
+
     def _show_error(self, title: str, msg: str):
         ModalOverlay.show_error(self, title, msg)
 
@@ -3173,7 +3205,7 @@ class App3Window(ctk.CTk):
                 try:
                     existing = _json.loads(ignored_path.read_text(encoding="utf-8")).get("ignored", [])
                 except Exception:
-                    pass
+                    logger.warning("No se pudo leer ignored_xmls.json", exc_info=True)
             new_list = list(dict.fromkeys(existing + (failed_xml_files or [])))
             ignored_path.write_text(
                 _json.dumps({"ignored": new_list}, ensure_ascii=False, indent=2),
@@ -3403,13 +3435,18 @@ class App3Window(ctk.CTk):
         else:
             self._loading_overlay.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self._loading_overlay.update_status("Escaneando duplicados...")
+        self._loading_overlay.set_counter_text("Escaneo profundo sin contador en tiempo real")
+        self._loading_overlay.progress_bar.set(0)
         self.update_idletasks()
 
         def _set_status(msg: str):
             self.after(0, lambda m=msg: (
-                self._loading_overlay.update_status(m)
-                if hasattr(self, '_loading_overlay') and self._loading_overlay else None
-            ))
+                self._loading_overlay.update_status(m),
+                self._loading_overlay.set_counter_text("Escaneo profundo sin contador en tiempo real"),
+                self._loading_overlay.progress_bar.set(0),
+                self._loading_overlay.update_idletasks(),
+            ) if hasattr(self, '_loading_overlay') and self._loading_overlay else None
+            )
 
         # Detectar duplicados en thread
         def worker():
@@ -3964,12 +4001,27 @@ class App3Window(ctk.CTk):
             return
 
         db_records = self._db_records if self.db else {}
-        file_inventory = build_file_inventory(self.all_records, db_records)
+        file_inventory = build_file_inventory(
+            self.all_records,
+            db_records,
+            self._hidden_response_files_by_clave,
+        )
 
         total_xml = sum(len(file_inventory.get(r.clave, {}).get("xml", [])) for r in candidates)
         total_pdf = sum(len(file_inventory.get(r.clave, {}).get("pdf", [])) for r in candidates)
+        total_response_xml = sum(
+            len(file_inventory.get(r.clave, {}).get("response_xml", []))
+            for r in candidates
+        )
 
-        self._show_ors_purge_preview(cedula, candidates, file_inventory, total_xml, total_pdf)
+        self._show_ors_purge_preview(
+            cedula,
+            candidates,
+            file_inventory,
+            total_xml,
+            total_pdf,
+            total_response_xml,
+        )
 
     def _show_ors_purge_preview(
         self,
@@ -3978,6 +4030,7 @@ class App3Window(ctk.CTk):
         file_inventory: dict,
         total_xml: int,
         total_pdf: int,
+        total_response_xml: int,
     ):
         """Modal de previsualizacion antes de confirmar la purga."""
         import tkinter as tk
@@ -4007,6 +4060,7 @@ class App3Window(ctk.CTk):
             ("Claves a purgar:", str(len(candidates))),
             ("XMLs afectados:", str(total_xml)),
             ("PDFs afectados:", str(total_pdf)),
+            ("Respuestas XML afectadas:", str(total_response_xml)),
         ]:
             row_f = ctk.CTkFrame(summary, fg_color="transparent")
             row_f.pack(fill="x", padx=12, pady=3)
@@ -4049,8 +4103,12 @@ class App3Window(ctk.CTk):
             files = file_inventory.get(r.clave, {})
             n_xml = len(files.get("xml", []))
             n_pdf = len(files.get("pdf", []))
+            n_rsp = len(files.get("response_xml", []))
             emisor = (r.emisor_nombre or "desconocido")[:40]
-            txt.insert("end", f"[{i:03d}] {r.clave}  |  {emisor}  |  {n_xml} XML  {n_pdf} PDF\n")
+            txt.insert(
+                "end",
+                f"[{i:03d}] {r.clave}  |  {emisor}  |  {n_xml} XML  {n_pdf} PDF  {n_rsp} RESP\n",
+            )
         if len(candidates) > max_rows:
             txt.insert("end", f"\n... y {len(candidates) - max_rows} claves mas\n")
         txt.configure(state="disabled")
@@ -4139,6 +4197,8 @@ class App3Window(ctk.CTk):
         }
         if claves_purgadas:
             self.all_records = [r for r in self.all_records if r.clave not in claves_purgadas]
+            for clave in claves_purgadas:
+                self._hidden_response_files_by_clave.pop(clave, None)
             self.records = self._apply_filters()
             self._refresh_tree()
             self._update_progress()
@@ -4161,6 +4221,7 @@ class App3Window(ctk.CTk):
             ModalOverlay.show_success(self, "Purga ORS completada", msg)
         else:
             ModalOverlay.show_warning(self, "Purga ORS con errores", msg)
+        self._set_status(f"Purga ORS: {total_movidos} archivo(s) movido(s)")
 
     def _show_ors_purge_history(self):
         """Modal de historial de purgas (ORS + respuestas receptor) consultable por lote."""
@@ -4319,7 +4380,6 @@ class App3Window(ctk.CTk):
                 text=f"[{tipo}]  Lote {batch_id[:23]}  |  {batch['fecha']}",
                 text_color=TEXT,
             )
-            btn_restore.configure(state="normal")
             try:
                 archivos = active_db.get_archivos_for_batch(batch_id)
             except Exception as e:
@@ -4328,6 +4388,8 @@ class App3Window(ctk.CTk):
 
             detail_txt.configure(state="normal")
             detail_txt.delete("1.0", "end")
+            can_restore = any(a.get("resultado") == "en_cuarentena" for a in archivos)
+            btn_restore.configure(state="normal" if can_restore else "disabled")
             if not archivos:
                 detail_txt.insert("end", "Sin registros de archivos para este lote.\n")
             else:
@@ -4394,6 +4456,7 @@ class App3Window(ctk.CTk):
                 f"{restaurados} archivo(s) restaurados a sus rutas originales.\n\n"
                 "Recargue el periodo para ver los registros recuperados.",
             )
+        self._set_status(f"Restauracion ORS: {restaurados} archivo(s)")
 
     # ── FIN PURGA ORS ─────────────────────────────────────────────────────────
 

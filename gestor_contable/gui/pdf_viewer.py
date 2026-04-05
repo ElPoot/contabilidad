@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import io
+import logging
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 from typing import Optional
 
 import customtkinter as ctk
+from gestor_contable.gui.fonts import *
 
 from gestor_contable.config import is_onedrive_placeholder
 
@@ -25,6 +27,8 @@ TEAL    = "#2dd4bf"
 TEXT    = "#e8eaf0"
 MUTED   = "#6b7280"
 CANVAS_BG = "#0a0c10"
+
+logger = logging.getLogger(__name__)
 
 
 class PDFViewer(ctk.CTkFrame):
@@ -100,10 +104,10 @@ class PDFViewer(ctk.CTkFrame):
             fg_color=CARD, hover_color=BORDER,
             text_color=TEXT, corner_radius=7,
             width=30, height=16,
-            font=ctk.CTkFont(family="Segoe UI", size=13),
+            font=F_BODY(),
         )
         lbl = dict(
-            font=ctk.CTkFont(family="Segoe UI", size=11),
+            font=F_LABEL(),
             text_color=MUTED,
         )
 
@@ -142,7 +146,7 @@ class PDFViewer(ctk.CTkFrame):
 
         # Hint Ctrl+scroll
         ctk.CTkLabel(inner, text="Ctrl+scroll = zoom",
-                      font=ctk.CTkFont(family="Segoe UI", size=9),
+                      font=F_MICRO(),
                       text_color="#3a4055").pack(side="left", padx=4, pady=0)
 
     # ── CANVAS ────────────────────────────────────────────────────────────────
@@ -521,8 +525,10 @@ class PDFViewer(ctk.CTkFrame):
             return
         if abs(self._zoom - self._fit_zoom) < 0.05:
             if hasattr(self, '_resize_id'):
-                try: self.after_cancel(self._resize_id)
-                except Exception: pass
+                try:
+                    self.after_cancel(self._resize_id)
+                except Exception:
+                    logger.debug("No se pudo cancelar el resize pendiente del visor PDF", exc_info=True)
             self._resize_id = self.after(60, self._recalc_fit_and_render)
 
     # ── RENDERIZADO ───────────────────────────────────────────────────────────

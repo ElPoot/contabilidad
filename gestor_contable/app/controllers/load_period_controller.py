@@ -31,6 +31,34 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, int, int], None]
 
 
+def _merge_hidden_response_maps(*maps: dict[str, list[dict]] | None) -> dict[str, list[dict]]:
+    """Fusiona mapas clave->respuestas ocultas preservando orden y sin duplicados."""
+    merged: dict[str, list[dict]] = {}
+    seen_by_clave: dict[str, set[str]] = {}
+
+    for source in maps:
+        for clave, entries in (source or {}).items():
+            clave_norm = str(clave or "").strip()
+            if not clave_norm:
+                continue
+
+            bucket = merged.setdefault(clave_norm, [])
+            seen = seen_by_clave.setdefault(clave_norm, set())
+
+            for entry in entries or []:
+                item = dict(entry or {})
+                ruta = str(item.get("ruta", "") or "").strip()
+                archivo = str(item.get("archivo", "") or "").strip()
+                documento_root = str(item.get("documento_root", "") or "").strip()
+                dedupe_key = ruta or f"{archivo}|{documento_root}|{clave_norm}"
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                bucket.append(item)
+
+    return merged
+
+
 # ── Resultados tipados ────────────────────────────────────────────────────────
 
 @dataclass
@@ -45,6 +73,8 @@ class SessionLoadResult:
     pdf_duplicates_rejected: dict
     load_months: set[tuple[int, int]]
     receptor_response_files: list  # [{archivo, ruta, clave_numerica}, ...]
+    hidden_response_files_by_clave: dict[str, list[dict]]
+    ors_autopurge_summary: dict
 
 
 @dataclass
@@ -52,6 +82,8 @@ class RangeLoadResult:
     """Resultado de load_range_worker — registros nuevos y meses cargados."""
     new_records: list[FacturaRecord]
     loaded_months: set[tuple[int, int]]
+    hidden_response_files_by_clave: dict[str, list[dict]]
+    ors_autopurge_summary: dict
 
 
 # ── Helpers de rango ─────────────────────────────────────────────────────────
@@ -212,6 +244,8 @@ def load_session_worker(
         pdf_duplicates_rejected=indexer.pdf_duplicates_rejected,
         load_months=load_months,
         receptor_response_files=indexer.receptor_response_files,
+        hidden_response_files_by_clave=indexer.hidden_message_files_by_clave,
+        ors_autopurge_summary=indexer.ors_autopurge_summary,
     )
 
 
@@ -231,6 +265,11 @@ def load_range_worker(
     sorted_months = sorted(missing_months)
     n = len(sorted_months)
     all_new: list[FacturaRecord] = []
+    aggregated_hidden_response_files_by_clave: dict[str, list[dict]] = {}
+    aggregated_ors_autopurge_summary: dict[str, list] = {
+        "moved_files": [],
+        "batch_ids": [],
+    }
 
     for i, (year, month) in enumerate(sorted_months):
         first_day = date(year, month, 1)
@@ -247,8 +286,20 @@ def load_range_worker(
             allow_pdf_content_fallback=True,
         )
         all_new.extend(filter_sinxml_by_clave_date(batch, from_s, to_s))
+        aggregated_hidden_response_files_by_clave = _merge_hidden_response_maps(
+            aggregated_hidden_response_files_by_clave,
+            indexer.hidden_message_files_by_clave,
+        )
+        aggregated_ors_autopurge_summary["moved_files"].extend(
+            indexer.ors_autopurge_summary.get("moved_files", [])
+        )
+        for batch_id in indexer.ors_autopurge_summary.get("batch_ids", []):
+            if batch_id not in aggregated_ors_autopurge_summary["batch_ids"]:
+                aggregated_ors_autopurge_summary["batch_ids"].append(batch_id)
 
     return RangeLoadResult(
         new_records=all_new,
         loaded_months=set(sorted_months),
+        hidden_response_files_by_clave=aggregated_hidden_response_files_by_clave,
+        ors_autopurge_summary=aggregated_ors_autopurge_summary,
     )
