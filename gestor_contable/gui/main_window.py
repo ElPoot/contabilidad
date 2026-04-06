@@ -553,6 +553,7 @@ class App3Window(ctk.CTk):
         self._receptor_response_files: list = []
         self._hidden_response_files_by_clave: dict[str, list[dict]] = {}
         self._ors_autopurge_summary: dict = {"moved_files": [], "batch_ids": []}
+        self._selection_vm: SelectionVM | None = None
 
         _apply_tree_style()
 
@@ -1319,6 +1320,7 @@ class App3Window(ctk.CTk):
             on_tab_out=self._focus_tree,
             on_shift_tab_out=self._focus_tree,
             on_recheck_hacienda=self._recheck_hacienda_selected,
+            on_swap_pdf=self._swap_rejected_pdf,
         )
         self._classify_panel = ClassifyPanel(scroll, callbacks=callbacks)
         self._classify_panel.grid(row=0, column=0, sticky="ew")
@@ -1715,7 +1717,10 @@ class App3Window(ctk.CTk):
         self._sync_category_for_record(r)
         pdf_path = self._resolve_pdf_path_for_record(r)
         prev_text, prev_dest = self._resolve_previous_classification(r)
-        vm = build_single_vm(r, self._active_tab, pdf_path, prev_text, prev_dest)
+        vm = build_single_vm(
+            r, self._active_tab, pdf_path, prev_text, prev_dest,
+            pdf_duplicates_rejected=self._pdf_duplicates_rejected
+        )
         self._render_selection_vm(vm)
 
     def _on_multi_select(self, records: list[FacturaRecord]):
@@ -1796,6 +1801,7 @@ class App3Window(ctk.CTk):
 
     def _render_selection_vm(self, vm: SelectionVM):
         """Aplica un SelectionVM a los widgets del panel derecho y visor."""
+        self._selection_vm = vm
         # Visor PDF
         if vm.viewer_pdf_path is not None:
             self.pdf_viewer.load(vm.viewer_pdf_path)
@@ -2897,6 +2903,27 @@ class App3Window(ctk.CTk):
             button_frame, text="Vincular", fg_color="#8b5cf6", hover_color="#7c3aed",
             text_color="#0d1a18", command=on_select, width=100, corner_radius=8,
         ).pack(side="right")
+
+    def _swap_rejected_pdf(self) -> None:
+        """Intercambia el PDF actual por el descartado (delegando a la capa de aplicacion)."""
+        vm = self._selection_vm
+        if not self.selected or not vm or vm.mode != "single":
+            return
+        
+        if not vm.swap_pdf_target:
+            return
+        
+        r = self.selected[0] if isinstance(self.selected, list) else self.selected
+        rejected_path = vm.swap_pdf_target
+        
+        from gestor_contable.app.controllers.pdf_swap_controller import execute_pdf_swap
+        success, error_msg = execute_pdf_swap(r, rejected_path, self._pdf_duplicates_rejected)
+        
+        if not success:
+            self._show_warning("Intercambiar PDF", error_msg)
+            return
+            
+        self._on_select_single(r)
 
     def _create_pdf_for_selected(self):
         """Crea un PDF desde los datos del XML para facturas sin PDF."""

@@ -52,6 +52,9 @@ class SelectionVM:
     btn_delete_visible: bool = False
     btn_create_pdf_visible: bool = False
     btn_auto_classify_visible: bool = False
+    btn_recheck_hacienda_visible: bool = False
+    btn_swap_pdf_visible: bool = False
+    swap_pdf_target: Path | None = None
 
     # ── Boton Clasificar (siempre visible; solo cambia estado y texto) ────────
     btn_classify_enabled: bool = True

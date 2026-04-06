@@ -44,6 +44,8 @@ class ClassifyPanelCallbacks:
     on_form_change: Callable[[], None]
     on_tab_out: Callable[[], None]          # Tab desde último widget → devolver foco al Treeview
     on_shift_tab_out: Callable[[], None]    # Shift-Tab desde primer widget → devolver foco al Treeview
+    on_recheck_hacienda: Callable[[], None]  # Verificar estado Hacienda via ATV
+    on_swap_pdf: Callable[[], None]          # Intercambiar PDF duplicado
 
 
 class ClassifyPanel(ctk.CTkFrame):
@@ -368,6 +370,28 @@ class ClassifyPanel(ctk.CTkFrame):
             height=38,
             command=self.callbacks.on_auto_classify,
         )
+        self._btn_recheck_hacienda = ctk.CTkButton(
+            self._actions_frame,
+            text="🔄  Verificar Hacienda",
+            font=get_font(13, "bold"),
+            fg_color=WARNING,
+            hover_color="#e8a61c",
+            text_color=BG,
+            corner_radius=10,
+            height=38,
+            command=self.callbacks.on_recheck_hacienda,
+        )
+        self._btn_swap_pdf = ctk.CTkButton(
+            self._actions_frame,
+            text="🔄 Intercambiar PDF",
+            font=get_font(13, "bold"),
+            fg_color=WARNING,
+            hover_color="#e8a61c",
+            text_color=BG,
+            corner_radius=10,
+            height=38,
+            command=self.callbacks.on_swap_pdf,
+        )
 
         self._btn_classify = ctk.CTkButton(
             self._form_card,
@@ -461,6 +485,8 @@ class ClassifyPanel(ctk.CTkFrame):
             self._btn_delete,
             self._btn_create_pdf,
             self._btn_auto_classify,
+            self._btn_recheck_hacienda,
+            self._btn_swap_pdf,
             self._prev_frame,
         )
 
@@ -664,6 +690,8 @@ class ClassifyPanel(ctk.CTkFrame):
             (self._btn_delete, vm.btn_delete_visible),
             (self._btn_create_pdf, vm.btn_create_pdf_visible),
             (self._btn_auto_classify, vm.btn_auto_classify_visible),
+            (self._btn_recheck_hacienda, vm.btn_recheck_hacienda_visible),
+            (self._btn_swap_pdf, vm.btn_swap_pdf_visible),
         ):
             if not visible:
                 continue
@@ -694,6 +722,8 @@ class ClassifyPanel(ctk.CTkFrame):
             self._btn_delete,
             self._btn_create_pdf,
             self._btn_auto_classify,
+            self._btn_recheck_hacienda,
+            self._btn_swap_pdf,
         ):
             widget.grid_remove()
 

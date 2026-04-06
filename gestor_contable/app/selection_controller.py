@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from gestor_contable.app.selection_vm import SelectionVM
+from gestor_contable.core.classification_utils import get_hacienda_review_status
 from gestor_contable.core.iva_utils import parse_decimal_value
 from gestor_contable.core.models import FacturaRecord
 
@@ -59,6 +60,7 @@ def build_single_vm(
     pdf_path: Path | None,
     prev_text: str,
     prev_dest_path: Path | None,
+    pdf_duplicates_rejected: dict[Path, Path] | None = None,
 ) -> SelectionVM:
     """Construye el SelectionVM para seleccion simple de una factura."""
     vm = SelectionVM(
@@ -68,13 +70,25 @@ def build_single_vm(
         doc_tipo=_DOC_TYPE_LABELS.get(r.tipo_documento or "", r.tipo_documento or "--"),
     )
 
+    if pdf_duplicates_rejected and pdf_path:
+        for rejected, winner in pdf_duplicates_rejected.items():
+            if winner == pdf_path:
+                vm.btn_swap_pdf_visible = True
+                vm.swap_pdf_target = rejected
+                break
+
     # Pill Hacienda
+    hacienda_review_status = get_hacienda_review_status(r)
     if r.estado_hacienda:
         esh = r.estado_hacienda.strip()
         color = _SUCCESS if "aceptado" in esh.lower() else _WARNING
         vm.hacienda_text = f"  Hacienda: {esh}"
         vm.hacienda_color = color
         vm.hacienda_bg = "#0d2a1e" if color == _SUCCESS else "#2d2010"
+    elif hacienda_review_status == "sin_respuesta":
+        vm.hacienda_text = "  Hacienda: Sin respuesta"
+        vm.hacienda_color = _WARNING
+        vm.hacienda_bg = "#2d2010"
 
     # Visor PDF
     vm.viewer_pdf_path = pdf_path
@@ -96,11 +110,17 @@ def build_single_vm(
     vm.proveedor = r.emisor_nombre or ""
 
     # Botones segun estado
-    rejected = (r.estado_hacienda or "").strip().lower() == "rechazada"
-    if rejected:
+    if hacienda_review_status == "rechazada":
         vm.btn_classify_enabled = False
         vm.btn_classify_text = "\u2298 No clasificable"
         vm.block_reason = "Hacienda rechazó esta factura y no puede clasificarse."
+        if r.estado == "pendiente_pdf":
+            vm.btn_create_pdf_visible = True
+    elif hacienda_review_status == "sin_respuesta":
+        vm.btn_classify_enabled = False
+        vm.btn_classify_text = "\u2298 No clasificable"
+        vm.block_reason = "Sin respuesta de Hacienda; no clasificar por ahora."
+        vm.btn_recheck_hacienda_visible = True
         if r.estado == "pendiente_pdf":
             vm.btn_create_pdf_visible = True
     elif r.estado == "huerfano":
@@ -167,8 +187,21 @@ def build_multi_vm(records: list[FacturaRecord]) -> SelectionVM:
     vm.proveedor = emisor_nombre
     vm.btn_classify_text = f"Clasificar {len(records)} facturas"
     vm.prev_frame_visible = False
-    if any((record.estado_hacienda or "").strip().lower() == "rechazada" for record in records):
+    hacienda_statuses = {
+        status
+        for status in (get_hacienda_review_status(record) for record in records)
+        if status is not None
+    }
+    if hacienda_statuses:
         vm.btn_classify_enabled = False
         vm.btn_classify_text = "\u2298 Lote bloqueado"
-        vm.block_reason = "El lote incluye facturas rechazadas por Hacienda."
+        if hacienda_statuses == {"rechazada"}:
+            vm.block_reason = "El lote incluye facturas rechazadas por Hacienda."
+        elif hacienda_statuses == {"sin_respuesta"}:
+            vm.block_reason = "El lote incluye facturas sin respuesta de Hacienda."
+            vm.btn_recheck_hacienda_visible = True
+        else:
+            vm.block_reason = "El lote incluye facturas rechazadas o sin respuesta de Hacienda."
+            if "sin_respuesta" in hacienda_statuses:
+                vm.btn_recheck_hacienda_visible = True
     return vm
