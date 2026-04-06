@@ -413,10 +413,31 @@ def classify_record(
       5. Si coinciden → borrar original (con retry)
       6. Registrar en BD
     """
-    if record.pdf_path is None:
-        prev = db.get_record(record.clave) or {}
-        # Si el registro ya estaba "clasificado" (ej: ingreso sin PDF que no requiere mover
-        # archivo), preservar ese estado en lugar de degradar a "pendiente_pdf".
+    prev = db.get_record(record.clave) or {}
+
+    original = record.pdf_path if record.pdf_path and record.pdf_path.exists() else None
+    if original is None:
+        stored_dest = str(prev.get("ruta_destino") or "").strip()
+        if stored_dest:
+            candidate = Path(stored_dest)
+            if not candidate.is_absolute():
+                candidate = session_folder.parent.parent / candidate
+            if not candidate.exists():
+                cont_root = session_folder.parent.parent / "Contabilidades"
+                candidate = heal_classified_path(candidate, cont_root, db, record.clave) or candidate
+            if candidate.exists():
+                original = candidate
+                record.pdf_path = candidate
+
+    if original is None:
+        if prev.get("ruta_destino") or prev.get("estado") == "clasificado":
+            raise RuntimeError(
+                "No se encontró el PDF físico de esta factura.\n"
+                "La clasificación anterior apunta a una ruta inexistente o inaccesible.\n\n"
+                "Revisa la carpeta de Contabilidades y vuelve a intentar."
+            )
+
+        # XML sin PDF real: solo guardar la clasificación contable.
         nuevo_estado = "clasificado" if prev.get("estado") == "clasificado" else "pendiente_pdf"
         db.upsert(
             clave_numerica=record.clave,
@@ -444,13 +465,33 @@ def classify_record(
     )
     dest_folder.mkdir(parents=True, exist_ok=True)
 
-    original       = record.pdf_path
     ruta_origen_str = str(original)
 
     # (1) Calcular hash del original
     source_hash = sha256_file(original)
 
     target = dest_folder / original.name
+    try:
+        if target.resolve() == original.resolve():
+            db.upsert(
+                clave_numerica=record.clave,
+                estado="clasificado",
+                categoria=categoria,
+                subtipo=subtipo,
+                nombre_cuenta=nombre_cuenta,
+                proveedor=proveedor,
+                ruta_origen=ruta_origen_str,
+                ruta_destino=str(original),
+                sha256=source_hash,
+                fecha_clasificacion=datetime.now().isoformat(timespec="seconds"),
+                clasificado_por=user,
+            )
+            record.pdf_path = original
+            record.estado = "clasificado"
+            return original
+    except OSError:
+        pass
+
     if target.exists():
         suffix = source_hash[:8]
         target = dest_folder / f"{original.stem}__{suffix}{original.suffix}"

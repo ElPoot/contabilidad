@@ -227,7 +227,7 @@ class _BaseDatePicker(ctk.CTkToplevel):
         try:
             self.destroy()
         except Exception:
-            pass
+            logger.debug("No se pudo cerrar el selector de fecha", exc_info=True)
 
     def _draw_calendar(self, container):
         for w in container.winfo_children():
@@ -821,18 +821,162 @@ class App3Window(ctk.CTk):
 
             if kind == "progress":
                 _, current, total, ind_estado = msg
-                self._set_status(f"ATV: {current}/{total} — {ind_estado}")
+                self._set_status(f"ATV: {current}/{total} -- {ind_estado}")
 
             elif kind == "done":
                 saved = msg[1]
                 if saved > 0:
-                    self._set_status(f"ATV: {saved} respuesta(s) recuperada(s) — recargando...")
+                    self._set_status(f"ATV: {saved} respuesta(s) recuperada(s) -- recargando...")
                     self.after(800, lambda: self._load_session(self.session, reset_dates=False))
                 else:
                     self._set_status("Listo")
                 return
 
         self.after(200, lambda: self._poll_atv_recovery(q, generation))
+
+    # -- VERIFICACION MANUAL DE HACIENDA (ATV) --
+
+    def _recheck_hacienda_selected(self) -> None:
+        """Consulta ATV para la(s) factura(s) seleccionada(s) sin respuesta."""
+        targets: list[FacturaRecord] = []
+        # Diagnostico: que records tenemos?
+        sr = self.selected_records
+        ss = self.selected
+        logger.info("_recheck_hacienda_selected: selected_records=%d, selected=%s",
+                     len(sr) if sr else 0,
+                     ss.clave[:15] if ss else "None")
+        candidates = sr if sr else ([ss] if ss else [])
+        for r in candidates:
+            ok = (r.estado_hacienda == ""
+                  and r.estado not in ("sin_xml", "huerfano")
+                  and r.xml_path is not None
+                  and len(r.clave) == 50)
+            if ok:
+                targets.append(r)
+            else:
+                logger.info("  EXCLUIDO: clave=%s... estado_hacienda=%r estado=%s xml_path=%s len_clave=%d",
+                            r.clave[:15], r.estado_hacienda, r.estado,
+                            "Si" if r.xml_path else "None", len(r.clave))
+        if not targets:
+            self._set_status("No hay facturas sin respuesta seleccionadas.")
+            return
+        if not atv_client.has_credentials():
+            self._set_status("Sin credenciales ATV configuradas.")
+            return
+        self._run_atv_recheck(targets, source="seleccion")
+
+    def _recheck_hacienda_batch(self) -> None:
+        """Consulta ATV para TODAS las facturas sin respuesta del periodo."""
+        targets = [
+            r for r in self.all_records
+            if r.estado_hacienda == ""
+            and r.estado not in ("sin_xml", "huerfano")
+            and r.xml_path is not None
+            and len(r.clave) == 50
+        ]
+        if not targets:
+            self._set_status("No hay facturas sin respuesta de Hacienda.")
+            if hasattr(self, "_atv_batch_status_lbl"):
+                self._atv_batch_status_lbl.configure(
+                    text="Todas las facturas tienen respuesta.",
+                    text_color=SUCCESS,
+                )
+            return
+        if not atv_client.has_credentials():
+            self._set_status("Sin credenciales ATV configuradas.")
+            if hasattr(self, "_atv_batch_status_lbl"):
+                self._atv_batch_status_lbl.configure(
+                    text="Sin credenciales ATV.",
+                    text_color=DANGER,
+                )
+            return
+        if hasattr(self, "_btn_recheck_atv_batch"):
+            self._btn_recheck_atv_batch.configure(state="disabled")
+        self._run_atv_recheck(targets, source="lote")
+
+    def _run_atv_recheck(self, targets: list[FacturaRecord], source: str) -> None:
+        """Ejecuta la consulta ATV en un hilo y actualiza la UI."""
+        generation = self._load_generation
+        total = len(targets)
+        self._set_status(f"ATV ({source}): verificando {total} factura(s)...")
+        if hasattr(self, "_atv_batch_status_lbl"):
+            self._atv_batch_status_lbl.configure(
+                text=f"Verificando {total} factura(s)...",
+                text_color=WARNING,
+            )
+        q: Queue = Queue()
+        def _worker():
+            saved = 0
+            for i, record in enumerate(targets):
+                try:
+                    result = atv_client.query_invoice_status(record.clave)
+                except Exception as exc:
+                    logger.warning("ATV recheck error %s: %s", record.clave[:12], exc)
+                    q.put(("progress", i + 1, total, "error"))
+                    continue
+
+                ind = result.get("ind_estado", "")
+                xml_bytes = result.get("respuesta_xml_bytes")
+                error_msg = result.get("error", "")
+                
+                logger.info("ATV response for %s: ind=%s, has_xml=%s, error=%s", 
+                            record.clave[:15], ind, bool(xml_bytes), error_msg)
+
+                q.put(("progress", i + 1, total, ind or "..."))
+
+                if xml_bytes and ind not in ("no_encontrado", "desconocido", ""):
+                    out = record.xml_path.parent / f"{record.clave}_MH.xml"
+                    existed = out.exists()
+                    try:
+                        out.write_bytes(xml_bytes)
+                        saved += 1
+                        if existed:
+                            logger.info("  -> XML sobreescrito en disco (forzando re-lectura): %s", out.name)
+                        else:
+                            logger.info("  -> Guardado nuevo XML: %s", out.name)
+                    except Exception as exc:
+                        logger.warning("ATV: error guardando XML %s: %s", record.clave, exc)
+                elif ind == "no_recibido":
+                    # Actualizar estado virtual si el sistema lo necesita en el record
+                    pass
+
+            q.put(("done", saved))
+        threading.Thread(target=_worker, daemon=True).start()
+        self.after(200, lambda: self._poll_atv_recheck(q, generation, source, total))
+
+    def _poll_atv_recheck(self, q: Queue, generation: int, source: str, total: int) -> None:
+        """Actualiza el status bar con el progreso de la verificacion ATV manual."""
+        if generation != self._load_generation:
+            return
+        while not q.empty():
+            msg = q.get()
+            kind = msg[0]
+            if kind == "progress":
+                _, current, total_count, ind_estado = msg
+                self._set_status(f"ATV ({source}): {current}/{total_count} -- {ind_estado}")
+                if hasattr(self, "_atv_batch_status_lbl"):
+                    self._atv_batch_status_lbl.configure(text=f"Verificando {current}/{total_count}...")
+            elif kind == "done":
+                saved = msg[1]
+                if hasattr(self, "_btn_recheck_atv_batch"):
+                    self._btn_recheck_atv_batch.configure(state="normal")
+                if saved > 0:
+                    self._set_status(f"ATV: {saved} respuesta(s) recuperada(s) -- recargando...")
+                    if hasattr(self, "_atv_batch_status_lbl"):
+                        self._atv_batch_status_lbl.configure(
+                            text=f"{saved}/{total} respuesta(s) recuperada(s).",
+                            text_color=SUCCESS,
+                        )
+                    self.after(800, lambda: self._load_session(self.session, reset_dates=False))
+                else:
+                    self._set_status(f"ATV ({source}): sin respuestas nuevas.")
+                    if hasattr(self, "_atv_batch_status_lbl"):
+                        self._atv_batch_status_lbl.configure(
+                            text=f"Sin respuestas nuevas ({total} consultada(s)).",
+                            text_color=MUTED,
+                        )
+                return
+        self.after(200, lambda: self._poll_atv_recheck(q, generation, source, total))
 
     def _apply_pdf_enrichment(self, generation: int, enriched_records: list[FacturaRecord], parse_errors: list[str]):
         """Ya no se usa (PDFs cargados en _load_session). Mantenido por compatibilidad."""
@@ -977,6 +1121,7 @@ class App3Window(ctk.CTk):
             ("omitidos", "Omitidos"),
             ("huerfanos", "Huerfanos"),
             ("rechazados", "Rechazados"),
+            ("sin_respuesta", "Sin Respuesta"),
         ]
 
         for tab_id, tab_label in tab_configs:
@@ -1173,6 +1318,7 @@ class App3Window(ctk.CTk):
             on_form_change=self._update_path_preview,
             on_tab_out=self._focus_tree,
             on_shift_tab_out=self._focus_tree,
+            on_recheck_hacienda=self._recheck_hacienda_selected,
         )
         self._classify_panel = ClassifyPanel(scroll, callbacks=callbacks)
         self._classify_panel.grid(row=0, column=0, sticky="ew")
@@ -1225,6 +1371,48 @@ class App3Window(ctk.CTk):
 
         self._ors_frame = ors_inner
         self._ors_frame.grid_remove()  # Ocultar hasta que la pestaña sea ORS
+
+        self._build_atv_batch_panel(scroll)
+
+    def _build_atv_batch_panel(self, scroll):
+        """Construye el panel de verificación ATV masiva para pestaña Sin Respuesta."""
+        atv_inner = ctk.CTkFrame(scroll, fg_color=CARD, border_width=1, border_color=BORDER, corner_radius=12)
+        atv_inner.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 10))
+        atv_inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            atv_inner,
+            text="VERIFICACIÓN ATV",
+            font=F_SECTION_LABEL(),
+            text_color=WARNING,
+        ).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 4))
+
+        self._btn_recheck_atv_batch = ctk.CTkButton(
+            atv_inner,
+            text="Verificar todas via ATV",
+            font=F_BUTTON(),
+            fg_color=WARNING,
+            hover_color="#e8a61c",
+            text_color=BG,
+            corner_radius=10,
+            height=38,
+            command=self._recheck_hacienda_batch,
+        )
+        self._btn_recheck_atv_batch.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
+
+        self._atv_batch_status_lbl = ctk.CTkLabel(
+            atv_inner,
+            text="Consulta el API de ATV para obtener respuestas faltantes.",
+            font=F_SMALL(),
+            text_color=MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=240,
+        )
+        self._atv_batch_status_lbl.grid(row=2, column=0, sticky="w", padx=12, pady=(0, 10))
+
+        self._atv_batch_frame = atv_inner
+        self._atv_batch_frame.grid_remove()
 
     def _step_classify_category(self, step: int):
         if not getattr(self, "_classify_panel", None):
@@ -1310,6 +1498,12 @@ class App3Window(ctk.CTk):
         else:
             self._ors_frame.grid_remove()
             self._btn_purge_ors.configure(state="disabled")
+
+        # Panel ATV batch: mostrar solo en pestaña Sin Respuesta
+        if tab == "sin_respuesta" and self.session:
+            self._atv_batch_frame.grid()
+        else:
+            self._atv_batch_frame.grid_remove()
 
     def _update_tab_appearance(self, active_tab: str):
         """Actualiza colores de botones de pestañas."""
@@ -1542,6 +1736,7 @@ class App3Window(ctk.CTk):
                     )
                 if ruta_destino.exists():
                     logger.debug(f"PDF cargado desde ruta clasificada: {ruta_destino}")
+                    r.pdf_path = ruta_destino
                     return ruta_destino
         return None
 
@@ -1914,7 +2109,7 @@ class App3Window(ctk.CTk):
                     anio=anio_actual,
                 ),
             )
-            export_period_report(
+            coverage_info = export_period_report(
                 period_records,
                 self._db_records if self.db else {},
                 client_cedula,
@@ -1923,8 +2118,20 @@ class App3Window(ctk.CTk):
                 date_from_label,
                 date_to_label,
             )
-            ModalOverlay.show_info(self, "Exportar", f"Reporte guardado en:\n{target_path}")
-            self._set_status("Reporte exportado")
+            msg = f"Reporte guardado en:\n{target_path}"
+            unassigned_count = int(coverage_info.get("unassigned_count", 0) or 0)
+            if unassigned_count:
+                unassigned_keys = [str(k) for k in coverage_info.get("unassigned_keys", [])[:5]]
+                suffix = f"\n... y {unassigned_count - 5} más" if unassigned_count > 5 else ""
+                claves_txt = "\n".join(unassigned_keys) if unassigned_keys else "(sin detalle)"
+                msg += (
+                    f"\n\nAdvertencia: {unassigned_count} registro(s) quedaron en la hoja 'Fuera Reporte'.\n"
+                    f"Primeras claves:\n{claves_txt}{suffix}"
+                )
+                self._set_status("Reporte exportado con advertencias")
+            else:
+                self._set_status("Reporte exportado")
+            ModalOverlay.show_info(self, "Exportar", msg)
         except Exception as exc:
             self._show_error("Error al exportar", str(exc))
 
@@ -1942,9 +2149,10 @@ class App3Window(ctk.CTk):
         from gestor_contable.gui.corte_ambiguo_modal import resolver_ambiguos
         from gestor_contable.core.classification_utils import classify_transaction
 
-        client_name   = self.session.folder.name
+        client_name = self.session.folder.name
+        client_hacienda_name = self.session.nombre or client_name
         client_cedula = self._get_client_cedula()
-        mdir          = metadata_dir(self.session.folder)
+        mdir = metadata_dir(self.session.folder)
 
         # Registros del período: excluir omitidos y ORS (terceros — ni emisor ni receptor es el cliente)
         # sin_receptor SÍ entra: son facturas sin cédula receptor pero válidas para el cliente
@@ -1976,7 +2184,7 @@ class App3Window(ctk.CTk):
             self._show_error("Error al guardar", f"No se pudo crear la carpeta de cortes:\n{cortes_dir}\n\n{exc}")
             return
 
-        filename = default_filename(client_name, mes_actual, anio_actual)
+        filename = default_filename(client_hacienda_name, mes_actual, anio_actual)
 
         self._set_status("Generando corte...")
         self._progress_var.set("Clasificando facturas...")
@@ -2798,7 +3006,7 @@ class App3Window(ctk.CTk):
         if not self.session or not self.selected or not self.db:
             return
 
-        # Bloquear clasificación de facturas rechazadas por Hacienda
+        # Bloquear clasificación de facturas con bloqueo de Hacienda
         all_selected = self.selected_records if self.selected_records else ([self.selected] if self.selected else [])
         rechazados = [
             r for r in all_selected
@@ -2810,6 +3018,18 @@ class App3Window(ctk.CTk):
             self._show_warning(
                 "Factura rechazada",
                 f"Las siguientes facturas fueron rechazadas por Hacienda y no pueden clasificarse:\n{nombres}{suffix}"
+            )
+            return
+        sin_respuesta = [
+            r for r in all_selected
+            if get_hacienda_review_status(r) == "sin_respuesta"
+        ]
+        if sin_respuesta:
+            nombres = "\n".join(r.emisor_nombre[:50] for r in sin_respuesta[:5])
+            suffix = f"\n... y {len(sin_respuesta) - 5} más" if len(sin_respuesta) > 5 else ""
+            self._show_warning(
+                "Sin respuesta de Hacienda",
+                f"Las siguientes facturas siguen sin respuesta de Hacienda y no pueden clasificarse todavía:\n{nombres}{suffix}"
             )
             return
 
@@ -3415,7 +3635,7 @@ class App3Window(ctk.CTk):
                 ctypes.sizeof(ctypes.c_int),
             )
         except Exception:
-            pass
+            logger.debug("No se pudo aplicar esquinas redondeadas al modal", exc_info=True)
 
     def _ask(self, title: str, msg: str, confirm_text: str = "Sí, reclasificar") -> bool:
         return ModalOverlay.ask_sync(self, title, msg, confirm_text=confirm_text)
