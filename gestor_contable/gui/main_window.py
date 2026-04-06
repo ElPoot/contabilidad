@@ -1672,6 +1672,13 @@ class App3Window(ctk.CTk):
 
     # ── SELECCIÓN ─────────────────────────────────────────────────────────────
     def _on_select(self, _event=None):
+        """Maneja la selección con debounce para evitar congelar la UI al usar Shift+Flechas."""
+        if hasattr(self, '_select_timer') and self._select_timer:
+            self.after_cancel(self._select_timer)
+        self._select_timer = self.after(150, self._do_on_select)
+
+    def _do_on_select(self):
+        self._select_timer = None
         sel = self.tree.selection()
 
         # Si no hay selección, limpiar estado
@@ -3293,8 +3300,9 @@ class App3Window(ctk.CTk):
             try:
                 fecha = datetime.strptime(fecha_txt, "%d/%m/%Y").date()
             except ValueError:
-                # Mantener visibles los PDF sin XML para revisión manual.
-                if record.estado == "sin_xml":
+                # Mantener visibles registros sin fecha parseable:
+                # sin_xml (PDF sin XML) y huerfano (PDF en Contabilidades sin BD)
+                if record.estado in ("sin_xml", "huerfano"):
                     filtered.append(record)
                 continue
             if from_dt and fecha < from_dt:
