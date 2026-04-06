@@ -325,120 +325,166 @@ def find_orphaned_pdfs(
             "clave": str,
             "archivo": Path,
             "ruta_actual": str,
-            "ruta_esperada": str | None,  # Si hay en BD
-            "motivo": str,  # "not_in_db" | "wrong_location" | "estado_inconsistente"
+            "ruta_esperada": str | None,
+            "motivo": str,  # "not_in_db" | "wrong_location" | "duplicado" | "huerfano_sin_destino"
         }
     """
     orphaned = []
 
     if not contabilidades_root.exists():
+        logger.warning(f"find_orphaned_pdfs: contabilidades_root no existe: {contabilidades_root}")
         return orphaned
 
-    # Crear mapa inverso: archivo -> clave (desde BD)
-    from pathlib import Path
+    logger.debug(f"find_orphaned_pdfs: root={contabilidades_root} client_name={client_name!r} db_records={len(db_records)}")
+
+    # Crear mapa inverso: ruta_destino -> clave (desde BD)
     db_by_destino = {
         str(Path(v["ruta_destino"])): k
         for k, v in db_records.items()
         if v.get("ruta_destino")
     }
 
-    # Escanear PDFs limitando el scope al cliente actual (evita recorrer toda la red)
-    def _client_pdfs():
-        if client_name:
-            for mes_dir in contabilidades_root.iterdir():
-                if not mes_dir.is_dir():
+    # ── Recolectar PDFs del cliente ──────────────────────────────────────────
+    pdf_paths: list[Path] = []
+    if client_name:
+        try:
+            mes_dirs = [d for d in contabilidades_root.iterdir() if d.is_dir()]
+        except OSError as e:
+            logger.error(f"find_orphaned_pdfs: no se pudo leer {contabilidades_root}: {e}")
+            return orphaned
+
+        logger.debug(f"find_orphaned_pdfs: {len(mes_dirs)} carpetas de mes encontradas")
+
+        for mes_dir in mes_dirs:
+            client_dir = mes_dir / client_name
+            if not client_dir.exists():
+                # Fallback: prefijo coincidente, ej: "EMPRESA (L)"
+                try:
+                    for d in mes_dir.iterdir():
+                        if d.is_dir() and d.name.startswith(client_name):
+                            logger.debug(
+                                f"find_orphaned_pdfs: usando variante de nombre "
+                                f"{d.name!r} en lugar de {client_name!r}"
+                            )
+                            client_dir = d
+                            break
+                except OSError as e:
+                    logger.warning(f"find_orphaned_pdfs: no se pudo leer {mes_dir}: {e}")
                     continue
-                client_dir = mes_dir / client_name
-                if not client_dir.exists():
-                    # Fallback: buscar carpeta con prefijo coincidente, ej: "EMPRESA (L)"
-                    # Mismo patrón que build_dest_folder usa para resolver variantes de nombre
-                    try:
-                        for d in mes_dir.iterdir():
-                            if d.is_dir() and d.name.startswith(client_name):
-                                client_dir = d
-                                break
-                    except OSError:
-                        pass
-                if client_dir.exists():
-                    yield from client_dir.rglob("*.pdf")
-        else:
-            yield from contabilidades_root.rglob("*.pdf")
 
-    for pdf_path in _client_pdfs():
+            if not client_dir.exists():
+                logger.debug(f"find_orphaned_pdfs: carpeta cliente no encontrada en {mes_dir.name}")
+                continue
 
-        nombre = pdf_path.name
-        # Extraer clave del nombre (si es un archivo nombrado por clave)
-        clave_from_name = nombre.replace(".pdf", "").strip()
+            try:
+                found = list(client_dir.rglob("*.pdf"))
+                logger.debug(f"find_orphaned_pdfs: {mes_dir.name}/{client_dir.name} → {len(found)} PDFs")
+                pdf_paths.extend(found)
+            except OSError as e:
+                logger.warning(f"find_orphaned_pdfs: error escaneando {client_dir}: {e}")
+    else:
+        try:
+            pdf_paths = list(contabilidades_root.rglob("*.pdf"))
+            logger.debug(f"find_orphaned_pdfs: sin filtro de cliente → {len(pdf_paths)} PDFs totales")
+        except OSError as e:
+            logger.error(f"find_orphaned_pdfs: error escaneando {contabilidades_root}: {e}")
+            return orphaned
 
-        # Buscar en BD por ruta_destino
-        clave = db_by_destino.get(str(pdf_path))
+    logger.info(f"find_orphaned_pdfs: {len(pdf_paths)} PDFs encontrados en disco para analizar")
 
-        # Si no encontramos por ruta, intentar por nombre de archivo (50 dígitos)
-        if not clave and len(clave_from_name) == 50 and clave_from_name.isdigit():
-            clave = clave_from_name
+    # ── Clasificar cada PDF ──────────────────────────────────────────────────
+    skipped_ok = 0
+    for pdf_path in pdf_paths:
+        try:
+            nombre = pdf_path.name
+            clave_from_name = nombre.replace(".pdf", "").strip()
 
-        if not clave:
-            # PDF sin registro en BD y sin clave identificable en filename
-            orphaned.append({
-                "clave": clave_from_name if len(clave_from_name) == 50 else "DESCONOCIDA",
-                "archivo": pdf_path,
-                "ruta_actual": str(pdf_path),
-                "ruta_esperada": None,
-                "motivo": "not_in_db",
-            })
-            continue
+            # Buscar en BD por ruta_destino exacta
+            clave = db_by_destino.get(str(pdf_path))
 
-        # Verificar consistencia
-        db_record = db_records.get(clave, {})
+            # Fallback: clave de 50 dígitos en el nombre del archivo
+            if not clave and len(clave_from_name) == 50 and clave_from_name.isdigit():
+                clave = clave_from_name
 
-        if not db_record:
-            # Clave identificada (por ruta o filename) pero sin entrada en BD
-            orphaned.append({
-                "clave": clave,
-                "archivo": pdf_path,
-                "ruta_actual": str(pdf_path),
-                "ruta_esperada": None,
-                "motivo": "not_in_db",
-            })
-            continue
-        ruta_esperada = db_record.get("ruta_destino")
-        ruta_origen = db_record.get("ruta_origen")
+            if not clave:
+                # PDF sin clave identificable y sin ruta en BD → huérfano desconocido
+                logger.debug(f"find_orphaned_pdfs: {nombre} → not_in_db (sin clave identificable)")
+                orphaned.append({
+                    "clave": "DESCONOCIDA",
+                    "archivo": pdf_path,
+                    "ruta_actual": str(pdf_path),
+                    "ruta_esperada": None,
+                    "motivo": "not_in_db",
+                })
+                continue
 
-        # Si la ruta esperada no existe, intentar sanarla (contador pudo renombrar carpeta de mes)
-        if ruta_esperada and not Path(ruta_esperada).exists():
-            sanada = heal_classified_path(ruta_esperada, contabilidades_root)
-            if sanada:
-                ruta_esperada = str(sanada)
+            db_record = db_records.get(clave, {})
 
-        # Caso 1: PDF en ubicación antigua, copia también en ubicación nueva (duplicado)
-        if ruta_esperada and str(pdf_path) != ruta_esperada and Path(ruta_esperada).exists():
-            orphaned.append({
-                "clave": clave,
-                "archivo": pdf_path,
-                "ruta_actual": str(pdf_path),
-                "ruta_esperada": ruta_esperada,
-                "motivo": "duplicado",
-            })
-        # Caso 2: PDF en ubicación incorrecta (tiene ruta esperada pero no está ahí)
-        elif ruta_esperada and str(pdf_path) != ruta_esperada:
-            orphaned.append({
-                "clave": clave,
-                "archivo": pdf_path,
-                "ruta_actual": str(pdf_path),
-                "ruta_esperada": ruta_esperada,
-                "motivo": "wrong_location",
-            })
-        # Caso 3: PDF huérfano sin ruta esperada (reclasificación falló a mitad)
-        elif not ruta_esperada and ruta_origen:
-            orphaned.append({
-                "clave": clave,
-                "archivo": pdf_path,
-                "ruta_actual": str(pdf_path),
-                "ruta_esperada": ruta_origen,  # Usar ruta_origen como fallback
-                "motivo": "huerfano_sin_destino",
-            })
+            if not db_record:
+                # Clave identificada pero no existe en BD → huérfano claro
+                logger.debug(f"find_orphaned_pdfs: {nombre} → not_in_db (clave={clave[:12]}... no en BD)")
+                orphaned.append({
+                    "clave": clave,
+                    "archivo": pdf_path,
+                    "ruta_actual": str(pdf_path),
+                    "ruta_esperada": None,
+                    "motivo": "not_in_db",
+                })
+                continue
 
-    logger.info(f"Encontrados {len(orphaned)} PDFs huérfanos u inconsistentes")
+            ruta_esperada = db_record.get("ruta_destino") or ""
+            ruta_origen   = db_record.get("ruta_origen") or ""
+
+            # Sanar ruta_esperada si apunta a un path que no existe
+            if ruta_esperada and not Path(ruta_esperada).exists():
+                sanada = heal_classified_path(ruta_esperada, contabilidades_root)
+                if sanada:
+                    ruta_esperada = str(sanada)
+
+            path_str = str(pdf_path)
+
+            # Caso 1: duplicado — está en ubicación antigua Y también en la esperada
+            if ruta_esperada and path_str != ruta_esperada and Path(ruta_esperada).exists():
+                logger.debug(f"find_orphaned_pdfs: {nombre} → duplicado")
+                orphaned.append({
+                    "clave": clave,
+                    "archivo": pdf_path,
+                    "ruta_actual": path_str,
+                    "ruta_esperada": ruta_esperada,
+                    "motivo": "duplicado",
+                })
+            # Caso 2: wrong_location — hay ruta esperada pero el PDF no está ahí
+            elif ruta_esperada and path_str != ruta_esperada:
+                logger.debug(f"find_orphaned_pdfs: {nombre} → wrong_location")
+                orphaned.append({
+                    "clave": clave,
+                    "archivo": pdf_path,
+                    "ruta_actual": path_str,
+                    "ruta_esperada": ruta_esperada,
+                    "motivo": "wrong_location",
+                })
+            # Caso 3: huérfano sin destino — reclasificación falló a mitad
+            elif not ruta_esperada and ruta_origen:
+                logger.debug(f"find_orphaned_pdfs: {nombre} → huerfano_sin_destino")
+                orphaned.append({
+                    "clave": clave,
+                    "archivo": pdf_path,
+                    "ruta_actual": path_str,
+                    "ruta_esperada": ruta_origen,
+                    "motivo": "huerfano_sin_destino",
+                })
+            else:
+                # PDF coincide con su ruta esperada en BD → OK
+                skipped_ok += 1
+                logger.debug(f"find_orphaned_pdfs: {nombre} → OK (clasificado correctamente)")
+
+        except Exception as e:
+            logger.warning(f"find_orphaned_pdfs: error procesando {pdf_path}: {e}")
+
+    logger.info(
+        f"find_orphaned_pdfs: {len(orphaned)} huérfanos/inconsistentes, "
+        f"{skipped_ok} OK de {len(pdf_paths)} PDFs analizados"
+    )
     return orphaned
 
 
