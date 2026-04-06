@@ -144,7 +144,7 @@ def filter_records_by_tab(
         return non_omitted
 
     if tab == "pendiente":
-        # Pendientes: no clasificados (excluir omitidos)
+        # Pendientes: no clasificados (excluir omitidos, rechazados y sin_respuesta)
         # Un pendiente_pdf con categoria ya asignada está clasificado contablemente;
         # se excluye de Pendiente aunque siga sin PDF (flujos Crear PDF / vincular intactos).
         return [
@@ -154,6 +154,7 @@ def filter_records_by_tab(
                 db_records.get(r.clave, {}).get("estado") == "pendiente_pdf"
                 and str(db_records.get(r.clave, {}).get("categoria") or "").strip()
             )
+            and get_hacienda_review_status(r) not in ("rechazada", "sin_respuesta")
         ]
 
     if tab == "sin_clave":
@@ -163,8 +164,9 @@ def filter_records_by_tab(
         return [
             r for r in non_omitted
             if not (db_records.get(r.clave, {}).get("estado") == "clasificado")
-            and get_transaction_type(r, client_cedula) != "ingreso"
+            and classify_transaction(r, client_cedula) != "ingreso"
             and (not r.clave or len(r.clave) != 50 or r.estado in ("pendiente_pdf", "sin_xml") or not r.pdf_path)
+            and get_hacienda_review_status(r) not in ("rechazada", "sin_respuesta")
         ]
 
     if tab == "omitidos":
@@ -187,9 +189,25 @@ def filter_records_by_tab(
         logger.debug(f"Filter huérfanos: {len(huerfanos)} de {len(records)} registros huérfanos")
         return huerfanos
 
-    # Clasificar por tipo de transacción (excluir omitidos)
+    if tab == "rechazados":
+        rechazados = [
+            r for r in non_omitted
+            if get_hacienda_review_status(r) == "rechazada"
+        ]
+        return rechazados
+
+    if tab == "sin_respuesta":
+        sin_respuesta = [
+            r for r in non_omitted
+            if get_hacienda_review_status(r) == "sin_respuesta"
+        ]
+        return sin_respuesta
+
+    # Clasificar por tipo de transacción (excluir omitidos, rechazadas y sin_respuesta)
     filtered = []
     for r in non_omitted:
+        if get_hacienda_review_status(r) in ("rechazada", "sin_respuesta"):
+            continue
         classification = classify_transaction(r, client_cedula)
         if classification == tab:
             filtered.append(r)
@@ -202,41 +220,62 @@ def get_tab_statistics(
     client_cedula: str,
     db_records: dict[str, dict],
 ) -> dict[str, dict]:
-    """Calcula estadísticas por pestaña.
+    """Calcula estadísticas por pestaña en una sola pasada (O(n))."""
+    tabs = ["todas", "ingreso", "egreso", "sin_receptor", "ors", "pendiente", "sin_clave", "omitidos", "huerfanos", "rechazados", "sin_respuesta"]
+    stats = {tab: {"count": 0, "clasificados": 0, "porcentaje": 0} for tab in tabs}
 
-    Returns:
-        {
-            "todas": {"count": int, "clasificados": int, "porcentaje": int},
-            "ingreso": {...},
-            "egreso": {...},
-            "sin_receptor": {...},
-            "ors": {...},
-            "pendiente": {...},
-            "sin_clave": {...},
-            "omitidos": {...},
-        }
-    """
-    tabs = ["todas", "ingreso", "egreso", "sin_receptor", "ors", "pendiente", "sin_clave", "omitidos"]
-    stats = {}
+    for r in records:
+        clave = r.clave
+        db_rec = db_records.get(clave, {})
+        is_classified = _db_is_classified(db_rec)
 
+        if not r.razon_omisión:
+            # TODAS
+            stats["todas"]["count"] += 1
+            if is_classified:
+                stats["todas"]["clasificados"] += 1
+
+            h_status = get_hacienda_review_status(r)
+
+            # RECHAZADOS Y SIN RESPUESTA
+            if h_status == "rechazada":
+                stats["rechazados"]["count"] += 1
+                if is_classified:
+                    stats["rechazados"]["clasificados"] += 1
+            elif h_status == "sin_respuesta":
+                stats["sin_respuesta"]["count"] += 1
+                if is_classified:
+                    stats["sin_respuesta"]["clasificados"] += 1
+            else:
+                # Clasificación básica (ingreso, egreso, sin_receptor, ors)
+                tx_kind = classify_transaction(r, client_cedula)
+                if tx_kind in stats:
+                    stats[tx_kind]["count"] += 1
+                    if is_classified:
+                        stats[tx_kind]["clasificados"] += 1
+
+                # PENDIENTE
+                if not is_classified:
+                    stats["pendiente"]["count"] += 1
+
+                # SIN_CLAVE
+                if not is_classified and tx_kind != "ingreso":
+                    if not clave or len(clave) != 50 or r.estado in ("pendiente_pdf", "sin_xml") or not r.pdf_path:
+                        stats["sin_clave"]["count"] += 1
+
+        # OMITIDOS (razon_omisión específica)
+        elif r.razon_omisión in ("non_invoice", "timeout", "extract_failed"):
+            stats["omitidos"]["count"] += 1
+
+        # HUERFANOS
+        elif r.razon_omisión and r.razon_omisión.startswith("orphaned_"):
+            stats["huerfanos"]["count"] += 1
+
+    # Calcular porcentajes finales
     for tab in tabs:
-        filtered = filter_records_by_tab(records, tab, client_cedula, db_records)
-        # Solo contar clasificados para registros sin razon_omisión.
-        # Un registro está clasificado si estado="clasificado", o si estado="pendiente_pdf"
-        # con categoría asignada (ingresos/sin_receptor sin PDF que no mueven archivo).
-        clasificados = sum(
-            1
-            for r in filtered
-            if not r.razon_omisión and _db_is_classified(db_records.get(r.clave, {}))
-        )
-        total = len(filtered)
-        porcentaje = int((clasificados / total * 100)) if total > 0 else 0
-
-        stats[tab] = {
-            "count": total,
-            "clasificados": clasificados,
-            "porcentaje": porcentaje,
-        }
+        total = stats[tab]["count"]
+        clasificados = stats[tab]["clasificados"]
+        stats[tab]["porcentaje"] = int((clasificados / total * 100)) if total > 0 else 0
 
     return stats
 
@@ -310,6 +349,16 @@ def find_orphaned_pdfs(
                 if not mes_dir.is_dir():
                     continue
                 client_dir = mes_dir / client_name
+                if not client_dir.exists():
+                    # Fallback: buscar carpeta con prefijo coincidente, ej: "EMPRESA (L)"
+                    # Mismo patrón que build_dest_folder usa para resolver variantes de nombre
+                    try:
+                        for d in mes_dir.iterdir():
+                            if d.is_dir() and d.name.startswith(client_name):
+                                client_dir = d
+                                break
+                    except OSError:
+                        pass
                 if client_dir.exists():
                     yield from client_dir.rglob("*.pdf")
         else:
