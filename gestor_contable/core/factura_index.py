@@ -12,6 +12,11 @@ import time
 from typing import Any
 
 from .models import FacturaRecord
+from .ors_purge import (
+    OrsPurgeDB,
+    attach_hidden_response_to_batch,
+    resolve_active_batch_for_clave,
+)
 from .xml_manager import CRXMLManager
 from .pdf_cache import PDFCacheManager
 from .iva_utils import parse_decimal_value as _pdv_global
@@ -29,7 +34,7 @@ logger = logging.getLogger(__name__)
 _RE_CLAVE_50 = re.compile(r"(\d{50})")
 _RE_DIGITS_15_PLUS = re.compile(r"\d{15,}")
 _RE_NUMERIC_TOKENS = re.compile(r"\d+")
-_RE_DIGITS_50_TEXT = re.compile(r"\d{50}")
+_RE_DIGITS_50_TEXT = re.compile(r"(?<!\d)\d{50}(?!\d)")
 _RE_DIGITS_10_20 = re.compile(r"\d{10,20}")
 _RE_CLAVE_RAW_BYTES = re.compile(rb"506\d{47}")
 _RE_NON_DIGIT = re.compile(r"\D")
@@ -228,6 +233,14 @@ class FacturaIndexer:
         self.pdf_duplicates_rejected: dict[Path, Path] = {}
         # MensajeHacienda que son respuesta a MensajeReceptor propio del cliente
         self.receptor_response_files: list[dict] = []  # [{archivo, ruta, clave_numerica}, ...]
+        # Mensajes ocultos (MensajeHacienda/MensajeReceptor) indexados por clave
+        self.hidden_message_files_by_clave: dict[str, list[dict]] = {}
+        # Respuestas Hacienda auto-anexadas a un lote ORS activo
+        self.ors_purged_response_files: list[dict] = []
+        self.ors_autopurge_summary: dict[str, Any] = {
+            "moved_files": [],
+            "batch_ids": [],
+        }
 
     def load_period(
         self,
@@ -242,6 +255,12 @@ class FacturaIndexer:
         self.pdf_duplicates_rejected = {}
         self.failed_xml_files = []
         self.receptor_response_files = []
+        self.hidden_message_files_by_clave = {}
+        self.ors_purged_response_files = []
+        self.ors_autopurge_summary = {
+            "moved_files": [],
+            "batch_ids": [],
+        }
 
         start_total = time.perf_counter()
 
@@ -278,6 +297,10 @@ class FacturaIndexer:
             try:
                 df, audit = self.xml_manager.load_xml_folder(xml_root, ignored_filenames=_ignored_filenames, xml_cache=xml_cache)
                 self.audit_report = audit
+                self.hidden_message_files_by_clave = self._index_hidden_message_files(
+                    audit.get("hidden_message_files", [])
+                )
+                purge_db = OrsPurgeDB(metadata_dir) if (metadata_dir / "ors_purge.sqlite").exists() else None
 
                 # Capturar duplicados XML
                 duplicate_list = audit.get("duplicates", [])
@@ -316,6 +339,48 @@ class FacturaIndexer:
                         )
                     elif motivo == "no_asociado":
                         tipo = documento_root or "MensajeHacienda"
+                        active_batch = (
+                            resolve_active_batch_for_clave(purge_db, clave)
+                            if purge_db is not None
+                            else None
+                        )
+                        if active_batch and active_batch.get("status") == "active":
+                            ruta = Path(str(rf.get("ruta", "") or "").strip())
+                            try:
+                                attached = attach_hidden_response_to_batch(
+                                    purge_db=purge_db,
+                                    batch_id=str(active_batch["batch_id"]),
+                                    clave=clave,
+                                    source_path=ruta,
+                                    documento_root=documento_root,
+                                )
+                                purge_entry = {
+                                    "archivo": nombre,
+                                    "ruta": str(ruta),
+                                    "ruta_cuarentena": attached["ruta_cuarentena"],
+                                    "clave_numerica": clave,
+                                    "documento_root": documento_root,
+                                    "batch_id": str(active_batch["batch_id"]),
+                                    "tipo_archivo": attached["tipo_archivo"],
+                                }
+                                self.ors_purged_response_files.append(purge_entry)
+                                self._register_ors_autopurge(purge_entry)
+                                self._discard_hidden_message_path(clave, str(ruta))
+                                continue
+                            except Exception as exc:
+                                self.parse_errors.append(
+                                    f"[respuesta_no_asociada] {detalle} "
+                                    f"({tipo} con lote ORS {active_batch['batch_id']} activo, "
+                                    f"pero no se pudo mover a cuarentena: {exc})"
+                                )
+                                continue
+                        if active_batch and active_batch.get("status") == "ambiguous":
+                            batch_ids = ", ".join(active_batch.get("batch_ids", [])[:3])
+                            self.parse_errors.append(
+                                f"[respuesta_no_asociada] {detalle} "
+                                f"({tipo} coincide con multiples lotes ORS activos: {batch_ids}; revision manual)"
+                            )
+                            continue
                         self.parse_errors.append(
                             f"[respuesta_no_asociada] {detalle} ({tipo} no asociado a ningún comprobante por clave)"
                         )
@@ -414,6 +479,16 @@ class FacturaIndexer:
                         records[clave] = record
             except Exception as exc:
                 self.parse_errors.append(f"Error cargando carpeta XML: {exc}")
+        if self.audit_report:
+            self.audit_report["hidden_message_files"] = self._flatten_hidden_message_files()
+            self.audit_report["respuesta_purgada_ors_files"] = list(self.ors_purged_response_files)
+            self.audit_report["ors_autopurge_summary"] = {
+                "moved_count": len(self.ors_autopurge_summary["moved_files"]),
+                "batch_ids": list(self.ors_autopurge_summary["batch_ids"]),
+                "moved_files": list(self.ors_autopurge_summary["moved_files"]),
+            }
+            files_by_status = self.audit_report.setdefault("files_by_status", {})
+            files_by_status["respuesta_purgada_ors"] = len(self.ors_purged_response_files)
         xml_time = time.perf_counter() - start_xml
         logger.info(f"XML parsing: {xml_time:.2f}s -> {len(records)} registros")
 
@@ -421,6 +496,7 @@ class FacturaIndexer:
         logger.info(f"PASO 1.5: Iniciando vinculación desde BD de clasificaciones")
 
         # ─ Paso 1.5.1: Cargar BD de clasificaciones ─
+        db: ClassificationDB | None = None
         try:
             from gestor_contable.core.classifier import ClassificationDB, sha256_file
             db = ClassificationDB(metadata_dir)
@@ -537,6 +613,82 @@ class FacturaIndexer:
             logger.warning(f"  2. ¿Hay PDFs en disco? {len(sha256_index)} en índice")
             logger.warning(f"  3. ¿SHA256 en BD coinciden? Revisar si valores están vacíos")
             logger.warning(f"  4. ¿Claves coinciden entre XML y BD?")
+
+        # ─ Paso 1.5.4: Recuperar clasificaciones sin entrada en BD ─
+        # Busca PDFs de Contabilidades cuyos filenames contengan la clave de 50 dígitos
+        # de records que siguen como pendiente_pdf. Cero I/O adicional: reutiliza
+        # pdf_files_found ya computado en 1.5.2. Solo operaciones de string en memoria.
+        pending_records = {
+            clave: r for clave, r in records.items()
+            if not r.pdf_path and r.clave and not r.clave.startswith("OMITIDO_")
+        }
+        if pending_records and db is not None:
+            # Claves ya en BD → no son huérfanos, no tocar
+            claves_en_bd = set(db_records.keys())
+            # Rutas destino ya registradas (para filtrar PDFs ya vinculados en BD)
+            rutas_en_bd = {
+                rec.get("ruta_destino", "") for rec in db_records.values()
+                if rec.get("ruta_destino")
+            }
+
+            # Construir índice clave→path desde filenames de Contabilidades no registrados
+            contab_clave_index: dict[str, Path] = {}
+            for pdf_p in pdf_files_found:
+                if "Contabilidades" not in str(pdf_p):
+                    continue
+                if str(pdf_p) in rutas_en_bd:
+                    continue  # ya en BD, no es huérfano
+                extracted = _extract_clave_from_filename(pdf_p.name)
+                if extracted and extracted not in contab_clave_index:
+                    contab_clave_index[extracted] = pdf_p
+
+            # Vincular y reconstruir entrada en BD para cada record huérfano
+            recovered_count = 0
+            for clave, record in pending_records.items():
+                if clave in claves_en_bd:
+                    continue  # tiene entrada en BD (no debería estar aquí, pero por seguridad)
+                pdf_found = contab_clave_index.get(clave)
+                if not pdf_found:
+                    continue
+
+                # Inferir categoria desde el path (COMPRAS / GASTOS / ACTIVO / OGND)
+                categoria = ""
+                for part in pdf_found.parts:
+                    if part.upper() in {"COMPRAS", "GASTOS", "ACTIVO", "OGND"}:
+                        categoria = part.upper()
+                        break
+
+                record.pdf_path = pdf_found
+                record.estado = "clasificado"
+
+                # Reconstruir entrada en BD con datos disponibles
+                try:
+                    sha = sha256_file(pdf_found)
+                except Exception:
+                    sha = ""
+                try:
+                    db.upsert(
+                        clave_numerica=clave,
+                        estado="clasificado",
+                        categoria=categoria,
+                        ruta_destino=str(pdf_found),
+                        sha256=sha,
+                    )
+                    recovered_count += 1
+                    logger.info(
+                        f"PASO 1.5.4: Recuperado {clave[:12]}... → {pdf_found.name}"
+                        f" [{categoria or 'sin categoria'}]"
+                    )
+                except Exception as e:
+                    logger.warning(f"PASO 1.5.4: No se pudo reconstruir BD para {clave[:12]}...: {e}")
+
+            if recovered_count > 0:
+                logger.info(f"PASO 1.5.4: {recovered_count} clasificaciones recuperadas")
+            elif contab_clave_index:
+                logger.debug(
+                    f"PASO 1.5.4: {len(contab_clave_index)} PDFs huérfanos en Contabilidades"
+                    f" pero ninguno matcheó por clave en filename"
+                )
 
         # ── PASO 2: PDFs ──
         if include_pdf_scan:
@@ -1602,6 +1754,57 @@ class FacturaIndexer:
             if len(set(matches)) == 1:
                 return matches[0]
         return None
+
+    def _index_hidden_message_files(self, hidden_files: list[dict[str, Any]]) -> dict[str, list[dict]]:
+        indexed: dict[str, list[dict]] = {}
+        for hidden in hidden_files:
+            clave = str(hidden.get("clave_numerica", "") or "").strip()
+            if len(clave) != 50 or not clave.isdigit():
+                continue
+            entry = {
+                "archivo": str(hidden.get("archivo", "") or ""),
+                "ruta": str(hidden.get("ruta", "") or ""),
+                "documento_root": str(hidden.get("documento_root", "") or ""),
+                "message_associated": bool(hidden.get("message_associated", False)),
+            }
+            indexed.setdefault(clave, []).append(entry)
+        return indexed
+
+    def _flatten_hidden_message_files(self) -> list[dict[str, Any]]:
+        flattened: list[dict[str, Any]] = []
+        for clave, entries in self.hidden_message_files_by_clave.items():
+            for entry in entries:
+                flattened.append(
+                    {
+                        "archivo": str(entry.get("archivo", "") or ""),
+                        "ruta": str(entry.get("ruta", "") or ""),
+                        "documento_root": str(entry.get("documento_root", "") or ""),
+                        "message_associated": bool(entry.get("message_associated", False)),
+                        "clave_numerica": clave,
+                    }
+                )
+        return flattened
+
+    def _discard_hidden_message_path(self, clave: str, ruta: str) -> None:
+        clave_norm = str(clave or "").strip()
+        ruta_norm = str(ruta or "").strip()
+        if not clave_norm or not ruta_norm or clave_norm not in self.hidden_message_files_by_clave:
+            return
+        kept = [
+            entry
+            for entry in self.hidden_message_files_by_clave[clave_norm]
+            if str(entry.get("ruta", "") or "").strip() != ruta_norm
+        ]
+        if kept:
+            self.hidden_message_files_by_clave[clave_norm] = kept
+        else:
+            self.hidden_message_files_by_clave.pop(clave_norm, None)
+
+    def _register_ors_autopurge(self, entry: dict[str, Any]) -> None:
+        self.ors_autopurge_summary["moved_files"].append(entry)
+        batch_id = str(entry.get("batch_id", "") or "").strip()
+        if batch_id and batch_id not in self.ors_autopurge_summary["batch_ids"]:
+            self.ors_autopurge_summary["batch_ids"].append(batch_id)
 
     @staticmethod
     def _reconcile_missing_with_filename_consecutivo(

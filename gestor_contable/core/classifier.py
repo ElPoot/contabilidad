@@ -312,6 +312,7 @@ class ClassificationDB:
                 """,
                 payload,
             )
+            conn.commit()
 
     def update_ruta_destino(self, clave: str, nueva_ruta: str) -> None:
         """Actualiza SOLO ruta_destino sin tocar ningún otro campo del registro."""
@@ -320,6 +321,7 @@ class ClassificationDB:
                 "UPDATE clasificaciones SET ruta_destino=? WHERE clave_numerica=?",
                 (nueva_ruta, clave),
             )
+            conn.commit()
 
 
 def recover_orphaned_pdf(

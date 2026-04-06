@@ -1738,6 +1738,14 @@ class App3Window(ctk.CTk):
                     logger.debug(f"PDF cargado desde ruta clasificada: {ruta_destino}")
                     r.pdf_path = ruta_destino
                     return ruta_destino
+                # exists() falló pero el registro está clasificado en BD.
+                # Puede ser delay de OneDrive/Windows tras mover el archivo.
+                # Devolver la ruta igual — el visor mostrará el error específico
+                # ("PDF no encontrado" o "no descargado") en vez de quedar en blanco.
+                if db_record.get("estado") == "clasificado":
+                    logger.debug(f"PDF clasificado: exists() falló, pasando ruta al visor: {ruta_destino}")
+                    r.pdf_path = ruta_destino
+                    return ruta_destino
         return None
 
     def _resolve_previous_classification(self, r: FacturaRecord) -> tuple[str, Path | None]:
