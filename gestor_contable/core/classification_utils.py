@@ -378,7 +378,7 @@ def find_orphaned_pdfs(
             clave = clave_from_name
 
         if not clave:
-            # PDF sin registro en BD
+            # PDF sin registro en BD y sin clave identificable en filename
             orphaned.append({
                 "clave": clave_from_name if len(clave_from_name) == 50 else "DESCONOCIDA",
                 "archivo": pdf_path,
@@ -390,6 +390,17 @@ def find_orphaned_pdfs(
 
         # Verificar consistencia
         db_record = db_records.get(clave, {})
+
+        if not db_record:
+            # Clave identificada (por ruta o filename) pero sin entrada en BD
+            orphaned.append({
+                "clave": clave,
+                "archivo": pdf_path,
+                "ruta_actual": str(pdf_path),
+                "ruta_esperada": None,
+                "motivo": "not_in_db",
+            })
+            continue
         ruta_esperada = db_record.get("ruta_destino")
         ruta_origen = db_record.get("ruta_origen")
 
