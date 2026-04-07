@@ -45,7 +45,18 @@ def find_empty_folders(client_folder: Path) -> list[Path]:
             # Carpeta del cliente dentro del mes (ej: Contabilidades/02-FEBRERO/{client_name}/)
             cliente_in_mes = mes_folder / client_name
             if not cliente_in_mes.exists():
-                continue
+                # Fallback: buscar carpeta con prefijo coincidente (ej: "EMPRESA (L)")
+                try:
+                    candidate = next(
+                        (d for d in mes_folder.iterdir()
+                         if d.is_dir() and d.name.startswith(client_name)),
+                        None,
+                    )
+                except OSError:
+                    candidate = None
+                if candidate is None:
+                    continue
+                cliente_in_mes = candidate
 
             # Recorrer recursivamente carpetas de clasificación del cliente en este mes
             for folder in sorted(cliente_in_mes.rglob("*"), key=lambda p: (-len(p.parts), p)):
