@@ -220,6 +220,13 @@ build_version_info.txt
 # Hacienda API cache (regenerado en cada consulta)
 gestor_contable/data/hacienda_cache.db
 
+# Archivos temporales de validación/testing generados en runtime
+gestor_contable/data/_tmp_*/
+gestor_contable/data/forensics/
+
+# Artefactos de Codex
+.codex_stage_export_commit.patch
+
 # Clasificación y bases de datos de estado (viven en Z:/DATA/…/.metadata/)
 .metadata/
 *.sqlite
