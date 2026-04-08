@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -133,7 +134,7 @@ def _activities_from_cache(cedula: str) -> list[dict[str, str]] | None:
         return None
 
     try:
-        with sqlite3.connect(str(cache_path)) as conn:
+        with contextlib.closing(sqlite3.connect(str(cache_path))) as conn:
             row = conn.execute(
                 "SELECT raw_json FROM hacienda_cache WHERE identificacion = ?",
                 (cedula,),
@@ -235,7 +236,7 @@ def _update_hacienda_cache(cedula: str, payload: dict) -> None:
         nombre = str(
             payload.get("nombre") or payload.get("razonSocial") or payload.get("razon_social") or ""
         ).strip().upper()
-        with sqlite3.connect(str(cache_path)) as conn:
+        with contextlib.closing(sqlite3.connect(str(cache_path))) as conn:
             conn.execute(
                 """
                 INSERT INTO hacienda_cache(identificacion, razon_social, raw_json, updated_at)

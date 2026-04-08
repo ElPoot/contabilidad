@@ -93,6 +93,7 @@ class PDFCacheManager:
 
     def save_cache(self) -> None:
         """Guardar caché a archivo JSON (escritura atómica via archivo temporal)."""
+        tmp: Path | None = None
         try:
             self.cache_file.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.cache_file.with_suffix(".tmp")
@@ -102,6 +103,11 @@ class PDFCacheManager:
             logger.debug(f"Caché de PDFs guardado: {len(self.cache.get('pdfs', {}))} entradas")
         except Exception as exc:
             logger.warning(f"No se pudo guardar caché: {exc}")
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    logger.debug("No se pudo limpiar temporal de caché %s", tmp, exc_info=True)
 
     def get_cached_path(self, pdf_file: Path) -> Path | None:
         """

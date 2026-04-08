@@ -20,6 +20,7 @@ from gestor_contable.app.controllers.load_period_controller import (
     load_session_worker,
     months_for_range,
 )
+from gestor_contable.app.controllers.pdf_swap_controller import execute_pdf_swap
 from gestor_contable.app.selection_controller import build_multi_vm, build_single_vm
 from gestor_contable.app.selection_vm import SelectionVM
 from gestor_contable.app.state.main_window_state import MainWindowState
@@ -528,7 +529,8 @@ class App3Window(ctk.CTk):
         ctk.set_default_color_theme("dark-blue")
 
         self.title("App 3 -- Clasificador Contable")
-        self.geometry("1440x860")
+        self.geometry("1920x1080")
+        self.after(0, lambda: self.state("zoomed"))
         self.minsize(1100, 680)
         self.configure(fg_color=BG)
         self.grid_rowconfigure(0, weight=0)  # Header (can expand with tabs)
@@ -2916,7 +2918,6 @@ class App3Window(ctk.CTk):
         r = self.selected[0] if isinstance(self.selected, list) else self.selected
         rejected_path = vm.swap_pdf_target
         
-        from gestor_contable.app.controllers.pdf_swap_controller import execute_pdf_swap
         success, error_msg = execute_pdf_swap(r, rejected_path, self._pdf_duplicates_rejected)
         
         if not success:

@@ -62,6 +62,7 @@ class XMLCacheManager:
             try:
                 return json.loads(data_json)
             except Exception:
+                logger.warning("Cache JSON corrupto para %s", xml_file, exc_info=True)
                 return None
 
         return None  # archivo cambió

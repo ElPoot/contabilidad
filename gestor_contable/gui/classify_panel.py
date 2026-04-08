@@ -372,7 +372,7 @@ class ClassifyPanel(ctk.CTkFrame):
         )
         self._btn_recheck_hacienda = ctk.CTkButton(
             self._actions_frame,
-            text="🔄  Verificar Hacienda",
+            text="Verificar Hacienda",
             font=get_font(13, "bold"),
             fg_color=WARNING,
             hover_color="#e8a61c",
@@ -383,7 +383,7 @@ class ClassifyPanel(ctk.CTkFrame):
         )
         self._btn_swap_pdf = ctk.CTkButton(
             self._actions_frame,
-            text="🔄 Intercambiar PDF",
+            text="Intercambiar PDF",
             font=get_font(13, "bold"),
             fg_color=WARNING,
             hover_color="#e8a61c",

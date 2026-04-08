@@ -9,6 +9,7 @@ Nota: Los códigos CABYS son de 13 dígitos (ej: 4526100000100).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -91,7 +92,7 @@ class CABYSManager:
     # ------------------------------------------------------------------
     def _ensure_db(self) -> None:
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS cabys (
                         codigo        TEXT PRIMARY KEY,
@@ -171,7 +172,7 @@ class CABYSManager:
     # ------------------------------------------------------------------
     def _cache_get(self, codigo: str) -> dict[str, Any] | None:
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
                 row = conn.execute(
                     "SELECT descripcion, impuesto, tipo, capitulo, unidad_medida "
                     "FROM cabys WHERE codigo = ?",
@@ -193,7 +194,7 @@ class CABYSManager:
             return {}
         placeholders = ",".join("?" for _ in codigos)
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
                 rows = conn.execute(
                     f"SELECT codigo, descripcion, impuesto, tipo, capitulo, unidad_medida "
                     f"FROM cabys WHERE codigo IN ({placeholders})",
@@ -233,7 +234,7 @@ class CABYSManager:
         if not codigo:
             return
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
                 conn.execute(
                     self._INSERT_SQL,
                     self._info_to_row(info),
@@ -246,7 +247,7 @@ class CABYSManager:
         if not rows:
             return
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
                 conn.executemany(self._INSERT_SQL, rows)
                 conn.commit()
 
@@ -697,7 +698,7 @@ class CABYSManager:
     def get_stats(self) -> dict[str, Any]:
         """Estadísticas de la BD local."""
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
                 total = conn.execute("SELECT COUNT(*) FROM cabys").fetchone()[0]
                 last_ts = conn.execute("SELECT MAX(updated_at) FROM cabys").fetchone()[0]
                 bienes = conn.execute(
@@ -725,6 +726,6 @@ class CABYSManager:
     def is_ready(self) -> bool:
         """True si la BD tiene al menos un registro."""
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
                 count = conn.execute("SELECT COUNT(*) FROM cabys").fetchone()[0]
         return count > 0

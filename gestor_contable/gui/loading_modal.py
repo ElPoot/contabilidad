@@ -85,3 +85,8 @@ class LoadingOverlay(ctk.CTkFrame):
         self.progress_bar.set(pct)
         self.counter_var.set(f"{current}/{total} archivos")
         self.update_idletasks()
+
+    def set_counter_text(self, text: str):
+        """Actualiza el texto inferior sin asumir progreso numérico."""
+        self.counter_var.set(text)
+        self.update_idletasks()

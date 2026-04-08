@@ -28,8 +28,8 @@ class MainWindowState:
     selected: FacturaRecord | None = None
     # Registros seleccionados en lote (multi-seleccion)
     selected_records: list[FacturaRecord] = field(default_factory=list)
-    # Pestana activa: "todas" | "pendiente" | "clasificado" | etc.
-    active_tab: str = "todas"
+    # Pestana activa: "egreso" | "ingreso" | "rechazados" | etc.
+    active_tab: str = "egreso"
     # Meses ya cargados en la sesion actual: {(year, month), ...}
     loaded_months: set[tuple[int, int]] = field(default_factory=set)
     # Cache acumulativo clave->record de todos los meses cargados

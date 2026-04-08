@@ -25,8 +25,8 @@ from gestor_contable.core.corte_engine import (
     CATEGORIA_GASTOS,
     CATEGORIA_AMBIGUO,
 )
-from gestor_contable.core.iva_utils import apply_exchange_rate, parse_decimal_value
-from gestor_contable.core.report_paths import month_abbr_es
+from gestor_contable.core.iva_utils import apply_exchange_rate, compute_tax_base_rows, parse_decimal_value
+from gestor_contable.core.report_paths import month_name_es
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ _HEADER_COLOR   = "D9E1F2"   # azul claro — encabezados de columna
 _CREDIT_COLOR   = "DAF2D0"   # verde — notas de crédito
 _TOTAL_COLOR    = "BDD7EE"   # azul medio — fila de totales
 _AMBIGUO_COLOR  = "FFF2CC"   # amarillo claro — fila AMBIGUO
+_EXCEL_AMOUNT_FORMAT = "#,##0.00"
 
 # ── Columnas exportadas ───────────────────────────────────────────────────────
 # Mismas columnas para todas las hojas; la columna de contraparte cambia según
@@ -167,6 +168,69 @@ def _month_label(dt: datetime) -> str:
     return meses.get(dt.month, "MES")
 
 
+def _compact_tax_base_label(label: str) -> str:
+    if label == "Base exenta":
+        return "EXENTO"
+    if label.startswith("Base imponible "):
+        return f"BASE IMP {label.removeprefix('Base imponible ').upper()}"
+    return str(label).upper()
+
+
+def _tax_block_anchor_columns(cols: list[str]) -> tuple[int, int]:
+    amount_indices = [idx + 1 for idx, col_name in enumerate(cols) if col_name in _NUMERIC_COLS]
+    if len(amount_indices) >= 2:
+        return amount_indices[-2], amount_indices[-1]
+    if len(amount_indices) == 1:
+        return max(1, amount_indices[0] - 1), amount_indices[0]
+    return 1, 2
+
+
+def _write_tax_base_block(
+    ws,
+    total_row: int,
+    cols: list[str],
+    totals: dict[str, Decimal],
+    row_font,
+) -> int:
+    """Escribe bases imponibles como recuadro compacto a la derecha."""
+    from openpyxl.styles import Alignment, Border, PatternFill, Side
+
+    base_rows = compute_tax_base_rows(totals, cols)
+    if not base_rows:
+        return total_row
+
+    label_col_idx, amount_col_idx = _tax_block_anchor_columns(cols)
+    current_row = total_row + 2
+    last_row = current_row + len(base_rows) - 1
+
+    outer = Side(style="medium", color="000000")
+    inner = Side(style="thin", color="000000")
+    solid_white = PatternFill(fill_type="solid", fgColor="FFFFFF")
+
+    for label, amount in base_rows:
+        label_cell = ws.cell(current_row, label_col_idx)
+        label_cell.value = _compact_tax_base_label(label)
+        label_cell.alignment = Alignment(horizontal="left", vertical="center")
+        label_cell.font = row_font
+        label_cell.fill = solid_white
+
+        amount_cell = ws.cell(current_row, amount_col_idx)
+        amount_cell.value = float(amount)
+        amount_cell.number_format = _EXCEL_AMOUNT_FORMAT
+        amount_cell.alignment = Alignment(horizontal="right", vertical="center")
+        amount_cell.font = row_font
+        amount_cell.fill = solid_white
+
+        top_side = outer if current_row == total_row + 2 else inner
+        bottom_side = outer if current_row == last_row else inner
+        label_cell.border = Border(left=outer, right=inner, top=top_side, bottom=bottom_side)
+        amount_cell.border = Border(left=inner, right=outer, top=top_side, bottom=bottom_side)
+
+        current_row += 1
+
+    return current_row - 1
+
+
 # ── Escritura de una hoja ──────────────────────────────────────────────────────
 
 def _write_sheet(
@@ -279,14 +343,14 @@ def _write_sheet(
                 crc_dec = apply_exchange_rate(raw_dec, _rec_moneda, _rec_tc)
                 val = float(crc_dec) if (crc_dec != Decimal("0") or str(raw or "").strip()) else None
                 cell.value         = val
-                cell.number_format = "#,##0.00"
+                cell.number_format = _EXCEL_AMOUNT_FORMAT
                 if val is not None:
                     totals[col] += crc_dec
             elif col in _NUMERIC_DISPLAY_COLS:
                 # Numérico de solo visualización (tipo_cambio): mostrar pero no sumar ni convertir
                 val = _to_float(raw)
                 cell.value         = val if val is not None else ""
-                cell.number_format = "#,##0.00" if val is not None else "@"
+                cell.number_format = _EXCEL_AMOUNT_FORMAT if val is not None else "@"
             elif col in _TEXT_COLS:
                 cell.value         = str(raw or "")
                 cell.number_format = "@"
@@ -320,8 +384,10 @@ def _write_sheet(
         if col in totals:
             cell = ws.cell(current_row, ci)
             cell.value         = float(totals[col])
-            cell.number_format = "#,##0.00"
+            cell.number_format = _EXCEL_AMOUNT_FORMAT
             cell.font          = total_font
+
+    current_row = _write_tax_base_block(ws, current_row, cols, totals, total_font)
 
     # ── Auto-ancho de columnas ────────────────────────────────────────────────
     for ci in range(1, n + 1):
@@ -450,6 +516,14 @@ def _abreviar_sociedad(name: str) -> str:
 
 def default_filename(client_name: str, mes: int, anio: int) -> str:
     """Nombre de archivo sugerido para el corte."""
-    mes_str  = month_abbr_es(mes)
-    name_safe = _abreviar_sociedad(client_name or "CLIENTE").replace("/","").replace("\\","").strip()[:50]
-    return f"CORTE {mes_str} {anio} - {name_safe}.xlsx"
+    year = f"{int(anio):04d}"
+    month_txt = month_name_es(int(mes))
+    name_safe = (
+        str(client_name or "CLIENTE")
+        .replace("/", " ")
+        .replace("\\", " ")
+        .strip()
+    )
+    if len(name_safe) > 42:
+        name_safe = name_safe[:42].strip()
+    return f"PF-{year} - {name_safe} - CORTE - {month_txt}.xlsx"

@@ -25,6 +25,7 @@ import tkinter as tk
 from typing import Callable
 
 import customtkinter as ctk
+from gestor_contable.gui.fonts import *
 
 from gestor_contable.gui.icons import get_icon
 
@@ -47,11 +48,6 @@ _KIND: dict[str, str] = {
     "success": "modal_success",
     "confirm": "modal_confirm",
 }
-
-
-def _f(size: int = 13, bold: bool = False) -> ctk.CTkFont:
-    return ctk.CTkFont(family="Segoe UI", size=size,
-                       weight="bold" if bold else "normal")
 
 
 class ModalOverlay(ctk.CTkFrame):
@@ -99,14 +95,14 @@ class ModalOverlay(ctk.CTkFrame):
         # Título
         ctk.CTkLabel(
             card, text=title,
-            font=_f(15, bold=True), text_color=TEXT, wraplength=360,
+            font=F_HEADING(), text_color=TEXT, wraplength=360,
         ).grid(row=1, column=0, pady=(8, 0), padx=24)
 
         # Mensaje (opcional)
         if message:
             ctk.CTkLabel(
                 card, text=message,
-                font=_f(12), text_color=MUTED, wraplength=360, justify="center",
+                font=F_BODY(), text_color=MUTED, wraplength=360, justify="center",
             ).grid(row=2, column=0, pady=(8, 0), padx=24)
 
         # Botones
@@ -116,25 +112,35 @@ class ModalOverlay(ctk.CTkFrame):
         if kind == "confirm":
             ctk.CTkButton(
                 btn_row, text=confirm_text, width=130,
-                fg_color=TEAL, text_color=BG, font=_f(13, bold=True),
+                fg_color=TEAL, text_color=BG, font=F_BODY_BOLD(),
                 command=self._yes,
             ).pack(side="left", padx=(0, 8))
             ctk.CTkButton(
                 btn_row, text=cancel_text, width=130,
                 fg_color=SURFACE, border_width=1, border_color=BORDER,
-                text_color=TEXT, font=_f(13),
+                text_color=TEXT, font=F_BODY(),
                 command=self._no,
             ).pack(side="left")
         else:
             ctk.CTkButton(
                 btn_row, text="Cerrar", width=140,
-                fg_color=TEAL, text_color=BG, font=_f(13, bold=True),
+                fg_color=TEAL, text_color=BG, font=F_BODY_BOLD(),
                 command=self._close,
             ).pack()
 
         # Click en el fondo oscuro → cerrar (confirm: equivale a Cancelar)
         bg_handler = self._on_bg_click_confirm if kind == "confirm" else self._on_bg_click
         self.bind("<Button-1>", bg_handler)
+
+        # Capturar foco para evitar eventos en la ventana padre (ej. presionar Enter)
+        self.after(10, self.focus_set)
+
+        if kind == "confirm":
+            self.bind("<Return>", lambda e: self._yes())
+            self.bind("<Escape>", lambda e: self._no())
+        else:
+            self.bind("<Return>", lambda e: self._close())
+            self.bind("<Escape>", lambda e: self._close())
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 

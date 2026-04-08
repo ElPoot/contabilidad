@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 import customtkinter as ctk
+from gestor_contable.gui.fonts import *
 
 from gestor_contable.core.corte_engine import (
     CorteEngine,
@@ -106,21 +107,21 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
 
         ctk.CTkLabel(
             top, text="Cola de clasificación — Corte mensual",
-            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            font=F_APP_TITLE(),
             text_color=TEXT,
         ).grid(row=0, column=0, padx=16, pady=12, sticky="w")
 
         self._prog_var = ctk.StringVar(value="")
         ctk.CTkLabel(
             top, textvariable=self._prog_var,
-            font=ctk.CTkFont("Segoe UI", 12),
+            font=F_MODAL_BODY(),
             text_color=MUTED,
         ).grid(row=0, column=1, padx=16, pady=12, sticky="e")
 
         # Botón de cierre anticipado (esquina derecha)
         ctk.CTkButton(
             top, text="Terminar",
-            font=ctk.CTkFont("Segoe UI", 11),
+            font=F_BTN_LIST(),
             fg_color="transparent",
             hover_color=CARD,
             text_color=MUTED,
@@ -146,7 +147,7 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
         self._prov_var = ctk.StringVar(value="")
         ctk.CTkLabel(
             panel, textvariable=self._prov_var,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+            font=F_MODAL_SUBTITLE(),
             text_color=TEXT,
             wraplength=240,
             justify="center",
@@ -156,7 +157,7 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
         self._ced_var = ctk.StringVar(value="")
         ctk.CTkLabel(
             panel, textvariable=self._ced_var,
-            font=ctk.CTkFont("Segoe UI", 11),
+            font=F_MODAL_SUBTEXT(),
             text_color=MUTED,
         ).grid(row=1, column=0, padx=16, pady=(0, 4), sticky="ew")
 
@@ -164,7 +165,7 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
         self._monto_var = ctk.StringVar(value="")
         ctk.CTkLabel(
             panel, textvariable=self._monto_var,
-            font=ctk.CTkFont("Segoe UI", 20, "bold"),
+            font=get_font(20, "bold"),
             text_color=TEAL,
         ).grid(row=2, column=0, padx=16, pady=(4, 2), sticky="ew")
 
@@ -172,7 +173,7 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
         self._fecha_var = ctk.StringVar(value="")
         ctk.CTkLabel(
             panel, textvariable=self._fecha_var,
-            font=ctk.CTkFont("Segoe UI", 11),
+            font=F_MODAL_SUBTEXT(),
             text_color=MUTED,
         ).grid(row=3, column=0, padx=16, pady=(0, 20), sticky="ew")
 
@@ -182,14 +183,14 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
 
         ctk.CTkLabel(
             panel, text="¿A dónde va esta factura?",
-            font=ctk.CTkFont("Segoe UI", 12),
+            font=F_MODAL_BODY(),
             text_color=MUTED,
         ).grid(row=5, column=0, padx=16, pady=(16, 10), sticky="ew")
 
         ctk.CTkButton(
             panel,
             text="COMPRAS",
-            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            font=F_MODAL_TITLE(),
             fg_color=TEAL,
             hover_color=TEAL_DIM,
             text_color=BG,
@@ -201,7 +202,7 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
         ctk.CTkButton(
             panel,
             text="GASTOS",
-            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            font=F_MODAL_TITLE(),
             fg_color=WARNING,
             hover_color="#d97706",
             text_color=BG,
@@ -219,7 +220,7 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
             panel,
             text="Recordar para este proveedor",
             variable=self._recordar_var,
-            font=ctk.CTkFont("Segoe UI", 12),
+            font=F_MODAL_BODY(),
             text_color=TEXT,
             fg_color=TEAL,
             hover_color=TEAL_DIM,
@@ -229,7 +230,7 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
         ctk.CTkLabel(
             panel,
             text="Aplica a todas las facturas\nfuturas de este emisor",
-            font=ctk.CTkFont("Segoe UI", 10),
+            font=F_MODAL_HINT(),
             text_color=MUTED,
             justify="left",
         ).grid(row=10, column=0, padx=32, pady=(0, 16), sticky="w")
@@ -237,7 +238,7 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
         ctk.CTkButton(
             panel,
             text="Omitir →",
-            font=ctk.CTkFont("Segoe UI", 11),
+            font=F_BTN_LIST(),
             fg_color="transparent",
             hover_color=CARD,
             text_color=MUTED,
@@ -251,7 +252,7 @@ class CorteClasificacionOverlay(ctk.CTkFrame):
         ctk.CTkLabel(
             panel,
             text="Las omitidas quedan como\nAMBIGUO en el reporte",
-            font=ctk.CTkFont("Segoe UI", 10),
+            font=F_MODAL_HINT(),
             text_color=MUTED,
             justify="center",
         ).grid(row=12, column=0, padx=16, pady=(0, 20), sticky="ew")

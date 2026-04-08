@@ -38,6 +38,7 @@ _FILES: dict[str, str] = {
     "file_pdf":      "file_pdf.png",
     "filter":        "filter.png",
     "calendar":      "calendar.png",
+    "settings":      "settings.png",
 }
 
 

@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from gestor_contable.core.classifier import safe_move_file
 from gestor_contable.core.ors_purge import OrsPurgeDB
 
 
@@ -82,7 +83,7 @@ def execute_receptor_purge(
             dest = batch_dir / f"{src.stem}_{uuid.uuid4().hex[:6]}{src.suffix}"
 
         try:
-            shutil.move(str(src), str(dest))
+            safe_move_file(src, dest)
             movidos.append(ruta_str)
             purge_db.record_archivo(
                 batch_id=batch_id,

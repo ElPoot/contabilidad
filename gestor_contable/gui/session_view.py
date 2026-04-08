@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -32,6 +33,7 @@ DANGER   = "#f87171"
 SUCCESS  = "#34d399"
 WARNING  = "#fbbf24"
 
+from gestor_contable.gui.icons import get_icon
 from gestor_contable.gui.fonts import *
 
 
@@ -64,7 +66,7 @@ def _read_client_counts(folder: Path) -> tuple[int, int]:
     if not db_path.exists():
         return 0, 0
     try:
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
             row = conn.execute(
                 "SELECT COUNT(*) FROM clasificaciones WHERE estado='clasificado'"
             ).fetchone()
@@ -114,7 +116,10 @@ def _load_saved_clients(year: int) -> list[dict]:
         future_to_folder = {pool.submit(_read_client_counts, f): f for f in folders}
         for future in as_completed(future_to_folder):
             folder = future_to_folder[future]
-            counts[folder.name] = future.result()
+            try:
+                counts[folder.name] = future.result()
+            except Exception as exc:
+                logger.warning(f"Error al leer counts de {folder.name}: {exc}", exc_info=True)
 
     clients = []
     for folder in folders:
@@ -207,7 +212,7 @@ def _heal_client(
         sqlite_path = final_dir / ".metadata" / "clasificacion.sqlite"
         if sqlite_path.exists():
             try:
-                with sqlite3.connect(str(sqlite_path)) as conn:
+                with contextlib.closing(sqlite3.connect(str(sqlite_path))) as conn:
                     conn.execute(
                         "UPDATE clasificaciones SET ruta_destino = REPLACE(ruta_destino, ?, ?)",
                         (old_folder_name, hacienda_name),
@@ -660,8 +665,8 @@ class SessionView(ctk.CTkFrame):
 
         ctk.CTkButton(
             header,
-            text="⚙",
-            font=F_BODY(),
+            text="",
+            image=get_icon("settings", 20),
             width=32, height=32,
             fg_color="transparent", hover_color=BORDER,
             text_color=MUTED, corner_radius=8,

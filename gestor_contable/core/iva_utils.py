@@ -19,6 +19,15 @@ IVA_TARIFA_CODE_MAP = {
     "08": "13",     # Tasa 13% (estándar CR)
 }
 
+TAX_BASE_TOLERANCE = Decimal("0.01")
+STANDARD_IVA_BASE_RATES = {
+    "iva_1": ("1%", Decimal("0.01")),
+    "iva_2": ("2%", Decimal("0.02")),
+    "iva_4": ("4%", Decimal("0.04")),
+    "iva_8": ("8%", Decimal("0.08")),
+    "iva_13": ("13%", Decimal("0.13")),
+}
+
 
 def parse_decimal_value(raw_value: Any) -> Decimal | None:
     """Convierte valor raw a Decimal preservando precisión.
@@ -61,6 +70,14 @@ def parse_decimal_value(raw_value: Any) -> Decimal | None:
         return Decimal(text)
     except InvalidOperation:
         return None
+
+
+def is_effectively_zero(amount: Any, tolerance: Decimal = TAX_BASE_TOLERANCE) -> bool:
+    """Determina si un monto es contablemente equivalente a cero."""
+    parsed = parse_decimal_value(amount)
+    if parsed is None:
+        return True
+    return abs(parsed) <= tolerance
 
 
 def decimal_to_local_text(number: Decimal) -> str:
@@ -207,3 +224,40 @@ def apply_exchange_rate(amount: Decimal, moneda: str, tipo_cambio: Decimal) -> D
         return amount
 
     return amount * tipo_cambio
+
+
+def compute_tax_base_rows(
+    totals: dict[str, Any],
+    visible_columns: list[str] | tuple[str, ...],
+    tolerance: Decimal = TAX_BASE_TOLERANCE,
+) -> list[tuple[str, Decimal]]:
+    """Deriva bases imponibles visibles y base exenta desde los totales acumulados."""
+    subtotal_total = parse_decimal_value(totals.get("subtotal")) or Decimal("0")
+    iva_otros_total = parse_decimal_value(totals.get("iva_otros")) or Decimal("0")
+
+    rows: list[tuple[str, Decimal]] = []
+    gravadas_total = Decimal("0")
+
+    for col_name in visible_columns:
+        rate_meta = STANDARD_IVA_BASE_RATES.get(col_name)
+        if rate_meta is None:
+            continue
+
+        rate_label, rate_decimal = rate_meta
+        iva_total = parse_decimal_value(totals.get(col_name)) or Decimal("0")
+        if is_effectively_zero(iva_total, tolerance=tolerance):
+            continue
+
+        base_amount = iva_total / rate_decimal
+        if is_effectively_zero(base_amount, tolerance=tolerance):
+            continue
+
+        rows.append((f"Base imponible {rate_label}", base_amount))
+        gravadas_total += base_amount
+
+    if is_effectively_zero(iva_otros_total, tolerance=tolerance):
+        exenta_amount = subtotal_total - gravadas_total
+        if not is_effectively_zero(exenta_amount, tolerance=tolerance):
+            rows.append(("Base exenta", exenta_amount))
+
+    return rows

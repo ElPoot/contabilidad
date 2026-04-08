@@ -5,6 +5,7 @@ from pathlib import Path
 from tkinter import ttk
 
 import customtkinter as ctk
+from gestor_contable.gui.fonts import *
 
 from gestor_contable.core.classifier import ClassificationDB, recover_orphaned_pdf
 from gestor_contable.core.classification_utils import find_orphaned_pdfs
@@ -61,14 +62,14 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
             text="Escanear PDFs Inconsistentes",
             image=get_icon("filter", 18),
             compound="left",
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            font=F_BUTTON_LG(),
             text_color=TEXT,
         ).pack(side="left", padx=16, pady=12)
 
         ctk.CTkLabel(
             header,
             text="(Se buscan archivos que no están en la ubicación correcta)",
-            font=ctk.CTkFont(family="Segoe UI", size=11),
+            font=F_LABEL(),
             text_color=MUTED,
         ).pack(side="left", padx=0, pady=12)
 
@@ -80,7 +81,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
 
         # Status label
         self._status_label = ctk.CTkLabel(
-            body, text="Escaneando PDFs...", font=ctk.CTkFont(size=12), text_color=TEAL
+            body, text="Escaneando PDFs...", font=F_BODY(), text_color=TEAL
         )
         self._status_label.grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
@@ -130,7 +131,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
         self._info_label = ctk.CTkLabel(
             footer,
             text="",
-            font=ctk.CTkFont(size=11),
+            font=F_LABEL(),
             text_color=MUTED,
         )
         self._info_label.grid(row=0, column=0, sticky="w")
@@ -147,7 +148,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
             fg_color=SURFACE,
             hover_color=BORDER,
             text_color=TEXT,
-            font=ctk.CTkFont(size=11),
+            font=F_LABEL(),
             corner_radius=8,
             command=self._select_all,
         ).pack(side="left", padx=(0, 8))
@@ -160,7 +161,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
             fg_color=SURFACE,
             hover_color=BORDER,
             text_color=TEXT,
-            font=ctk.CTkFont(size=11),
+            font=F_LABEL(),
             corner_radius=8,
             command=self._deselect_all,
         ).pack(side="left", padx=(0, 8))
@@ -173,7 +174,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
             fg_color=SUCCESS,
             hover_color="#2ecc71",
             text_color="#0d1a18",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            font=F_LABEL_BOLD(),
             corner_radius=8,
             command=self._recover_selected,
         ).pack(side="left")

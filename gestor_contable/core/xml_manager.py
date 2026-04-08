@@ -1,12 +1,14 @@
 """Capa de negocio para parsing XML, cache y normalización de datos (nativa de App 3)."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,6 +50,7 @@ class CRXMLManager:
     def __init__(self) -> None:
         self.last_duplicate_count = 0
         self.cache_db_path = _resolve_cache_path()
+        self._hacienda_cache_lock = threading.Lock()
         self._ensure_hacienda_cache_db()
 
     DOCUMENT_TYPES = {
@@ -110,11 +113,11 @@ class CRXMLManager:
         )
         flat_data["estado_hacienda_xml"] = self.extract_first_non_empty(
             flat_data,
-            ["MensajeHacienda_IndEstado", "MensajeHacienda_EstadoMensaje", "MensajeReceptor_Mensaje"],
+            ["MensajeHacienda_Mensaje", "MensajeHacienda_IndEstado", "MensajeHacienda_EstadoMensaje", "MensajeReceptor_Mensaje"],
         )
         flat_data["detalle_estado_hacienda_xml"] = self.extract_first_non_empty(
             flat_data,
-            ["MensajeHacienda_DetalleMensaje", "MensajeReceptor_DetalleMensaje", "MensajeHacienda_Mensaje"],
+            ["MensajeHacienda_DetalleMensaje", "MensajeReceptor_DetalleMensaje"],
         )
         # Campos operativos solicitados.
         raw_fecha = self.pick_doc_value(flat_data, root_name, "FechaEmision")
@@ -389,7 +392,7 @@ class CRXMLManager:
             found_valid = True
         return self.decimal_to_local_text(total) if found_valid else ""
     def _ensure_hacienda_cache_db(self) -> None:
-        with sqlite3.connect(self.cache_db_path) as conn:
+        with contextlib.closing(sqlite3.connect(self.cache_db_path)) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS hacienda_cache (
@@ -407,7 +410,7 @@ class CRXMLManager:
         return "".join(ch for ch in str(raw_ident or "") if ch.isdigit())
 
     def _cache_get_name(self, ident: str) -> str:
-        with sqlite3.connect(self.cache_db_path) as conn:
+        with contextlib.closing(sqlite3.connect(self.cache_db_path)) as conn:
             row = conn.execute("SELECT razon_social FROM hacienda_cache WHERE identificacion = ?", (ident,)).fetchone()
             return str(row[0] or "") if row else ""
 
@@ -417,12 +420,12 @@ class CRXMLManager:
             return {}
         placeholders = ",".join("?" for _ in identifiers)
         query = f"SELECT identificacion, razon_social FROM hacienda_cache WHERE identificacion IN ({placeholders})"
-        with sqlite3.connect(self.cache_db_path) as conn:
+        with contextlib.closing(sqlite3.connect(self.cache_db_path)) as conn:
             rows = conn.execute(query, tuple(identifiers)).fetchall()
         return {str(row[0]): str(row[1] or "") for row in rows}
 
     def _cache_put_name(self, ident: str, razon_social: str, raw_json: dict[str, Any] | None = None) -> None:
-        with sqlite3.connect(self.cache_db_path) as conn:
+        with self._hacienda_cache_lock, contextlib.closing(sqlite3.connect(self.cache_db_path)) as conn:
             conn.execute(
                 """
                 INSERT INTO hacienda_cache(identificacion, razon_social, raw_json, updated_at)
@@ -718,7 +721,11 @@ class CRXMLManager:
                             cache_hits += 1
                             continue
                         except Exception:
-                            pass
+                            LOGGER.warning(
+                                "Cache XML invalido para %s; se reparseara desde disco",
+                                xml_file.name,
+                                exc_info=True,
+                            )
                 to_parse.append(xml_file)
         else:
             to_parse = xml_files
@@ -732,7 +739,11 @@ class CRXMLManager:
                     future_to_file[executor.submit(self._safe_parse_xml_file, xml_file)] = xml_file
                 for future in as_completed(future_to_file):
                     xml_file = future_to_file[future]
-                    row = future.result()
+                    try:
+                        row = future.result()
+                    except Exception:
+                        LOGGER.exception("Error inesperado parseando %s", xml_file.name)
+                        continue
                     rows.append(row)
                     if xml_cache is not None and row.get("_process_status") == "ok":
                         new_to_cache.append((xml_file, row))
@@ -744,6 +755,7 @@ class CRXMLManager:
         t0 = time.perf_counter()
         df = pd.DataFrame(rows)
         associated = self.associate_hacienda_messages(df)
+        hidden_message_files = self.list_hidden_message_files(associated)
         orphan_hidden_messages = self.find_unassociated_hidden_messages(associated)
         comprobantes = self.filter_comprobante_rows(associated)
         deduped, duplicate_files = self.remove_duplicate_hashes_with_audit(comprobantes)
@@ -765,6 +777,7 @@ class CRXMLManager:
             duplicates=duplicate_files,
             processing_time_seconds=processing_time_seconds,
             respuesta_failed_files=orphan_hidden_messages,
+            hidden_message_files=hidden_message_files,
         )
         self._persist_audit_report(report)
         return optimized, report
@@ -848,6 +861,7 @@ class CRXMLManager:
         duplicates: list[dict[str, str]],
         processing_time_seconds: float,
         respuesta_failed_files: list[dict[str, str]] | None = None,
+        hidden_message_files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Construye reporte de auditoría del lote de XML procesado."""
         failed_files = [
@@ -884,6 +898,17 @@ class CRXMLManager:
                 seen_failed_paths.add(dedupe_key)
             deduped_respuesta_failed.append(item)
 
+        deduped_hidden_messages: list[dict[str, Any]] = []
+        seen_hidden_paths: set[str] = set()
+        for item in list(hidden_message_files or []):
+            path = str(item.get("ruta", "")).strip()
+            dedupe_key = path or str(item.get("archivo", "")).strip()
+            if dedupe_key and dedupe_key in seen_hidden_paths:
+                continue
+            if dedupe_key:
+                seen_hidden_paths.add(dedupe_key)
+            deduped_hidden_messages.append(item)
+
         invalid_xml_files = sum(1 for row in rows if str(row.get("_process_status", "")).lower() == "invalid_xml")
         successfully_processed = sum(1 for row in rows if str(row.get("_process_status", "")).lower() == "ok")
 
@@ -897,6 +922,7 @@ class CRXMLManager:
             "successfully_processed": successfully_processed,
             "failed_files": failed_files,
             "respuesta_failed_files": deduped_respuesta_failed,
+            "hidden_message_files": deduped_hidden_messages,
             "duplicate_files": duplicates,
             "invalid_xml_files": invalid_xml_files,
             "processing_time_seconds": processing_time_seconds,
@@ -910,6 +936,26 @@ class CRXMLManager:
             },
         }
         return report
+
+    def list_hidden_message_files(self, df: pd.DataFrame) -> list[dict[str, Any]]:
+        """Retorna inventario de mensajes ocultos asociado/no asociado por clave."""
+        if df.empty or "documento_root" not in df.columns:
+            return []
+
+        hidden_roots = {"MensajeHacienda", "MensajeReceptor"}
+        hidden_messages = df[df["documento_root"].astype(str).isin(hidden_roots)]
+        findings: list[dict[str, Any]] = []
+        for _, row in hidden_messages.iterrows():
+            findings.append(
+                {
+                    "archivo": str(row.get("archivo", "")),
+                    "ruta": str(row.get("ruta", "")),
+                    "documento_root": str(row.get("documento_root", "")),
+                    "clave_numerica": str(row.get("clave_numerica", "") or "").strip(),
+                    "message_associated": bool(row.get("_message_associated", False)),
+                }
+            )
+        return findings
 
     def find_unassociated_hidden_messages(self, df: pd.DataFrame) -> list[dict[str, str]]:
         """Detecta mensajes ocultables que no pertenecen a ningún comprobante cargado.

@@ -129,6 +129,8 @@ def query_invoice_status(clave: str) -> dict:
         "error":               None,
     }
 
+    global _cached_token, _token_expires_at
+
     try:
         token = _fetch_token()
     except Exception as exc:
@@ -137,27 +139,56 @@ def query_invoice_status(clave: str) -> dict:
         return result
 
     url = _RECEPCION_URL.format(clave=clave)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept":        "application/json",
+    }
     try:
-        resp = requests.get(
-            url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept":        "application/json",
-            },
-            timeout=15,
-        )
+        resp = requests.get(url, headers=headers, timeout=15)
     except requests.RequestException as exc:
         result["error"] = f"Error de red consultando ATV: {exc}"
         logger.error(result["error"])
         return result
+
+    # 400 con "no ha sido recibido" = comprobante nunca fue enviado a Hacienda
+    # Es una respuesta valida de negocio, no un error de token.
+    if resp.status_code == 400:
+        x_error = resp.headers.get("X-Error-Cause", "")
+        if "no ha sido recibido" in x_error.lower():
+            result["ind_estado"] = "no_recibido"
+            logger.info("ATV: clave %s... no fue recibida por Hacienda", clave[:15])
+            return result
+
+    # Token expirado o invalido — reintentar una vez con token fresco
+    if resp.status_code in (400, 401):
+        x_error = resp.headers.get("X-Error-Cause", "")
+        logger.info("ATV HTTP %s (X-Error-Cause=%s) — reintentando con token fresco (clave=%s...)",
+                     resp.status_code, x_error or "N/A", clave[:15])
+        _cached_token = None
+        _token_expires_at = 0.0
+        try:
+            token = _fetch_token()
+            headers["Authorization"] = f"Bearer {token}"
+            resp = requests.get(url, headers=headers, timeout=15)
+        except Exception as exc:
+            result["error"] = f"Error reintentando con token fresco: {exc}"
+            logger.error(result["error"])
+            return result
 
     if resp.status_code == 404:
         result["ind_estado"] = "no_encontrado"
         return result
 
     if not resp.ok:
+        body = ""
+        try:
+            body = resp.text[:300]
+        except Exception:
+            pass
+        x_error = resp.headers.get("X-Error-Cause", "")
         result["error"] = f"ATV respondio HTTP {resp.status_code}"
-        logger.error(result["error"])
+        logger.error("ATV HTTP %s para clave %s... | X-Error-Cause=%s | body=%s",
+                     resp.status_code, clave[:20], x_error or "N/A", body)
         return result
 
     try:
@@ -174,8 +205,11 @@ def query_invoice_status(clave: str) -> dict:
     if b64:
         try:
             xml_bytes = base64.b64decode(b64)
-            result["respuesta_xml"]       = xml_bytes.decode("utf-8")
             result["respuesta_xml_bytes"] = xml_bytes
+            try:
+                result["respuesta_xml"] = xml_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                result["respuesta_xml"] = xml_bytes.decode("latin-1", errors="replace")
         except Exception as exc:
             logger.warning("No se pudo decodificar respuesta-xml: %s", exc)
 

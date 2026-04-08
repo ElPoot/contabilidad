@@ -14,11 +14,13 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from gestor_contable.core.classification_utils import (
     _is_tiquete_electronico,
     classify_transaction,
 )
+from gestor_contable.core.classifier import safe_move_file
 from gestor_contable.core.models import FacturaRecord
 
 
@@ -49,9 +51,25 @@ class OrsPurgeDB:
     """
 
     def __init__(self, metadata_dir: Path, db_filename: str = "ors_purge.sqlite"):
+        self._metadata_dir = metadata_dir
+        self._db_filename = db_filename
         self._path = metadata_dir / db_filename
         self._lock = threading.Lock()
         self._init_db()
+
+    @property
+    def metadata_dir(self) -> Path:
+        return self._metadata_dir
+
+    @property
+    def client_folder(self) -> Path:
+        return self._metadata_dir.parent
+
+    @property
+    def quarantine_root(self) -> Path:
+        if self._db_filename == "receptor_purge.sqlite":
+            return self._metadata_dir / "cuarentena_receptor"
+        return self.client_folder / ".ors_quarantine"
 
     def _init_db(self) -> None:
         with self._lock:
@@ -122,6 +140,19 @@ class OrsPurgeDB:
             finally:
                 conn.close()
 
+    def get_batch(self, batch_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = sqlite3.connect(self._path)
+            conn.row_factory = sqlite3.Row
+            try:
+                row = conn.execute(
+                    "SELECT * FROM batches WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+
     def get_archivos_for_batch(self, batch_id: str) -> list[dict]:
         with self._lock:
             conn = sqlite3.connect(self._path)
@@ -147,6 +178,41 @@ class OrsPurgeDB:
                     (clave,),
                 ).fetchall()
                 return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
+    def update_archivo_result(
+        self,
+        archivo_id: int,
+        resultado: str,
+        detalle: str | None = None,
+    ) -> None:
+        with self._lock:
+            conn = sqlite3.connect(self._path)
+            try:
+                if detalle is None:
+                    conn.execute(
+                        "UPDATE archivos SET resultado = ? WHERE id = ?",
+                        (resultado, archivo_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE archivos SET resultado = ?, detalle = ? WHERE id = ?",
+                        (resultado, detalle, archivo_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def adjust_batch_total_archivos(self, batch_id: str, delta: int) -> None:
+        with self._lock:
+            conn = sqlite3.connect(self._path)
+            try:
+                conn.execute(
+                    "UPDATE batches SET total_archivos = total_archivos + ? WHERE batch_id = ?",
+                    (delta, batch_id),
+                )
+                conn.commit()
             finally:
                 conn.close()
 
@@ -196,9 +262,14 @@ def find_ors_candidates(
     return candidates
 
 
+def _empty_inventory_bucket() -> dict[str, list[Path]]:
+    return {"xml": [], "pdf": [], "response_xml": []}
+
+
 def build_file_inventory(
     all_records: list[FacturaRecord],
     db_records: dict[str, dict],
+    hidden_response_files_by_clave: dict[str, list[dict]] | None = None,
 ) -> dict[str, dict[str, list[Path]]]:
     """Construye inventario de archivos por clave en una sola pasada.
 
@@ -207,7 +278,9 @@ def build_file_inventory(
     - record.pdf_path   — PDF en carpeta origen
     - db_records[clave]["ruta_destino"] — PDF ya clasificado en Contabilidades
 
-    Returns: {clave: {"xml": [Path, ...], "pdf": [Path, ...]}}
+    - hidden_response_files_by_clave[clave] — MensajeHacienda/MensajeReceptor ocultos
+
+    Returns: {clave: {"xml": [Path, ...], "pdf": [Path, ...], "response_xml": [Path, ...]}}
     """
     inventory: dict[str, dict[str, list[Path]]] = {}
 
@@ -215,7 +288,7 @@ def build_file_inventory(
         clave = (r.clave or "").strip()
         if not clave:
             continue
-        entry = inventory.setdefault(clave, {"xml": [], "pdf": []})
+        entry = inventory.setdefault(clave, _empty_inventory_bucket())
 
         if r.xml_path:
             p = Path(r.xml_path)
@@ -232,11 +305,223 @@ def build_file_inventory(
         if ruta_destino:
             p = Path(ruta_destino)
             if p.exists():
-                entry = inventory.setdefault(clave, {"xml": [], "pdf": []})
+                entry = inventory.setdefault(clave, _empty_inventory_bucket())
                 if p not in entry["pdf"]:
                     entry["pdf"].append(p)
 
+    for clave, hidden_files in (hidden_response_files_by_clave or {}).items():
+        entry = inventory.setdefault(clave, _empty_inventory_bucket())
+        for hidden in hidden_files:
+            ruta = str(hidden.get("ruta", "") or "").strip()
+            if not ruta:
+                continue
+            p = Path(ruta)
+            if p.exists() and p not in entry["response_xml"]:
+                entry["response_xml"].append(p)
+
     return inventory
+
+
+def _resolve_quarantine_destination(src: Path, quarantine_dir: Path) -> Path:
+    dest = quarantine_dir / src.name
+    if dest.exists():
+        candidate = quarantine_dir / f"{src.stem}_{src.parent.name}{src.suffix}"
+        if not candidate.exists():
+            return candidate
+        return quarantine_dir / f"{src.stem}_{uuid.uuid4().hex[:6]}{src.suffix}"
+    return dest
+
+
+def _hidden_message_tipo_archivo(documento_root: str) -> str:
+    root_norm = str(documento_root or "").strip().lower()
+    if root_norm == "mensajehacienda":
+        return "response_xml_mensajehacienda"
+    if root_norm == "mensajereceptor":
+        return "response_xml_mensajereceptor"
+    return "response_xml"
+
+
+def resolve_active_batch_for_clave(
+    purge_db: OrsPurgeDB,
+    clave: str,
+) -> dict[str, Any] | None:
+    """Retorna el lote ORS activo para una clave si existe uno solo."""
+    clave_norm = str(clave or "").strip()
+    if len(clave_norm) != 50 or not clave_norm.isdigit():
+        return None
+
+    rows = purge_db.get_archivos_for_clave(clave_norm)
+    if not rows:
+        return None
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        batch_id = str(row.get("batch_id", "") or "").strip()
+        if not batch_id:
+            continue
+        info = grouped.setdefault(
+            batch_id,
+            {
+                "batch_id": batch_id,
+                "fecha": str(row.get("fecha", "") or ""),
+                "cedula": str(row.get("cedula", "") or ""),
+                "active_paths": [],
+            },
+        )
+        if row.get("resultado") != "en_cuarentena":
+            continue
+        ruta_cuarentena = str(row.get("ruta_cuarentena", "") or "").strip()
+        if ruta_cuarentena and Path(ruta_cuarentena).exists():
+            info["active_paths"].append(ruta_cuarentena)
+
+    active_batches = [info for info in grouped.values() if info["active_paths"]]
+    if not active_batches:
+        return None
+
+    active_batches.sort(key=lambda item: item.get("fecha", ""), reverse=True)
+    if len(active_batches) > 1:
+        return {
+            "status": "ambiguous",
+            "batch_ids": [info["batch_id"] for info in active_batches],
+        }
+
+    active = active_batches[0]
+    return {
+        "status": "active",
+        "batch_id": active["batch_id"],
+        "batch_ids": [active["batch_id"]],
+        "fecha": active["fecha"],
+        "cedula": active["cedula"],
+        "batch_dir": str(purge_db.quarantine_root / active["batch_id"]),
+    }
+
+
+def refresh_batch_manifest(purge_db: OrsPurgeDB, batch_id: str) -> None:
+    """Regenera manifest.json desde la BD para mantener auditoria coherente."""
+    batch = purge_db.get_batch(batch_id)
+    if not batch:
+        return
+
+    archivos = purge_db.get_archivos_for_batch(batch_id)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for archivo in archivos:
+        clave = str(archivo.get("clave", "") or "").strip()
+        grouped.setdefault(clave, []).append(archivo)
+
+    claves_info: list[dict[str, Any]] = []
+    for clave in sorted(grouped):
+        rows = grouped[clave]
+        has_active = any(
+            row.get("resultado") == "en_cuarentena"
+            and str(row.get("ruta_cuarentena", "") or "").strip()
+            and Path(str(row.get("ruta_cuarentena", "") or "")).exists()
+            for row in rows
+        )
+        resultados = {str(row.get("resultado", "") or "").strip() for row in rows}
+        if has_active and "fallido" in resultados:
+            estado = "parcial"
+        elif has_active:
+            estado = "en_cuarentena"
+        elif resultados == {"restaurado"}:
+            estado = "restaurado"
+        elif resultados == {"fallido"}:
+            estado = "fallido"
+        elif "restaurado" in resultados and "fallido" in resultados:
+            estado = "parcial"
+        else:
+            estado = "sin_estado"
+
+        claves_info.append(
+            {
+                "clave": clave,
+                "estado": estado,
+                "archivos": [
+                    {
+                        "tipo_archivo": str(row.get("tipo_archivo", "") or ""),
+                        "ruta_original": str(row.get("ruta_original", "") or ""),
+                        "ruta_cuarentena": str(row.get("ruta_cuarentena", "") or ""),
+                        "resultado": str(row.get("resultado", "") or ""),
+                        "detalle": str(row.get("detalle", "") or ""),
+                    }
+                    for row in rows
+                ],
+            }
+        )
+
+    manifest = {
+        "batch_id": batch_id,
+        "cedula": str(batch.get("cedula", "") or ""),
+        "fecha": str(batch.get("fecha", "") or ""),
+        "total_claves": int(batch.get("total_claves", 0) or 0),
+        "total_archivos": int(batch.get("total_archivos", 0) or 0),
+        "claves": claves_info,
+    }
+    try:
+        batch_dir = purge_db.quarantine_root / batch_id
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        (batch_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def attach_hidden_response_to_batch(
+    purge_db: OrsPurgeDB,
+    batch_id: str,
+    clave: str,
+    source_path: Path,
+    documento_root: str,
+) -> dict[str, str]:
+    """Anexa una respuesta huérfana al lote ORS activo correspondiente."""
+    tipo_archivo = _hidden_message_tipo_archivo(documento_root)
+    quarantine_clave_dir = purge_db.quarantine_root / batch_id / clave
+    quarantine_clave_dir.mkdir(parents=True, exist_ok=True)
+
+    if not source_path.exists():
+        detalle = "Archivo no encontrado"
+        purge_db.record_archivo(
+            batch_id=batch_id,
+            clave=clave,
+            tipo_archivo=tipo_archivo,
+            ruta_original=str(source_path),
+            ruta_cuarentena=None,
+            resultado="fallido",
+            detalle=detalle,
+        )
+        refresh_batch_manifest(purge_db, batch_id)
+        raise FileNotFoundError(detalle)
+
+    dest = _resolve_quarantine_destination(source_path, quarantine_clave_dir)
+    try:
+        safe_move_file(source_path, dest)
+        purge_db.record_archivo(
+            batch_id=batch_id,
+            clave=clave,
+            tipo_archivo=tipo_archivo,
+            ruta_original=str(source_path),
+            ruta_cuarentena=str(dest),
+            resultado="en_cuarentena",
+        )
+        purge_db.adjust_batch_total_archivos(batch_id, 1)
+        refresh_batch_manifest(purge_db, batch_id)
+        return {
+            "tipo_archivo": tipo_archivo,
+            "ruta_cuarentena": str(dest),
+        }
+    except Exception as exc:
+        purge_db.record_archivo(
+            batch_id=batch_id,
+            clave=clave,
+            tipo_archivo=tipo_archivo,
+            ruta_original=str(source_path),
+            ruta_cuarentena=None,
+            resultado="fallido",
+            detalle=str(exc),
+        )
+        refresh_batch_manifest(purge_db, batch_id)
+        raise
 
 
 # ── Ejecucion de cuarentena ───────────────────────────────────────────────────
@@ -259,13 +544,10 @@ def _quarantine_clave(
 
     for tipo, paths in files.items():
         for src in paths:
-            dest = quarantine_clave_dir / src.name
-            # Evitar colision de nombre si ya existe un archivo con ese nombre
-            if dest.exists():
-                dest = quarantine_clave_dir / f"{src.stem}_{src.parent.name}{src.suffix}"
+            dest = _resolve_quarantine_destination(src, quarantine_clave_dir)
 
             try:
-                shutil.move(str(src), str(dest))
+                safe_move_file(src, dest)
                 movidos.append(src)
                 purge_db.record_archivo(
                     batch_id=batch_id,
@@ -288,45 +570,6 @@ def _quarantine_clave(
                 )
 
     return {"clave": clave, "movidos": movidos, "fallidos": fallidos}
-
-
-def write_batch_manifest(
-    batch_dir: Path,
-    batch_id: str,
-    cedula: str,
-    results: list[dict],
-) -> None:
-    """Escribe manifest.json en el directorio del lote para facilitar restauracion."""
-    claves_info = []
-    for r in results:
-        if r["fallidos"] and not r["movidos"]:
-            estado = "fallido"
-        elif r["fallidos"]:
-            estado = "parcial"
-        else:
-            estado = "en_cuarentena"
-
-        claves_info.append({
-            "clave": r["clave"],
-            "estado": estado,
-            "movidos": [str(p) for p in r["movidos"]],
-            "fallidos": [{"ruta": str(p), "error": e} for p, e in r["fallidos"]],
-        })
-
-    manifest = {
-        "batch_id": batch_id,
-        "cedula": cedula,
-        "fecha": datetime.now().isoformat(timespec="seconds"),
-        "total_claves": len(results),
-        "claves": claves_info,
-    }
-    try:
-        (batch_dir / "manifest.json").write_text(
-            json.dumps(manifest, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass  # El manifest es complementario; no bloquear si falla
 
 
 def restore_batch(
@@ -363,11 +606,13 @@ def restore_batch(
             continue
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dest))
+            safe_move_file(src, dest)
             restaurados.append(dest_str)
+            purge_db.update_archivo_result(int(a["id"]), "restaurado")
         except Exception as exc:
             fallidos.append((src_str, str(exc)))
 
+    refresh_batch_manifest(purge_db, batch_id)
     return {"restaurados": restaurados, "fallidos": fallidos}
 
 
@@ -403,6 +648,7 @@ def execute_purge(
     total_archivos = sum(
         len(file_inventory.get(r.clave, {}).get("xml", []))
         + len(file_inventory.get(r.clave, {}).get("pdf", []))
+        + len(file_inventory.get(r.clave, {}).get("response_xml", []))
         for r in candidates
     )
 
@@ -422,7 +668,7 @@ def execute_purge(
 
     for record in candidates:
         clave = record.clave
-        files = file_inventory.get(clave, {"xml": [], "pdf": []})
+        files = file_inventory.get(clave, _empty_inventory_bucket())
         quarantine_clave_dir = batch_dir / clave
 
         result = _quarantine_clave(
@@ -444,7 +690,7 @@ def execute_purge(
         else:
             claves_ok += 1
 
-    write_batch_manifest(batch_dir, batch_id, cedula, results)
+    refresh_batch_manifest(purge_db, batch_id)
 
     return {
         "batch_id": batch_id,
