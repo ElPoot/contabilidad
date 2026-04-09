@@ -2102,7 +2102,7 @@ class App3Window(ctk.CTk):
         date_to_label = self.to_var.get().strip() or datetime.now().strftime("%d/%m/%Y")
 
         client_cedula = self._get_client_cedula()
-        period_records = [r for r in self._apply_date_filter(self.all_records) if not r.razon_omisión]
+        period_records = [r for r in self._apply_date_filter(self.all_records) if not r.razon_omision]
         if not period_records:
             ModalOverlay.show_info(self, "Exportar", "No hay registros válidos en el período seleccionado.")
             return
@@ -2181,7 +2181,7 @@ class App3Window(ctk.CTk):
         # sin_receptor SÍ entra: son facturas sin cédula receptor pero válidas para el cliente
         period_records = [
             r for r in self._apply_date_filter(self.all_records)
-            if not r.razon_omisión
+            if not r.razon_omision
             and classify_transaction(r, client_cedula) != "ors"
             and get_hacienda_review_status(r) != "rechazada"
         ]
@@ -2970,8 +2970,8 @@ class App3Window(ctk.CTk):
         records_to_delete = []
         if self.selected_records:
             # Multi-selección: verificar que todos sean omitidos
-            records_to_delete = [r for r in self.selected_records if r.razon_omisión]
-        elif self.selected and self.selected.razon_omisión:
+            records_to_delete = [r for r in self.selected_records if r.razon_omision]
+        elif self.selected and self.selected.razon_omision:
             # Selección simple
             records_to_delete = [self.selected]
 
@@ -2984,7 +2984,7 @@ class App3Window(ctk.CTk):
             msg = (
                 f"¿Borrar este PDF omitido?\n\n"
                 f"Archivo: {records_to_delete[0].pdf_path.name if records_to_delete[0].pdf_path else 'desconocido'}\n"
-                f"Razón: {records_to_delete[0].razon_omisión}\n\n"
+                f"Razón: {records_to_delete[0].razon_omision}\n\n"
                 "Esta acción no se puede deshacer."
             )
         else:
@@ -3247,7 +3247,7 @@ class App3Window(ctk.CTk):
         # Obtener registros de la pestaña actual que no estén clasificados
         registros_a_clasificar = [
             r for r in self.records
-            if not r.razon_omisión
+            if not r.razon_omision
             and self._db_records.get(r.clave, {}).get("estado") != "clasificado"
         ]
 

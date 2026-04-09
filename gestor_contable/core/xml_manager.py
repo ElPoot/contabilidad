@@ -19,7 +19,7 @@ from typing import Any
 
 import pandas as pd
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def _resolve_cache_path() -> str:
@@ -358,7 +358,7 @@ class CRXMLManager:
                 elem.clear()
 
         except Exception:
-            LOGGER.warning("Error extrayendo líneas CABYS de %s", xml_path, exc_info=True)
+            logger.warning("Error extrayendo líneas CABYS de %s", xml_path, exc_info=True)
             return []
 
         return lineas
@@ -390,7 +390,7 @@ class CRXMLManager:
                 continue
             total += parsed
             found_valid = True
-        return self.decimal_to_local_text(total) if found_valid else ""
+        return self.decimal_to_local_text(total) if found_valid else "0"
     def _ensure_hacienda_cache_db(self) -> None:
         with contextlib.closing(sqlite3.connect(self.cache_db_path)) as conn:
             conn.execute(
@@ -448,7 +448,7 @@ class CRXMLManager:
             try:
                 response = requests.get(url, timeout=8)
             except requests.RequestException:
-                LOGGER.warning("Error de red consultando Hacienda para %s (intento %s)", ident, attempt + 1)
+                logger.warning("Error de red consultando Hacienda para %s (intento %s)", ident, attempt + 1)
                 time.sleep(0.6 * (attempt + 1))
                 continue
 
@@ -456,7 +456,7 @@ class CRXMLManager:
                 try:
                     payload = response.json()
                 except ValueError:
-                    LOGGER.warning("Respuesta JSON inválida para identificación %s", ident)
+                    logger.warning("Respuesta JSON inválida para identificación %s", ident)
                     return ""
                 name = str(payload.get("nombre") or payload.get("razonSocial") or payload.get("razon_social") or "").strip()
                 if name:
@@ -528,7 +528,7 @@ class CRXMLManager:
                 ids_to_fetch.append(ident)
 
         if ids_to_fetch and requests is not None:
-            LOGGER.info("Consultando Hacienda para %s identificaciones en paralelo.", len(ids_to_fetch))
+            logger.info("Consultando Hacienda para %s identificaciones en paralelo.", len(ids_to_fetch))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {executor.submit(self._fetch_hacienda_name, ident): ident for ident in ids_to_fetch}
                 for future in as_completed(future_map):
@@ -536,7 +536,7 @@ class CRXMLManager:
                     try:
                         fetched_name = future.result()
                     except Exception:  # noqa: BLE001
-                        LOGGER.exception("Fallo resolviendo identificación %s", ident)
+                        logger.exception("Fallo resolviendo identificación %s", ident)
                         continue
                     if fetched_name:
                         resolved_map[ident] = fetched_name.upper()
@@ -721,7 +721,7 @@ class CRXMLManager:
                             cache_hits += 1
                             continue
                         except Exception:
-                            LOGGER.warning(
+                            logger.warning(
                                 "Cache XML invalido para %s; se reparseara desde disco",
                                 xml_file.name,
                                 exc_info=True,
@@ -742,7 +742,7 @@ class CRXMLManager:
                     try:
                         row = future.result()
                     except Exception:
-                        LOGGER.exception("Error inesperado parseando %s", xml_file.name)
+                        logger.exception("Error inesperado parseando %s", xml_file.name)
                         continue
                     rows.append(row)
                     if xml_cache is not None and row.get("_process_status") == "ok":
@@ -796,10 +796,10 @@ class CRXMLManager:
                 fixed = xml_file.read_bytes().decode("iso-8859-1").encode("utf-8")
                 row = self.parse_xml_file(xml_file, _source=fixed)
                 row["_process_status"] = "ok"
-                LOGGER.debug("XML recuperado con re-encoding: %s", xml_file.name)
+                logger.debug("XML recuperado con re-encoding: %s", xml_file.name)
                 return row
             except Exception as inner:
-                LOGGER.warning("XML inválido y no recuperable %s: %s → %s", xml_file.name, exc, inner)
+                logger.warning("XML inválido y no recuperable %s: %s → %s", xml_file.name, exc, inner)
                 return {
                     "archivo": xml_file.name,
                     "ruta": str(xml_file),
@@ -809,7 +809,7 @@ class CRXMLManager:
                     "_process_status": "invalid_xml",
                 }
         except (OSError, ValueError, PermissionError) as exc:
-            LOGGER.exception("Error procesando %s", xml_file)
+            logger.exception("Error procesando %s", xml_file)
             return {
                 "archivo": xml_file.name,
                 "ruta": str(xml_file),

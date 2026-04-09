@@ -23,7 +23,7 @@ from typing import Any
 from gestor_contable.core.classification_utils import classify_transaction
 from gestor_contable.core.models import FacturaRecord
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -79,7 +79,7 @@ def _load_affinity() -> dict:
                 raw = json.loads(_AFFINITY_PATH.read_text(encoding="utf-8"))
                 _affinity_cache = raw
             except Exception:
-                LOGGER.warning("No se pudo cargar ciiu_affinity.json, usando default vacío.")
+                logger.warning("No se pudo cargar ciiu_affinity.json, usando default vacío.")
                 _affinity_cache = {"reglas": {}, "default": {"bien_es_compra": False}}
         return _affinity_cache
 
@@ -204,7 +204,7 @@ class CorteEngine:
             try:
                 item = self._clasificar_uno(record)
             except Exception:
-                LOGGER.exception("Error clasificando factura %s", record.clave)
+                logger.exception("Error clasificando factura %s", record.clave)
                 item = CorteItem(
                     record     = record,
                     categoria  = CATEGORIA_AMBIGUO,
@@ -240,7 +240,7 @@ class CorteEngine:
         catalog = self._get_vendor_catalog()
         catalog[emisor_cedula] = {"categoria": categoria, "nombre": emisor_nombre}
         self._save_vendor_catalog(catalog)
-        LOGGER.info("Decisión guardada: %s (%s) → %s", emisor_nombre, emisor_cedula, categoria)
+        logger.info("Decisión guardada: %s (%s) → %s", emisor_nombre, emisor_cedula, categoria)
 
     # ------------------------------------------------------------------
     # Clasificación de un registro
@@ -530,7 +530,7 @@ class CorteEngine:
         try:
             return self.xml_manager.extract_lineas_cabys(xml_path) or []
         except Exception:
-            LOGGER.debug("No se pudieron extraer líneas CABYS de %s", xml_path, exc_info=True)
+            logger.debug("No se pudieron extraer líneas CABYS de %s", xml_path, exc_info=True)
             return []
 
     # ------------------------------------------------------------------
@@ -572,7 +572,7 @@ class CorteEngine:
                 if caps:
                     return frozenset(str(c) for c in caps)
         except Exception:
-            LOGGER.warning("No se pudo leer corte_capitulos_extra.json", exc_info=True)
+            logger.warning("No se pudo leer corte_capitulos_extra.json", exc_info=True)
         return None
 
     def _load_vendor_catalog(self) -> dict[str, dict]:
@@ -583,7 +583,7 @@ class CorteEngine:
                 if isinstance(raw, dict):
                     return raw
         except Exception:
-            LOGGER.warning("No se pudo leer corte_proveedores.json", exc_info=True)
+            logger.warning("No se pudo leer corte_proveedores.json", exc_info=True)
         return {}
 
     def _save_vendor_catalog(self, catalog: dict) -> None:
@@ -597,7 +597,7 @@ class CorteEngine:
                 encoding="utf-8",
             )
         except Exception:
-            LOGGER.warning("No se pudo guardar corte_proveedores.json", exc_info=True)
+            logger.warning("No se pudo guardar corte_proveedores.json", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +624,7 @@ def run_corte(
     actividades = get_or_fetch_activities(client_name, client_cedula)
 
     if not actividades:
-        LOGGER.warning(
+        logger.warning(
             "Cliente '%s' sin actividades CIIU — clasificación usará solo tipo CABYS.",
             client_name,
         )

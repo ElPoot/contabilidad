@@ -7,7 +7,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from gestor_contable.core.models import FacturaRecord
-from gestor_contable.core.classifier import heal_classified_path
+from gestor_contable.core.classifier import heal_classified_path, sha256_file
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ def filter_records_by_tab(
         Lista filtrada de FacturaRecord
     """
     # Excluir registros omitidos de todas las pestañas excepto "omitidos"
-    non_omitted = [r for r in records if not r.razon_omisión]
+    non_omitted = [r for r in records if not r.razon_omision]
 
     if tab == "todas":
         return non_omitted
@@ -173,18 +173,18 @@ def filter_records_by_tab(
         # PDFs omitidos: detectados como no-facturas o con errores de extracción
         omitted = [
             r for r in records
-            if r.razon_omisión in ("non_invoice", "timeout", "extract_failed")
+            if r.razon_omision in ("non_invoice", "timeout", "extract_failed")
         ]
-        logger.debug(f"Filter omitidos: {len(omitted)} de {len(records)} registros (razon_omisión != None)")
+        logger.debug(f"Filter omitidos: {len(omitted)} de {len(records)} registros (razon_omision != None)")
         for r in omitted[:3]:  # Log first 3
-            logger.debug(f"  - {r.clave}: razon={r.razon_omisión}")
+            logger.debug(f"  - {r.clave}: razon={r.razon_omision}")
         return omitted
 
     if tab == "huerfanos":
         # PDFs huérfanos: inconsistentes que pueden ser recuperados
         huerfanos = [
             r for r in records
-            if r.razon_omisión and r.razon_omisión.startswith("orphaned_")
+            if r.razon_omision and r.razon_omision.startswith("orphaned_")
         ]
         logger.debug(f"Filter huérfanos: {len(huerfanos)} de {len(records)} registros huérfanos")
         return huerfanos
@@ -229,7 +229,7 @@ def get_tab_statistics(
         db_rec = db_records.get(clave, {})
         is_classified = _db_is_classified(db_rec)
 
-        if not r.razon_omisión:
+        if not r.razon_omision:
             # TODAS
             stats["todas"]["count"] += 1
             if is_classified:
@@ -263,12 +263,12 @@ def get_tab_statistics(
                     if not clave or len(clave) != 50 or r.estado in ("pendiente_pdf", "sin_xml") or not r.pdf_path:
                         stats["sin_clave"]["count"] += 1
 
-        # OMITIDOS (razon_omisión específica)
-        elif r.razon_omisión in ("non_invoice", "timeout", "extract_failed"):
+        # OMITIDOS (razon_omision específica)
+        elif r.razon_omision in ("non_invoice", "timeout", "extract_failed"):
             stats["omitidos"]["count"] += 1
 
         # HUERFANOS
-        elif r.razon_omisión and r.razon_omisión.startswith("orphaned_"):
+        elif r.razon_omision and r.razon_omision.startswith("orphaned_"):
             stats["huerfanos"]["count"] += 1
 
     # Calcular porcentajes finales
@@ -299,7 +299,7 @@ def create_orphaned_record(orphaned_info: dict) -> FacturaRecord:
     # Crear record con clave requerida
     record = FacturaRecord(clave=clave)
     record.estado = "huerfano"  # Estado especial
-    record.razon_omisión = f"orphaned_{motivo}"  # Marcar como huérfano
+    record.razon_omision = f"orphaned_{motivo}"  # Marcar como huérfano
     record.pdf_path = Path(ruta_actual) if ruta_actual else None
     record.emisor_nombre = "PDF HUÉRFANO ⚠️"
     record.receptor_nombre = motivo_labels.get(motivo, motivo)
@@ -437,7 +437,7 @@ def find_orphaned_pdfs(
 
             # Sanar ruta_esperada si apunta a un path que no existe
             if ruta_esperada and not Path(ruta_esperada).exists():
-                sanada = heal_classified_path(ruta_esperada, contabilidades_root)
+                sanada = heal_classified_path(Path(ruta_esperada), contabilidades_root)
                 if sanada:
                     ruta_esperada = str(sanada)
 
@@ -723,7 +723,7 @@ def find_duplicate_xmls_in_origin(
                                     xml_hash = row["xml_hash"]
                                     cache_hits += 1
                     except Exception:
-                        pass
+                        logger.debug("Error leyendo caché XML para %s; se recalculará hash.", xml_path.name)
 
                 if not xml_hash:
                     xml_hash = sha256_file(xml_path)
@@ -816,7 +816,7 @@ def find_duplicate_pdfs_within_origin(
                             pdf_hash = entry["checksum"]
                             cache_hits += 1
                 except Exception:
-                    pass
+                    logger.debug("Error leyendo caché PDF para %s; se recalculará hash.", pdf_path.name)
 
             if not pdf_hash:
                 pdf_hash = sha256_file(pdf_path)
@@ -1021,15 +1021,7 @@ def consolidate_duplicate_client_folders(
     Returns:
         (moved_count, errors): cantidad de PDFs movidos y lista de mensajes de error.
     """
-    import hashlib
     import shutil
-
-    def _sha256(path: Path) -> str:
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
 
     moved = 0
     errors: list[str] = []
@@ -1055,7 +1047,7 @@ def consolidate_duplicate_client_folders(
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest)
-                if _sha256(src) != _sha256(dest):
+                if sha256_file(src) != sha256_file(dest):
                     dest.unlink(missing_ok=True)
                     errors.append(f"SHA256 mismatch: {src.name} — no movido")
                     continue
@@ -1071,7 +1063,7 @@ def consolidate_duplicate_client_folders(
                                 db.update_ruta_destino(clave, str(dest))
                                 break
                     except Exception:
-                        pass  # BD update no es crítico; el archivo ya fue movido
+                        logger.debug("No se pudo actualizar BD para %s; el archivo ya fue movido.", src.name)
             except Exception as exc:
                 errors.append(f"Error moviendo {src.name}: {exc}")
 

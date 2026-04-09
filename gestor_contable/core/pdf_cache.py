@@ -85,10 +85,10 @@ class PDFCacheManager:
         try:
             with open(self.cache_file, "r", encoding="utf-8") as f:
                 cache = json.load(f)
-            logger.info(f"Caché de PDFs cargado: {len(cache.get('pdfs', {}))} entradas")
+            logger.info("Caché de PDFs cargado: %d entradas", len(cache.get("pdfs", {})))
             return cache
         except Exception as exc:
-            logger.warning(f"No se pudo cargar caché: {exc}. Empezando nuevo.")
+            logger.warning("No se pudo cargar caché: %s. Empezando nuevo.", exc)
             return {"version": "2", "pdfs": {}}
 
     def save_cache(self) -> None:
@@ -100,9 +100,9 @@ class PDFCacheManager:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.cache, f, indent=2, default=str)
             tmp.replace(self.cache_file)
-            logger.debug(f"Caché de PDFs guardado: {len(self.cache.get('pdfs', {}))} entradas")
+            logger.debug("Caché de PDFs guardado: %d entradas", len(self.cache.get("pdfs", {})))
         except Exception as exc:
-            logger.warning(f"No se pudo guardar caché: {exc}")
+            logger.warning("No se pudo guardar caché: %s", exc)
             if tmp is not None:
                 try:
                     tmp.unlink(missing_ok=True)
@@ -262,7 +262,7 @@ class PDFCacheManager:
         key = self._make_key(pdf_file)
         if "pdfs" in self.cache and key in self.cache["pdfs"]:
             del self.cache["pdfs"][key]
-            logger.debug(f"Removido del caché: {key}")
+            logger.debug("Removido del caché: %s", key)
 
     def clear_cache(self) -> None:
         """Limpiar todo el caché."""
@@ -282,5 +282,5 @@ class PDFCacheManager:
                     h.update(chunk)
             return h.hexdigest()
         except Exception as exc:
-            logger.debug(f"No se pudo computar checksum de {pdf_file.name}: {exc}")
+            logger.debug("No se pudo computar checksum de %s: %s", pdf_file.name, exc)
             return ""

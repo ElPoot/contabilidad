@@ -28,7 +28,7 @@ from gestor_contable.core.corte_engine import (
 from gestor_contable.core.iva_utils import apply_exchange_rate, compute_tax_base_rows, parse_decimal_value
 from gestor_contable.core.report_paths import month_name_es
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # ── Paleta Excel (idéntica al reporte de contabilidad) ────────────────────────
 _TITLE_COLOR    = "0B2B66"   # azul oscuro — nombre del cliente
@@ -485,7 +485,7 @@ def generar_corte_excel(
         sheet_name = _safe_sheet_name(label, used_names)
         ws = wb.create_sheet(title=sheet_name)
         _write_sheet(ws, items, cols, label, client_name, period_label)
-        LOGGER.info("Hoja '%s': %d filas", sheet_name, len(items))
+        logger.info("Hoja '%s': %d filas", sheet_name, len(items))
 
     if not wb.sheetnames:
         # Sin datos: crear hoja placeholder
@@ -493,7 +493,7 @@ def generar_corte_excel(
         ws.cell(1, 1).value = "No hay facturas clasificadas para este período."
 
     wb.save(output_path)
-    LOGGER.info("Corte Excel guardado en %s", output_path)
+    logger.info("Corte Excel guardado en %s", output_path)
     return output_path
 
 
