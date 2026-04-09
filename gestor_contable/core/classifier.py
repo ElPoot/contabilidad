@@ -361,7 +361,7 @@ def recover_orphaned_pdf(
         if motivo == "not_in_db":
             # PDF sin registro en BD -- simplemente eliminar
             archivo_actual.unlink()
-            logger.info("Eliminado PDF huérfano sin registro: %s", archivo_actual)
+            logger.info("Eliminado PDF huérfano sin registro: %s", str(archivo_actual))
             return True
 
         if not ruta_esperada:
@@ -503,7 +503,8 @@ def classify_record(
             return original
     except OSError:
         logger.debug(
-            "resolve() falló comparando rutas (red no accesible?); continuando con movimiento normal."
+            "resolve() falló comparando rutas para %s (red no accesible?); continuando con movimiento normal.",
+            original.name,
         )
 
     if target.exists():
