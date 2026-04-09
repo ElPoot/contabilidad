@@ -19,7 +19,7 @@ from .ors_purge import (
 )
 from .xml_manager import CRXMLManager
 from .pdf_cache import PDFCacheManager
-from .iva_utils import parse_decimal_value as _pdv_global
+from .iva_utils import parse_decimal_value
 from gestor_contable.config import is_onedrive_placeholder
 
 try:
@@ -290,7 +290,10 @@ class FacturaIndexer:
             try:
                 _ignored_filenames = set(_json.loads(_ignored_path.read_text(encoding="utf-8")).get("ignored", []))
             except Exception:
-                pass
+                logger.warning(
+                    "No se pudo leer %s; se ignorará la lista de XMLs excluidos.",
+                    _ignored_path,
+                )
 
         start_xml = time.perf_counter()
         if xml_root.exists():
@@ -432,19 +435,18 @@ class FacturaIndexer:
                         # ── Validaciones de montos (no bloquean la carga, solo reportan) ──
                         # Umbral: <₡1.00 → siempre silencio; ≥₡1.00 → solo si ≥0.10% del total
                         from decimal import Decimal as _D
-                        _pdv = _pdv_global
                         _UMBRAL_ABS = _D("1.00")
                         _UMBRAL_PCT = _D("0.10")   # 0.10% del total
 
-                        _tot = _pdv(record.total_comprobante) or _D(0)
+                        _tot = parse_decimal_value(record.total_comprobante) or _D(0)
 
                         # Validar suma de IVAs (solo si no hay iva_otros)
                         iva_otros_val = record.iva_otros.strip()
                         has_iva_otros = iva_otros_val and iva_otros_val not in ("0", "0,00", "0.00", "")
                         if not has_iva_otros:
                             _iva_cols = ["iva_1", "iva_2", "iva_4", "iva_8", "iva_13"]
-                            _suma_ivas = sum((_pdv(getattr(record, c) or "0") or _D(0)) for c in _iva_cols)
-                            _imp_t = _pdv(record.impuesto_total) or _D(0)
+                            _suma_ivas = sum((parse_decimal_value(getattr(record, c) or "0") or _D(0)) for c in _iva_cols)
+                            _imp_t = parse_decimal_value(record.impuesto_total) or _D(0)
                             _diff_iva = _suma_ivas - _imp_t
                             _abs_iva = abs(_diff_iva)
                             if _abs_iva >= _UMBRAL_ABS:
@@ -459,9 +461,9 @@ class FacturaIndexer:
                                     )
 
                         # Validar total = subtotal + impuesto + otros_cargos
-                        _sub = _pdv(record.subtotal) or _D(0)
-                        _imp = _pdv(record.impuesto_total) or _D(0)
-                        _oc  = _pdv(record.otros_cargos) or _D(0)
+                        _sub = parse_decimal_value(record.subtotal) or _D(0)
+                        _imp = parse_decimal_value(record.impuesto_total) or _D(0)
+                        _oc  = parse_decimal_value(record.otros_cargos) or _D(0)
                         _diff_tot = (_sub + _imp + _oc) - _tot
                         _abs_tot = abs(_diff_tot)
                         if _abs_tot >= _UMBRAL_ABS:
@@ -728,7 +730,7 @@ class FacturaIndexer:
                     receptor_nombre="[PDF omitido]",
                     pdf_path=pdf_path,
                     estado="sin_xml",
-                    razon_omisión=razon_final,
+                    razon_omision=razon_final,
                 )
                 records[dummy_clave] = dummy_record
                 logger.debug(f"Registro dummy creado: {dummy_clave} | razon={razon_final} | tiene_pdf={pdf_path is not None}")

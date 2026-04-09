@@ -340,9 +340,20 @@ def recover_orphaned_pdf(
     """
     try:
         clave = orphaned_info.get("clave")
-        archivo_actual = Path(orphaned_info.get("archivo"))
+        archivo_str = orphaned_info.get("archivo")
         ruta_esperada = orphaned_info.get("ruta_esperada")
         motivo = orphaned_info.get("motivo")
+
+        if not archivo_str:
+            raise ValueError(
+                f"orphaned_info carece del campo 'archivo': {orphaned_info!r}"
+            )
+        if not clave:
+            raise ValueError(
+                f"orphaned_info carece del campo 'clave': {orphaned_info!r}"
+            )
+
+        archivo_actual = Path(archivo_str)
 
         if not archivo_actual.exists():
             raise FileNotFoundError(f"Archivo no existe: {archivo_actual}")
@@ -350,7 +361,7 @@ def recover_orphaned_pdf(
         if motivo == "not_in_db":
             # PDF sin registro en BD -- simplemente eliminar
             archivo_actual.unlink()
-            logging.info(f"Eliminado PDF huérfano sin registro: {archivo_actual}")
+            logger.info("Eliminado PDF huérfano sin registro: %s", archivo_actual)
             return True
 
         if not ruta_esperada:
@@ -363,16 +374,15 @@ def recover_orphaned_pdf(
 
         # Si ya existe en destino, no hacer nada (ya está correcto)
         if archivo_actual == ruta_esperada and ruta_esperada.exists():
-            logging.info(f"PDF ya está en ubicación correcta: {ruta_esperada}")
+            logger.info("PDF ya está en ubicación correcta: %s", ruta_esperada)
             return True
 
         # Mover archivo con protocolo atomico SHA256
         try:
             safe_move_file(archivo_actual, ruta_esperada)
-            logging.info(
-                f"Recuperado PDF: {archivo_actual.name}\n"
-                f"  De: {archivo_actual}\n"
-                f"  A:  {ruta_esperada}"
+            logger.info(
+                "Recuperado PDF: %s\n  De: %s\n  A:  %s",
+                archivo_actual.name, archivo_actual, ruta_esperada,
             )
 
             # Actualizar BD
@@ -381,13 +391,13 @@ def recover_orphaned_pdf(
                 ruta_destino=str(ruta_esperada),
             )
             return True
-        except (RuntimeError, OSError):
-            pass
-
-        raise RuntimeError(f"No se pudo mover PDF después de 12 intentos")
+        except (RuntimeError, OSError) as move_err:
+            raise RuntimeError(
+                f"No se pudo mover PDF a su ubicación correcta: {move_err}"
+            ) from move_err
 
     except Exception as e:
-        logging.error(f"Error recuperando PDF {orphaned_info.get('clave')}: {e}")
+        logger.error("Error recuperando PDF %s: %s", orphaned_info.get("clave"), e)
         return False
 
 
@@ -492,7 +502,9 @@ def classify_record(
             record.estado = "clasificado"
             return original
     except OSError:
-        pass
+        logger.debug(
+            "resolve() falló comparando rutas (red no accesible?); continuando con movimiento normal."
+        )
 
     if target.exists():
         suffix = source_hash[:8]
@@ -501,7 +513,7 @@ def classify_record(
     # (2) Copiar con metadata preservada
     try:
         shutil.copy2(str(original), str(target))
-        logger.info(f"PDF copiado: {original.name} -> {target.name}")
+        logger.info("PDF copiado: %s -> %s", original.name, target.name)
     except Exception as err:
         raise RuntimeError(
             f"No se pudo copiar el PDF a la carpeta de destino.\n"
@@ -532,7 +544,7 @@ def classify_record(
             f"Intenta de nuevo."
         )
 
-    logger.info(f"SHA256 verificado: {source_hash}")
+    logger.info("SHA256 verificado: %s", source_hash)
 
     # (5) Borrar original con retry loop
     deleted = False
@@ -542,7 +554,7 @@ def classify_record(
         try:
             original.unlink()
             deleted = True
-            logger.info(f"Original eliminado después del intento {attempt + 1}")
+            logger.info("Original eliminado después del intento %d", attempt + 1)
             break
         except PermissionError as err:
             last_err = err
@@ -560,7 +572,7 @@ def classify_record(
             "El PDF fue copiado correctamente, pero no se pudo eliminar el original\n"
             "(está en uso por otra aplicación, ej: visor PDF abierto).\n"
             "La copia ha sido eliminada para evitar duplicados.\n\n"
-            "Cierra el visor de PDFs e intenta de nuevo. [Intentos: {attempt + 1}/12]"
+            f"Cierra el visor de PDFs e intenta de nuevo. [Intentos: {attempt + 1}/12]"
         ) from last_err
 
     # (6) Registrar en BD

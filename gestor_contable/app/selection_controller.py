@@ -98,12 +98,12 @@ def build_single_vm(
                 "XML sin PDF\n\nPresiona \u00abCrear PDF\u00bb para generar\n"
                 "una factura a partir de los datos del XML."
             )
-        elif r.razon_omisión:
+        elif r.razon_omision:
             razon_text = {
                 "non_invoice": "Detectado como no-factura (borrador, cat\u00e1logo, comunicado, etc.)",
                 "timeout": "Timeout durante extracci\u00f3n de clave",
                 "extract_failed": "Error al extraer informaci\u00f3n del PDF",
-            }.get(r.razon_omisión, "PDF omitido")
+            }.get(r.razon_omision, "PDF omitido")
             vm.viewer_release_message = f"\u2298 PDF Omitido\n\n{razon_text}"
 
     # Proveedor
@@ -128,7 +128,7 @@ def build_single_vm(
         vm.btn_classify_enabled = False
         vm.btn_classify_text = "\u2298 No clasificable"
         vm.block_reason = "Recupera el PDF antes de clasificarlo."
-    elif r.razon_omisión:
+    elif r.razon_omision:
         vm.btn_link_visible = True
         vm.btn_delete_visible = True
         vm.btn_classify_enabled = False
@@ -137,7 +137,7 @@ def build_single_vm(
             "non_invoice": "El PDF fue marcado como no factura y requiere revisión manual.",
             "timeout": "La extracción del PDF excedió el tiempo permitido.",
             "extract_failed": "No se pudo extraer información útil del PDF.",
-        }.get(r.razon_omisión, "Este PDF fue omitido y no puede clasificarse todavía.")
+        }.get(r.razon_omision, "Este PDF fue omitido y no puede clasificarse todavía.")
     elif r.estado == "pendiente_pdf":
         vm.btn_create_pdf_visible = True
         vm.btn_classify_text = "Clasificar sin PDF"

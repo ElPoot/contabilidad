@@ -49,7 +49,7 @@ class FacturaRecord:
     # clasificado    -> ya fue clasificado (segun BD)
 
     # Razon de omisión (si el PDF fue omitido)
-    razon_omisión: str | None = None
+    razon_omision: str | None = None
     # None         -> no fue omitido
     # "non_invoice" -> detectado como no-factura (borrador, catálogo, etc.)
     # "timeout"    -> timeout durante extracción

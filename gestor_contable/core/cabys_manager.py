@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 try:
     import requests as _requests
@@ -399,7 +399,7 @@ class CABYSManager:
 
         for q_idx, term in enumerate(queries):
             if stop_event and stop_event.is_set():
-                LOGGER.info("Descarga CABYS cancelada por el usuario.")
+                logger.info("Descarga CABYS cancelada por el usuario.")
                 break
 
             if progress_callback:
@@ -412,7 +412,7 @@ class CABYSManager:
             items = self._fetch_bulk_query(term)
             if items is None:
                 queries_error += 1
-                LOGGER.warning("Query CABYS '%s' falló.", term)
+                logger.warning("Query CABYS '%s' falló.", term)
                 continue
 
             queries_ok += 1
@@ -423,7 +423,7 @@ class CABYSManager:
                 seen.add(codigo)
                 all_records.append(self._normalize_api_item(codigo, item))
 
-            LOGGER.debug("Query '%s': %d items, acumulado único: %d", term, len(items), len(seen))
+            logger.debug("Query '%s': %d items, acumulado único: %d", term, len(items), len(seen))
             # Pausa cortés para no saturar la API
             time.sleep(0.3)
 
@@ -448,7 +448,7 @@ class CABYSManager:
             "queries_ok": queries_ok,
             "queries_error": queries_error,
         }
-        LOGGER.info(
+        logger.info(
             "Descarga CABYS completa: %d únicos, %d insertados, %d queries OK, %d errores",
             len(seen), inserted, queries_ok, queries_error,
         )
@@ -555,7 +555,7 @@ class CABYSManager:
         if not excel_path.exists():
             raise FileNotFoundError(f"No se encontró: {excel_path}")
 
-        LOGGER.info("Importando CABYS desde Excel: %s", excel_path)
+        logger.info("Importando CABYS desde Excel: %s", excel_path)
 
         # ---- Leer hoja "Catálogo" (row 1 = encabezados, row 0 = vacío) ----
         # Buscamos la hoja que contiene "cat" en el nombre (insensible a mayúsc/acento)
@@ -567,7 +567,7 @@ class CABYSManager:
         # Leer con header en fila 1 (índice 1 porque fila 0 está vacía)
         df = pd.read_excel(excel_path, sheet_name=hoja, header=1, dtype=str)
         total_filas = len(df)
-        LOGGER.info("Hoja '%s': %d filas", hoja, total_filas)
+        logger.info("Hoja '%s': %d filas", hoja, total_filas)
 
         # ---- Identificar columnas clave ------------------------------------
         # El Excel tiene pares (Categoría N, Descripción N) para N=1..9
@@ -587,7 +587,7 @@ class CABYSManager:
                 f"Columnas detectadas: {cols[:10]}..."
             )
 
-        LOGGER.info("Columna CABYS: '%s', descripción: '%s', impuesto: '%s'",
+        logger.info("Columna CABYS: '%s', descripción: '%s', impuesto: '%s'",
                     col_cabys, col_descripcion, col_impuesto)
 
         # ---- Procesar filas -----------------------------------------------
@@ -662,7 +662,7 @@ class CABYSManager:
             "nuevos":      despues - antes,
             "hoja":        hoja,
         }
-        LOGGER.info("Excel CABYS importado: %d insertados, %d nuevos, %d omitidos",
+        logger.info("Excel CABYS importado: %d insertados, %d nuevos, %d omitidos",
                     insertados, despues - antes, omitidos)
         return resultado
 
