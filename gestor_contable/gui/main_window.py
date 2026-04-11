@@ -43,6 +43,7 @@ from gestor_contable.core.classifier import (
     build_dest_folder,
     classify_record,
     heal_classified_path,
+    has_valid_fecha_emision,
 )
 from gestor_contable.core.duplicates_quarantine import (
     DuplicatesQuarantineDB,
@@ -610,6 +611,7 @@ class App3Window(ctk.CTk):
             # Recalcular registros (fuerza rescan de PDFs, preservar rango de fechas activo)
             self._load_session(self.session, reset_dates=False)
         except Exception as e:
+            logger.exception("Error limpiando cache de PDFs para %s", getattr(self.session, "folder", None))
             self._show_error("Error al limpiar cache", str(e))
 
     def _load_session(self, session: ClientSession, reset_dates: bool = True):
@@ -1940,6 +1942,9 @@ class App3Window(ctk.CTk):
             self._classify_panel.set_path_preview("")
             return
         # INGRESOS y SIN_RECEPTOR no necesitan validación (sin subtipo/cuenta/prov)
+        if not has_valid_fecha_emision(fecha):
+            self._classify_panel.set_path_preview("")
+            return
 
         try:
             dest  = build_dest_folder(self.session.folder, fecha, cat, subtipo, cuenta, prov)
@@ -1947,6 +1952,15 @@ class App3Window(ctk.CTk):
             snippet = (".../" + "/".join(parts[-4:]) + "/") if len(parts) > 4 else str(dest) + "/"
             self._classify_panel.set_path_preview(snippet)
         except Exception:
+            logger.debug(
+                "No se pudo calcular path preview de destino (fecha=%r, categoria=%r, subtipo=%r, cuenta=%r, proveedor=%r)",
+                fecha,
+                cat,
+                subtipo,
+                cuenta,
+                prov,
+                exc_info=True,
+            )
             self._classify_panel.set_path_preview("")
 
     def _on_filter(self):
@@ -2429,6 +2443,7 @@ class App3Window(ctk.CTk):
             d = _dt.strptime(fecha.strip(), "%d/%m/%Y")
             return f"{d.month:02d}-{_MESES[d.month]}"
         except Exception:
+            logger.debug("No se pudo convertir fecha %r a mes de Contabilidades", fecha, exc_info=True)
             return ""
 
     def _apply_rename_fixes(self, renames: list[dict]):
@@ -3130,6 +3145,20 @@ class App3Window(ctk.CTk):
             )
             return
 
+        invalid_fecha = [r for r in all_selected if not has_valid_fecha_emision(r.fecha_emision)]
+        if invalid_fecha:
+            detalles = "\n".join(
+                f"- {((r.emisor_nombre or r.clave or 'Registro')[:60])} | fecha={r.fecha_emision!r}"
+                for r in invalid_fecha[:5]
+            )
+            suffix = f"\n... y {len(invalid_fecha) - 5} más" if len(invalid_fecha) > 5 else ""
+            self._show_warning(
+                "Fecha fiscal inválida",
+                "No se puede clasificar sin fecha de emisión válida (DD/MM/AAAA).\n\n"
+                f"{detalles}{suffix}"
+            )
+            return
+
         form_values = self._classify_panel.get_form_values()
         cat = form_values["cat"].strip().upper()
         subtipo = form_values["subtipo"].strip().upper() if cat in ("GASTOS", "OGND") else ""
@@ -3307,6 +3336,20 @@ class App3Window(ctk.CTk):
 
         if not registros_a_clasificar:
             self._show_info("Sin registros", f"No hay registros pendientes en {self._active_tab}")
+            return
+
+        invalid_fecha = [r for r in registros_a_clasificar if not has_valid_fecha_emision(r.fecha_emision)]
+        if invalid_fecha:
+            detalles = "\n".join(
+                f"- {((r.emisor_nombre or r.clave or 'Registro')[:60])} | fecha={r.fecha_emision!r}"
+                for r in invalid_fecha[:5]
+            )
+            suffix = f"\n... y {len(invalid_fecha) - 5} más" if len(invalid_fecha) > 5 else ""
+            self._show_warning(
+                "Fecha fiscal inválida",
+                "No se puede auto-clasificar registros sin fecha de emisión válida (DD/MM/AAAA).\n\n"
+                f"{detalles}{suffix}"
+            )
             return
 
         # Pedir confirmación

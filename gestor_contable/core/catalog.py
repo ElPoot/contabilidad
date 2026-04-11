@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 # Archivo .dm del despacho -- plantilla para nuevos clientes
@@ -8,6 +9,8 @@ _DM_PATH = Path(__file__).parent.parent.parent / "catalogo_de_cuentas.dm"
 
 # Tipos fijos de OGND -- no vienen del catálogo
 _OGND_TIPOS = ["OGND", "DNR", "ORS", "CNR"]
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_dm(dm_path: Path) -> dict:
@@ -157,10 +160,19 @@ class CatalogManager:
                         return self
             except Exception:
                 backup = self.path.with_suffix(".invalid.json")
+                logger.exception(
+                    "Catálogo inválido en %s; intentando respaldarlo como %s",
+                    self.path,
+                    backup,
+                )
                 try:
                     self.path.replace(backup)
                 except Exception:
-                    pass
+                    logger.exception(
+                        "No se pudo respaldar el catálogo inválido %s como %s",
+                        self.path,
+                        backup,
+                    )
 
         self._data = _parse_dm(_DM_PATH)
         self.save()

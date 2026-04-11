@@ -14,6 +14,9 @@ from .models import FacturaRecord
 
 logger = logging.getLogger(__name__)
 
+_INVALID_FECHA_WARNED_VALUES: set[str] = set()
+_INVALID_FECHA_EXPECTED_SENTINELS = {"", "sin registro en bd"}
+
 _MESES = {
     1: "ENERO",    2: "FEBRERO",  3: "MARZO",     4: "ABRIL",
     5: "MAYO",     6: "JUNIO",    7: "JULIO",      8: "AGOSTO",
@@ -90,6 +93,66 @@ def _sanitize_folder(name: str) -> str:
     return clean[:100] or "SIN_NOMBRE"
 
 
+def normalize_fecha_emision(fecha_emision: object) -> str:
+    return "" if fecha_emision is None else str(fecha_emision).strip()
+
+
+def parse_fecha_emision(fecha_emision: object) -> datetime | None:
+    normalized = normalize_fecha_emision(fecha_emision)
+    if not normalized:
+        return None
+    try:
+        return datetime.strptime(normalized, "%d/%m/%Y")
+    except ValueError:
+        return None
+
+
+def has_valid_fecha_emision(fecha_emision: object) -> bool:
+    return parse_fecha_emision(fecha_emision) is not None
+
+
+def invalid_fecha_emision_message(fecha_emision: object) -> str:
+    normalized = normalize_fecha_emision(fecha_emision)
+    if not normalized:
+        return (
+            "La factura no tiene fecha de emisión válida.\n"
+            "No se puede clasificar sin una fecha fiscal en formato DD/MM/AAAA."
+        )
+    return (
+        f"La fecha de emisión '{normalized}' no es válida.\n"
+        "No se puede clasificar sin una fecha fiscal en formato DD/MM/AAAA."
+    )
+
+
+def _log_invalid_fecha_emision_once(fecha_emision: object) -> None:
+    raw_value = "" if fecha_emision is None else str(fecha_emision)
+    normalized = normalize_fecha_emision(fecha_emision)
+    dedupe_key = normalized.casefold()
+    if dedupe_key in _INVALID_FECHA_WARNED_VALUES:
+        return
+    _INVALID_FECHA_WARNED_VALUES.add(dedupe_key)
+
+    if dedupe_key in _INVALID_FECHA_EXPECTED_SENTINELS:
+        logger.debug(
+            "Fecha de emision no util para clasificacion %r; se bloqueara la clasificacion hasta tener una fecha valida",
+            raw_value,
+        )
+        return
+
+    logger.warning(
+        "Fecha de emision invalida %r para clasificacion; se bloqueara la clasificacion hasta corregirla",
+        raw_value,
+    )
+
+
+def require_valid_fecha_emision(fecha_emision: object) -> datetime:
+    dt = parse_fecha_emision(fecha_emision)
+    if dt is not None:
+        return dt
+    _log_invalid_fecha_emision_once(fecha_emision)
+    raise RuntimeError(invalid_fecha_emision_message(fecha_emision))
+
+
 def build_dest_folder(
     session_folder: Path,
     fecha_emision: str,
@@ -110,10 +173,7 @@ def build_dest_folder(
       INGRESOS/
       SIN_RECEPTOR/
     """
-    try:
-        dt = datetime.strptime(fecha_emision.strip(), "%d/%m/%Y")
-    except (ValueError, AttributeError):
-        dt = datetime.now()
+    dt = require_valid_fecha_emision(fecha_emision)
 
     mes_str = f"{dt.month:02d}-{_MESES[dt.month]}"
     # session_folder = Z:/DATA/PF-{year}/CLIENTES/{CLIENT_NAME}
@@ -132,8 +192,14 @@ def build_dest_folder(
                     if d.is_dir() and d.name.startswith(client_name):
                         client_name = d.name
                         break
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning(
+                    "No se pudo leer %s para ajustar nombre de cliente %s: %s",
+                    month_dir,
+                    client_name,
+                    exc,
+                    exc_info=True,
+                )
 
     base = month_dir / client_name
 
@@ -404,8 +470,14 @@ def recover_orphaned_pdf(
                 ruta_destino=str(ruta_esperada),
             )
             return True
-        except (RuntimeError, OSError):
-            pass
+        except (RuntimeError, OSError) as exc:
+            logger.debug(
+                "recover_orphaned_pdf: intento %s/12 fallido para %s: %s",
+                attempt + 1,
+                orphaned_info.get("clave"),
+                exc,
+                exc_info=(attempt == 0),
+            )
 
         raise RuntimeError(f"No se pudo mover PDF después de 12 intentos")
 

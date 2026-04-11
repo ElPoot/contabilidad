@@ -55,8 +55,8 @@ def _find_onedrive_path() -> Path | None:
             f for f in home.iterdir()
             if f.is_dir() and f.name.lower().startswith("onedrive")
         ]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("No se pudo escanear %s buscando OneDrive: %s", home, exc, exc_info=True)
 
     if candidates:
         chosen = sorted(candidates)[0]
@@ -137,7 +137,13 @@ def is_onedrive_placeholder(path: Path) -> bool:
         if attrs == -1:  # INVALID_FILE_ATTRIBUTES — archivo no existe
             return False
         return bool(attrs & _PLACEHOLDER_MASK)
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "is_onedrive_placeholder(%s): fallo consultando atributos Win32, retornando False: %s",
+            path,
+            exc,
+            exc_info=True,
+        )
         return False
 
 

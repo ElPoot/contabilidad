@@ -42,8 +42,8 @@ def _detect_onedrive() -> str:
         )
         if candidates:
             return str(candidates[0])
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Auto-deteccion de OneDrive fallida en %s: %s", home, exc, exc_info=True)
     return ""
 
 
@@ -274,8 +274,13 @@ class SetupWindow(ctk.CTk):
             if _LOCAL_SETTINGS.exists():
                 try:
                     existing = json.loads(_LOCAL_SETTINGS.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "No se pudo leer %s; se sobrescribirá con la nueva configuración: %s",
+                        _LOCAL_SETTINGS,
+                        exc,
+                        exc_info=True,
+                    )
             existing["subst_source"] = str(p)
             _LOCAL_SETTINGS.write_text(
                 json.dumps(existing, ensure_ascii=False, indent=2),

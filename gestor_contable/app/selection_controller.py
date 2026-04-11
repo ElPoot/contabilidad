@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from gestor_contable.app.selection_vm import SelectionVM
+from gestor_contable.core.classifier import has_valid_fecha_emision
 from gestor_contable.core.classification_utils import get_hacienda_review_status
 from gestor_contable.core.iva_utils import parse_decimal_value
 from gestor_contable.core.models import FacturaRecord
@@ -25,6 +26,10 @@ _DOC_TYPE_LABELS = {
     "Nota de Débito": "Nota de Débito",
     "Tiquete": "Tiquete",
 }
+
+_INVALID_FECHA_BLOCK_REASON = (
+    "La factura no tiene una fecha fiscal válida (DD/MM/AAAA) y no puede clasificarse."
+)
 
 
 def _format_doc_amount(value: str, moneda: str) -> str:
@@ -138,6 +143,12 @@ def build_single_vm(
             "timeout": "La extracción del PDF excedió el tiempo permitido.",
             "extract_failed": "No se pudo extraer información útil del PDF.",
         }.get(r.razon_omisión, "Este PDF fue omitido y no puede clasificarse todavía.")
+    elif not has_valid_fecha_emision(r.fecha_emision):
+        vm.btn_classify_enabled = False
+        vm.btn_classify_text = "\u2298 No clasificable"
+        vm.block_reason = _INVALID_FECHA_BLOCK_REASON
+        if r.estado == "pendiente_pdf":
+            vm.btn_create_pdf_visible = True
     elif r.estado == "pendiente_pdf":
         vm.btn_create_pdf_visible = True
         vm.btn_classify_text = "Clasificar sin PDF"
@@ -201,6 +212,13 @@ def build_multi_vm(records: list[FacturaRecord]) -> SelectionVM:
         vm.btn_classify_visible = False
         vm.btn_delete_visible = True
         vm.block_reason = ""
+        return vm
+
+    invalid_fecha = [r for r in records if not has_valid_fecha_emision(r.fecha_emision)]
+    if invalid_fecha:
+        vm.btn_classify_enabled = False
+        vm.btn_classify_text = "\u2298 Lote bloqueado"
+        vm.block_reason = "El lote incluye facturas sin fecha fiscal válida (DD/MM/AAAA)."
         return vm
 
     hacienda_statuses = {

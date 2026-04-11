@@ -289,8 +289,13 @@ class FacturaIndexer:
         if _ignored_path.exists():
             try:
                 _ignored_filenames = set(_json.loads(_ignored_path.read_text(encoding="utf-8")).get("ignored", []))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "No se pudo leer %s; se continuará sin exclusiones manuales de XML: %s",
+                    _ignored_path,
+                    exc,
+                    exc_info=True,
+                )
 
         start_xml = time.perf_counter()
         if xml_root.exists():

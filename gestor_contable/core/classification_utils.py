@@ -701,6 +701,7 @@ def find_duplicate_xmls_in_origin(
     sha256_groups = {}
     cache_hits = 0
     processed = 0
+    xml_cache_read_failures = 0
 
     try:
         for xml_path in xml_folder.rglob("*.xml"):
@@ -722,8 +723,15 @@ def find_duplicate_xmls_in_origin(
                                 if "xml_hash" in row:
                                     xml_hash = row["xml_hash"]
                                     cache_hits += 1
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        xml_cache_read_failures += 1
+                        if xml_cache_read_failures <= 3:
+                            logger.warning(
+                                "No se pudo reutilizar caché XML para %s: %s",
+                                xml_path,
+                                exc,
+                                exc_info=(xml_cache_read_failures == 1),
+                            )
 
                 if not xml_hash:
                     xml_hash = sha256_file(xml_path)
@@ -736,6 +744,12 @@ def find_duplicate_xmls_in_origin(
     finally:
         if xml_cache:
             xml_cache.close()
+
+    if xml_cache_read_failures:
+        logger.warning(
+            "Escaneo duplicados XML: %s fallo(s) leyendo caché; se recalculó SHA256 para los archivos afectados.",
+            xml_cache_read_failures,
+        )
 
     # Filtrar solo grupos con 2+ copias
     for sha256, copias in sha256_groups.items():
@@ -799,6 +813,7 @@ def find_duplicate_pdfs_within_origin(
     sha256_groups: dict[str, list[Path]] = {}
     cache_hits = 0
     processed = 0
+    pdf_cache_read_failures = 0
 
     for pdf_path in pdf_folder.rglob("*.pdf"):
         try:
@@ -815,8 +830,15 @@ def find_duplicate_pdfs_within_origin(
                         if abs(stat.st_mtime - entry.get("mtime", 0)) < 0.01 and stat.st_size == entry.get("size", -1):
                             pdf_hash = entry["checksum"]
                             cache_hits += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    pdf_cache_read_failures += 1
+                    if pdf_cache_read_failures <= 3:
+                        logger.warning(
+                            "No se pudo reutilizar caché PDF para %s: %s",
+                            pdf_path,
+                            exc,
+                            exc_info=(pdf_cache_read_failures == 1),
+                        )
 
             if not pdf_hash:
                 pdf_hash = sha256_file(pdf_path)
@@ -824,6 +846,12 @@ def find_duplicate_pdfs_within_origin(
             sha256_groups.setdefault(pdf_hash, []).append(pdf_path)
         except Exception as e:
             logger.warning(f"No se pudo calcular SHA256 de {pdf_path}: {e}")
+
+    if pdf_cache_read_failures:
+        logger.warning(
+            "Escaneo duplicados PDF origen: %s fallo(s) leyendo caché; se recalculó SHA256 para los archivos afectados.",
+            pdf_cache_read_failures,
+        )
 
     for sha256, copias in sha256_groups.items():
         if len(copias) >= 2:
@@ -891,7 +919,15 @@ def find_renamed_client_folders(
             bucket = sample_by_month.setdefault(mes, [])
             if len(bucket) < 8:   # muestra pequeña por mes, no iterar todo
                 bucket.append((p, relative_after_client))
-        except (StopIteration, Exception):
+        except StopIteration:
+            continue
+        except Exception as exc:
+            logger.debug(
+                "Error muestreando registro clasificado %s para detectar mes/carpeta: %s",
+                p,
+                exc,
+                exc_info=True,
+            )
             continue
 
     if not sample_by_month:

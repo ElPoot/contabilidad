@@ -950,8 +950,10 @@ class SessionView(ctk.CTkFrame):
                     session = resolve_client_session(cedula, allow_missing=True)
                     self.after(0, lambda s=session: self._on_resolve_ok(s, new_client=True, gen=gen))
                 except Exception as exc2:
+                    logger.exception("No se pudo resolver sesion allow_missing para cédula %s", cedula)
                     self.after(0, lambda e=exc2: self._on_resolve_error(str(e), gen))
             except Exception as exc:
+                logger.exception("No se pudo resolver sesion para cédula %s", cedula)
                 self.after(0, lambda e=exc: self._on_resolve_error(str(e), gen))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1008,6 +1010,7 @@ class SessionView(ctk.CTkFrame):
                 # Login directo: sin paso extra de "Continuar"
                 self.after(0, lambda s=session: self._on_resolved(s))
             except Exception as exc:
+                logger.exception("No se pudo resolver sesion desde tarjeta para cédula %s", cedula)
                 self.after(0, lambda e=exc: self._on_resolve_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1024,6 +1027,7 @@ class SessionView(ctk.CTkFrame):
                     _create_client_folder(session)
                     self.after(0, lambda s=session: self._on_resolved(s))
                 except Exception as exc:
+                    logger.exception("No se pudo crear carpeta de cliente para %s", getattr(session, "cedula", None))
                     self.after(0, lambda e=exc: self._on_resolve_error(str(e)))
 
             threading.Thread(target=worker, daemon=True).start()

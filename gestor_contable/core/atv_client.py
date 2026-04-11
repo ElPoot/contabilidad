@@ -57,7 +57,8 @@ def has_credentials() -> bool:
         u = keyring.get_password(_SERVICE, _KEY_USUARIO)
         c = keyring.get_password(_SERVICE, _KEY_CLAVE)
         return bool(u and c)
-    except Exception:
+    except Exception as exc:
+        logger.exception("Fallo de keyring al verificar credenciales ATV: %s", exc)
         return False
 
 
@@ -65,7 +66,8 @@ def get_usuario() -> str:
     """Retorna el usuario guardado (para mostrar en UI), o cadena vacía."""
     try:
         return keyring.get_password(_SERVICE, _KEY_USUARIO) or ""
-    except Exception:
+    except Exception as exc:
+        logger.exception("Fallo de keyring al obtener usuario: %s", exc)
         return ""
 
 
@@ -183,8 +185,13 @@ def query_invoice_status(clave: str) -> dict:
         body = ""
         try:
             body = resp.text[:300]
-        except Exception:
-            pass
+        except Exception as exc:
+            body = f"<body no legible: {type(exc).__name__}: {exc}>"
+            logger.warning(
+                "No se pudo leer body de error ATV para clave %s...",
+                clave[:20],
+                exc_info=True,
+            )
         x_error = resp.headers.get("X-Error-Cause", "")
         result["error"] = f"ATV respondio HTTP {resp.status_code}"
         logger.error("ATV HTTP %s para clave %s... | X-Error-Cause=%s | body=%s",
