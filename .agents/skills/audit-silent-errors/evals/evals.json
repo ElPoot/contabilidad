@@ -1,0 +1,17 @@
+{
+  "skill_name": "audit-silent-errors",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Audita observabilidad en gestor_contable/gui/main_window.py. Busca Grep patterns: 'except Exception:', 'except:' (desnudo), 'except.*pass'. Enfócate en métodos de carga de datos (~líneas 50-200, 3500-4200). Para cada except encontrado: ¿hay logger.error()? ¿Usuario ve error en UI? ¿Se pierden detalles del error (traceback, contexto)?",
+      "expected_output": "Lista de excepciones silenciadas. Clasificar por severidad. Tareas: agregar logging y user feedback.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Audita observabilidad en gestor_contable/core/xml_manager.py y gestor_contable/core/classification_utils.py. Busca API calls (requests.get/post) y loops que procesan registros. ¿Hay try-except sin logging? ¿ParseError continúa loop sin registrar qué falló? Identifica excepciones que traguen información sin dejar rastro.",
+      "expected_output": "Reporte de silencios críticos. Tareas: logger.exception() con contexto completo (archivo, clave, linea de error).",
+      "files": []
+    }
+  ]
+}

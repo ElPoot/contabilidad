@@ -1,0 +1,17 @@
+{
+  "skill_name": "audit-fiscal-keys",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Audita extracción de clave fiscal en gestor_contable/core/factura_index.py, función _extract_clave_from_pdf(). Busca el ORDEN de estrategias: ¿filename primero o XML primero? Verifica que sea XML → fallback a PDF. Busca cómo maneja múltiples claves en un PDF. ¿Usa primera o última? Para NC con 2 claves (original + NC), debe usar ÚLTIMA.",
+      "expected_output": "Reporte detallado del orden de extracción. Si está mal (filename primero), reporta como CRITICO. Tareas de corrección.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Audita tipo_documento en gestor_contable/core/models.py (FacturaRecord) y gestor_contable/core/factura_index.py. ¿Se determina por root.tag del XML o por filename/sufijo (_NC, _respuesta)? Busca Grep: 'root.tag', 'FacturaElectronica', 'NotaCreditoElectronica'. Verifica que tipo_documento NUNCA se lea de filename.",
+      "expected_output": "Si se usa filename para tipo, reporta como CRITICO (viola CLAUDE.md rule). Tareas: crear tipo_documento_from_xml field.",
+      "files": []
+    }
+  ]
+}

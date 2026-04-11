@@ -1,0 +1,17 @@
+{
+  "skill_name": "audit-test-coverage",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Audita cobertura de tests en el repositorio. Busca: ¿existe gestor_contable/tests/ directorio? ¿Contiene archivos test_*.py? Busca Grep: 'import pytest', 'import unittest', 'conftest.py'. Verifica si hay .github/workflows con job de tests. Reporta status: tests automatizados sí/no, y si existen, qué funciones críticas están cubiertas.",
+      "expected_output": "Status de tests automatizados. Si no existen: CRITICO. Si existen parciales: lista qué funciones críticas faltan cobertura (classify_record, flatten_xml_stream, _extract_clave_from_pdf, fetch_from_hacienda).",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Si no hay tests automatizados: ¿existe TESTING.md o matriz de testing manual en CLAUDE.md? Busca Grep: 'TESTING.md', 'test-strategy', 'validación manual', 'matriz'. Verifica si hay checklist documentada: Load client, change period, classify, export Excel, sanitize, etc. Reporta si la matriz está actualizada y cómo se ejecuta antes de release.",
+      "expected_output": "Status de validación manual. Si no hay documentación: tarea crear TESTING.md. Si existe: verificar que cover cambios recientes.",
+      "files": []
+    }
+  ]
+}

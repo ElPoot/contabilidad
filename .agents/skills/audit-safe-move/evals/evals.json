@@ -1,0 +1,17 @@
+{
+  "skill_name": "audit-safe-move",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Revisa el código de gestor_contable/core/classifier.py y gestor_contable/gui/main_window.py. Verifica que el protocolo atómico SHA256 se respete en classify_record(). Busca indicadores de violación: copy2+unlink sin validación, PermissionError retry, registros en SQLite. Reporta hallazgos con severidad y tareas de corrección.",
+      "expected_output": "Reporte de auditoría con HALLAZGOS, TAREAS, VEREDICTO. Indiquemos exactamente qué líneas violan el protocolo (si existen) o si el protocolo está correctamente implementado.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Audita el movimiento de comprobantes en las funciones de purga: gestor_contable/core/ors_purge.py, gestor_contable/core/duplicates_quarantine.py y gestor_contable/core/receptor_purge.py. Busca si usan safe_move_file() o shutil.move() directo. Reporta qué archivos tienen riesgo de pérdida de comprobantes.",
+      "expected_output": "Reporte estructurado con archivos afectados, líneas exactas de código problemático, y cómo cambiar a protocolo seguro.",
+      "files": []
+    }
+  ]
+}

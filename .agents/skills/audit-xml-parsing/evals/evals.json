@@ -1,0 +1,17 @@
+{
+  "skill_name": "audit-xml-parsing",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Audita el parser XML en gestor_contable/core/xml_manager.py. Busca la función _safe_parse_xml_file() o flatten_xml_stream(). Verifica si intenta fallback a Latin-1 cuando UTF-8 falla. Busca Grep patterns de ParseError handling. Reporta si hay XMLs que fallan sin recuperación (FAPEMO case).",
+      "expected_output": "Reporte con análisis de encoding strategy. ¿Hay fallbacks? ¿Se loguean ParseError con contexto? Tareas de corrección si faltan.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Revisa gestor_contable/core/factura_index.py líneas ~280-350 donde se recopilan parse_errors. ¿Cómo se reportan los XMLs que fallaron? ¿Hay información suficiente para debuggear (línea:columna)? Audita si el sistema permite descubrir patrones de corrupción por emisor (primeros 8 dígitos del nombre = cédula).",
+      "expected_output": "Análisis de observabilidad de ParseError. Si faltan detalles, tareas para mejorar logging.",
+      "files": []
+    }
+  ]
+}
