@@ -274,9 +274,13 @@ def _write_rechazados_sheet(
         else pd.Series([""] * len(sheet_df), index=sheet_df.index)
     )
 
+    def _sort_block(sdf):
+        cols = [c for c in ("emisor_nombre", "fecha_emision") if c in sdf.columns]
+        return sdf.sort_values(cols) if cols else sdf
+
     block_defs = [
-        ("Rechazados Ingresos", sheet_df.loc[tx_series.eq("ingreso")].copy()),
-        ("Rechazados Egresos", sheet_df.loc[~tx_series.eq("ingreso")].copy()),
+        ("Rechazados Ingresos", _sort_block(sheet_df.loc[tx_series.eq("ingreso")].copy())),
+        ("Rechazados Egresos",  _sort_block(sheet_df.loc[~tx_series.eq("ingreso")].copy())),
     ]
 
     tipo_idx = (display_cols.index("tipo_documento") + 1) if "tipo_documento" in display_cols else None
@@ -423,7 +427,7 @@ def _write_gasto_grouped(
     subtotal_font = Font(bold=True)
 
     group_cols = [c for c in ("subtipo", "nombre_cuenta") if c in sheet_df.columns]
-    sort_cols  = group_cols + (["fecha_emision"] if "fecha_emision" in sheet_df.columns else [])
+    sort_cols  = group_cols + [c for c in ("emisor_nombre", "fecha_emision") if c in sheet_df.columns]
     sorted_df  = sheet_df.sort_values(sort_cols) if sort_cols else sheet_df
 
     def _safe(v):
@@ -938,6 +942,9 @@ def export_period_report(
 
             visible_cols_filtered = _filter_iva_cols(visible_cols_base, sheet_df)
 
+            _sort_simple = [c for c in ("emisor_nombre", "fecha_emision") if c in sheet_df.columns]
+            if _sort_simple:
+                sheet_df = sheet_df.sort_values(_sort_simple)
             display_df = sheet_df[visible_cols_filtered].rename(
                 columns={col: pretty_headers.get(col, col.replace("_", " ").title()) for col in visible_cols_filtered}
             )
