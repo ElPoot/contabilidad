@@ -1361,6 +1361,20 @@ class App3Window(ctk.CTk):
         )
         self._btn_purge_ors.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
 
+        self._btn_ors_classify_manual = ctk.CTkButton(
+            ors_inner,
+            text="Clasificar como Gasto",
+            font=F_BUTTON(),
+            fg_color=WARNING,
+            hover_color="#d97706",
+            text_color="#0d1a18",
+            corner_radius=10,
+            height=36,
+            state="disabled",
+            command=self._on_ors_classify_manual,
+        )
+        self._btn_ors_classify_manual.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
+
         self._ors_history_lbl = tk.Label(
             ors_inner,
             text="Ver historial de purgas",
@@ -1370,7 +1384,7 @@ class App3Window(ctk.CTk):
             cursor="hand2",
             anchor="w",
         )
-        self._ors_history_lbl.grid(row=2, column=0, sticky="w", padx=12, pady=(0, 10))
+        self._ors_history_lbl.grid(row=3, column=0, sticky="w", padx=12, pady=(0, 10))
         self._ors_history_lbl.bind("<Button-1>", lambda _e: self._show_ors_purge_history())
 
         self._ors_frame = ors_inner
@@ -1827,6 +1841,13 @@ class App3Window(ctk.CTk):
         if tx_kind == "sin_receptor":
             return {"categoria": "SIN_RECEPTOR", "subtipo": ""}
         if tx_kind == "ors":
+            db_rec = self._db_records.get(record.clave or "", {})
+            # Override manual activo: el contador decidió clasificarlo como gasto propio
+            if db_rec.get("ors_manual_override") == "manual":
+                return None
+            # Ya clasificado en BD con categoría distinta a OGND: respetar esa decisión
+            if db_rec.get("estado") == "clasificado" and db_rec.get("categoria", "OGND") != "OGND":
+                return None
             return {"categoria": "OGND", "subtipo": "ORS"}
         return None
 
@@ -1840,8 +1861,26 @@ class App3Window(ctk.CTk):
                 forced_cat=forced["categoria"],
                 forced_subtipo=forced.get("subtipo", ""),
             )
+        else:
+            self._classify_panel.sync_category(manual_cats)
+        self._update_ors_classify_manual_btn(record)
+
+    def _update_ors_classify_manual_btn(self, record: FacturaRecord | None):
+        """Habilita el botón 'Clasificar como Gasto' solo cuando corresponde.
+
+        Condiciones: pestaña ORS activa + registro seleccionado + el formulario
+        sigue forzado (el override todavía no está activo para este registro).
+        """
+        if self._active_tab != "ors" or not record:
+            self._btn_ors_classify_manual.configure(state="disabled")
             return
-        self._classify_panel.sync_category(manual_cats)
+        db_rec = self._db_records.get(record.clave or "", {})
+        already_unlocked = (
+            db_rec.get("ors_manual_override") == "manual"
+            or (db_rec.get("estado") == "clasificado" and db_rec.get("categoria", "OGND") != "OGND")
+        )
+        state = "disabled" if already_unlocked else "normal"
+        self._btn_ors_classify_manual.configure(state=state)
 
     def _open_new_cuenta_dialog(self):
         """Open modal dialog to add a new account."""
@@ -2179,10 +2218,14 @@ class App3Window(ctk.CTk):
 
         # Registros del período: excluir omitidos y ORS (terceros — ni emisor ni receptor es el cliente)
         # sin_receptor SÍ entra: son facturas sin cédula receptor pero válidas para el cliente
+        # Excepción: ORS con override manual activo SÍ entran (gasto propio en terreno de tercero)
         period_records = [
             r for r in self._apply_date_filter(self.all_records)
             if not r.razon_omisión
-            and classify_transaction(r, client_cedula) != "ors"
+            and (
+                classify_transaction(r, client_cedula) != "ors"
+                or self._db_records.get(r.clave or "", {}).get("ors_manual_override") == "manual"
+            )
             and get_hacienda_review_status(r) != "rechazada"
         ]
         if not period_records:
@@ -4151,6 +4194,26 @@ class App3Window(ctk.CTk):
                 )
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ── CLASIFICACION MANUAL ORS COMO GASTO ───────────────────────────────────
+
+    def _on_ors_classify_manual(self):
+        """Desbloquea el formulario para clasificar el registro ORS seleccionado como GASTOS.
+
+        Solo disponible en la pestaña ORS. El desbloqueo se persiste en BD para
+        sobrevivir reinicios. El archivo se moverá al clasificar normalmente.
+        """
+        if not self.selected or not self.db:
+            return
+        clave = self.selected.clave or ""
+        if not clave:
+            self._show_warning("Atención", "Este registro no tiene clave Hacienda y no puede desbloquearse.")
+            return
+        self.db.set_ors_manual_override(clave, "manual")
+        self._db_records.setdefault(clave, {})["ors_manual_override"] = "manual"
+        self._btn_ors_classify_manual.configure(state="disabled")
+        self._sync_category_for_record(self.selected)
+        self._update_path_preview()
 
     # ── PURGA ORS ─────────────────────────────────────────────────────────────
 

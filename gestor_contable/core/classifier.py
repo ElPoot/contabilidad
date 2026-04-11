@@ -255,7 +255,7 @@ class ClassificationDB:
                 row[1]
                 for row in conn.execute("PRAGMA table_info(clasificaciones)").fetchall()
             }
-            for col in ("subtipo", "nombre_cuenta"):
+            for col in ("subtipo", "nombre_cuenta", "ors_manual_override"):
                 if col not in existing:
                     conn.execute(
                         f"ALTER TABLE clasificaciones ADD COLUMN {col} TEXT"
@@ -266,7 +266,7 @@ class ClassificationDB:
     _COLS = [
         "clave_numerica", "estado", "categoria", "subtipo", "nombre_cuenta",
         "proveedor", "ruta_origen", "ruta_destino", "sha256",
-        "fecha_clasificacion", "clasificado_por",
+        "fecha_clasificacion", "clasificado_por", "ors_manual_override",
     ]
 
     def get_estado(self, clave: str) -> str | None:
@@ -292,6 +292,29 @@ class ClassificationDB:
                 f"SELECT {', '.join(self._COLS)} FROM clasificaciones"
             ).fetchall()
         return {str(row[0]): dict(zip(self._COLS, row)) for row in rows}
+
+    def set_ors_manual_override(self, clave: str, value: str | None) -> None:
+        """Marca o desmarca un registro ORS como clasificable manualmente como gasto propio.
+
+        Persiste el campo ors_manual_override en BD sin tocar ningún otro campo.
+        Si el registro no existe aún en la tabla, crea una fila mínima.
+        """
+        with self._lock, contextlib.closing(sqlite3.connect(self.path)) as conn:
+            existing = conn.execute(
+                "SELECT clave_numerica FROM clasificaciones WHERE clave_numerica=?",
+                (clave,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE clasificaciones SET ors_manual_override=? WHERE clave_numerica=?",
+                    (value, clave),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO clasificaciones(clave_numerica, ors_manual_override) VALUES(?, ?)",
+                    (clave, value),
+                )
+            conn.commit()
 
     # ── Escritura ──────────────────────────────────────────────────────────────
 
