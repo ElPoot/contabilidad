@@ -3094,6 +3094,17 @@ class App3Window(ctk.CTk):
 
         # Bloquear clasificación de facturas con bloqueo de Hacienda
         all_selected = self.selected_records if self.selected_records else ([self.selected] if self.selected else [])
+
+        # Bloquear clasificación de omitidos (defensa en profundidad)
+        omitidos = [r for r in all_selected if r.razon_omisión]
+        if omitidos:
+            self._show_warning(
+                "Archivos omitidos",
+                "Los archivos omitidos no pueden clasificarse directamente.\n"
+                "Usa 'Vincular a XML' o 'Borrar PDF' para gestionarlos."
+            )
+            return
+
         rechazados = [
             r for r in all_selected
             if get_hacienda_review_status(r) == "rechazada"

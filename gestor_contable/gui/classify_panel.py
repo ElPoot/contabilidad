@@ -641,11 +641,7 @@ class ClassifyPanel(ctk.CTkFrame):
         self._render_hacienda(vm)
         self._render_doc_strip(vm)
         self._render_context_buttons(vm)
-        self._btn_classify.configure(
-            state="normal" if vm.btn_classify_enabled else "disabled",
-            text=vm.btn_classify_text,
-        )
-        self._set_block_reason(vm.block_reason if not vm.btn_classify_enabled else "")
+        self._render_classify_button(vm)
         self._render_previous(vm)
 
     def _render_batch(self, vm: SelectionVM):
@@ -702,6 +698,19 @@ class ClassifyPanel(ctk.CTkFrame):
             self._actions_frame.grid()
         else:
             self._actions_frame.grid_remove()
+
+    def _render_classify_button(self, vm: SelectionVM):
+        """Muestra/oculta el boton 'Clasificar' segun visibilidad."""
+        if vm.btn_classify_visible:
+            self._btn_classify.grid()
+            self._btn_classify.configure(
+                state="normal" if vm.btn_classify_enabled else "disabled",
+                text=vm.btn_classify_text,
+            )
+            self._set_block_reason(vm.block_reason if not vm.btn_classify_enabled else "")
+        else:
+            self._btn_classify.grid_remove()
+            self._set_block_reason("")
 
     def _render_previous(self, vm: SelectionVM):
         if not vm.prev_frame_visible:

@@ -187,6 +187,22 @@ def build_multi_vm(records: list[FacturaRecord]) -> SelectionVM:
     vm.proveedor = emisor_nombre
     vm.btn_classify_text = f"Clasificar {len(records)} facturas"
     vm.prev_frame_visible = False
+
+    # Verificar si hay registros omitidos en el lote
+    omitidos = [r for r in records if r.razon_omisión]
+    if omitidos:
+        n_omit = len(omitidos)
+        n_total = len(records)
+        vm.viewer_message = (
+            f"Lote de archivos omitidos\n"
+            f"{n_omit} de {n_total} archivo(s) para eliminar.\n\n"
+            "Haz click en 'Borrar PDF' para eliminar estos archivos."
+        )
+        vm.btn_classify_visible = False
+        vm.btn_delete_visible = True
+        vm.block_reason = ""
+        return vm
+
     hacienda_statuses = {
         status
         for status in (get_hacienda_review_status(record) for record in records)

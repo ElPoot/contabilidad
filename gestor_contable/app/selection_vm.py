@@ -56,7 +56,8 @@ class SelectionVM:
     btn_swap_pdf_visible: bool = False
     swap_pdf_target: Path | None = None
 
-    # ── Boton Clasificar (siempre visible; solo cambia estado y texto) ────────
+    # ── Boton Clasificar ──────────────────────────────────────────────────────
+    btn_classify_visible: bool = True   # False → grid_remove (omitidos en lote)
     btn_classify_enabled: bool = True
     btn_classify_text: str = "Clasificar"
     block_reason: str = ""
