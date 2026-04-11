@@ -1065,13 +1065,31 @@ def consolidate_duplicate_client_folders(
                 if db is not None:
                     try:
                         records = db.get_records_map()
+                    except Exception as exc:
+                        msg = f"Error leyendo BD para actualizar ruta_destino de {src.name}: {exc}"
+                        logger.exception(msg)
+                        errors.append(msg)
+                    else:
                         src_str = str(src)
+                        matched_clave = None
                         for clave, rec in records.items():
                             if rec.get("ruta_destino") == src_str:
-                                db.update_ruta_destino(clave, str(dest))
+                                matched_clave = clave
                                 break
-                    except Exception:
-                        pass  # BD update no es crítico; el archivo ya fue movido
+                        if matched_clave is None:
+                            msg = f"No se encontró ruta_destino en BD para {src.name} ({src_str})"
+                            logger.warning(msg)
+                            errors.append(msg)
+                        else:
+                            try:
+                                db.update_ruta_destino(matched_clave, str(dest))
+                            except Exception as exc:
+                                msg = (
+                                    f"Error actualizando ruta_destino en BD para {src.name} "
+                                    f"({matched_clave}): {exc}"
+                                )
+                                logger.exception(msg)
+                                errors.append(msg)
             except Exception as exc:
                 errors.append(f"Error moviendo {src.name}: {exc}")
 

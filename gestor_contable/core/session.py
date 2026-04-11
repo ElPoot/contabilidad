@@ -45,10 +45,7 @@ def resolve_client_session(cedula: str, year: int | None = None, allow_missing: 
         return ClientSession(cedula=clean, nombre=nombre, folder=expected, year=year)
 
     # Búsqueda 2: carpeta vinculada por cédula en client_profiles.json (App 1)
-    try:
-        profiles = load_profiles()
-    except Exception:
-        profiles = {}
+    profiles = load_profiles()
 
     for key, value in profiles.items():
         if key.startswith("__email__:"):

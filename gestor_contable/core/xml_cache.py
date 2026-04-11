@@ -47,6 +47,7 @@ class XMLCacheManager:
         try:
             stat = xml_file.stat()
         except OSError:
+            logger.debug("No se pudo inspeccionar XML para cache: %s", xml_file, exc_info=True)
             return None
 
         key = self._make_key(xml_file)
@@ -75,11 +76,13 @@ class XMLCacheManager:
             try:
                 stat = xml_file.stat()
             except OSError:
+                logger.debug("No se pudo leer metadata de XML para cache: %s", xml_file, exc_info=True)
                 continue
             key = self._make_key(xml_file)
             try:
                 data_json = json.dumps(data, default=str)
             except Exception:
+                logger.debug("No se pudo serializar XML para cache: %s", xml_file, exc_info=True)
                 continue
             rows.append((key, stat.st_mtime, stat.st_size, data_json, now))
 
@@ -102,4 +105,4 @@ class XMLCacheManager:
         try:
             self._conn.close()
         except Exception:
-            pass
+            logger.warning("No se pudo cerrar la conexion de xml_cache %s", self.cache_file, exc_info=True)

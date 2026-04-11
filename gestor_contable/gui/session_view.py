@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import re
 import sqlite3
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 import customtkinter as ctk
 
 from gestor_contable.config import client_root, metadata_dir
-from gestor_contable.core.client_profiles import load_profiles
+from gestor_contable.core.client_profiles import ClientProfilesError, load_profiles, save_profiles
 from gestor_contable.version import __version__
 from gestor_contable.core.session import ClientSession, resolve_client_session
 from gestor_contable.core.settings import get_setting
@@ -60,11 +59,11 @@ def _initials(name: str) -> str:
     return name[:2].upper() if name else "??"
 
 
-def _read_client_counts(folder: Path) -> tuple[int, int]:
+def _read_client_counts(folder: Path) -> tuple[int | None, int | None, str | None]:
     """Lee pendientes y clasificadas de un cliente. Seguro para llamar en paralelo."""
     db_path = folder / ".metadata" / "clasificacion.sqlite"
     if not db_path.exists():
-        return 0, 0
+        return 0, 0, None
     try:
         with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
             row = conn.execute(
@@ -75,10 +74,10 @@ def _read_client_counts(folder: Path) -> tuple[int, int]:
                 "SELECT COUNT(*) FROM clasificaciones WHERE estado != 'clasificado'"
             ).fetchone()
             pendientes = row2[0] if row2 else 0
-            return pendientes, clasificadas
+            return pendientes, clasificadas, None
     except Exception as exc:
-        logger.debug("No se pudo leer BD de %s: %s", folder.name, exc)
-        return 0, 0
+        logger.exception("No se pudo leer BD de %s", folder.name)
+        return None, None, f"No se pudo leer la BD de clasificación de {folder.name}: {exc}"
 
 
 def _load_saved_clients(year: int) -> list[dict]:
@@ -93,17 +92,14 @@ def _load_saved_clients(year: int) -> list[dict]:
 
     # Cédulas por nombre de carpeta desde perfiles
     profile_ced_by_folder: dict[str, str] = {}
-    try:
-        profiles = load_profiles()
-        for folder_name, profile in profiles.items():
-            if folder_name.startswith("__email__:"):
-                continue
-            if isinstance(profile, dict):
-                ced = _digits(str(profile.get("cedula", "")))
-                if ced:
-                    profile_ced_by_folder[folder_name.strip()] = ced
-    except Exception as exc:
-        logger.warning("No se pudieron cargar perfiles de clientes: %s", exc)
+    profiles = load_profiles()
+    for folder_name, profile in profiles.items():
+        if folder_name.startswith("__email__:"):
+            continue
+        if isinstance(profile, dict):
+            ced = _digits(str(profile.get("cedula", "")))
+            if ced:
+                profile_ced_by_folder[folder_name.strip()] = ced
 
     folders = [
         f for f in sorted(base.iterdir())
@@ -111,7 +107,7 @@ def _load_saved_clients(year: int) -> list[dict]:
     ]
 
     # Leer SQLite en paralelo (I/O bound)
-    counts: dict[str, tuple[int, int]] = {}
+    counts: dict[str, tuple[int | None, int | None, str | None]] = {}
     with ThreadPoolExecutor(max_workers=min(8, len(folders) or 1)) as pool:
         future_to_folder = {pool.submit(_read_client_counts, f): f for f in folders}
         for future in as_completed(future_to_folder):
@@ -123,12 +119,14 @@ def _load_saved_clients(year: int) -> list[dict]:
 
     clients = []
     for folder in folders:
-        pendientes, clasificadas = counts.get(folder.name, (0, 0))
+        pendientes, clasificadas, counts_error = counts.get(folder.name, (0, 0, None))
         clients.append({
             "nombre": folder.name,
             "cedula": profile_ced_by_folder.get(folder.name, ""),
             "pendientes": pendientes,
             "clasificadas": clasificadas,
+            "counts_error": counts_error,
+            "counts_ok": counts_error is None,
             "year": year,
             "folder": folder,
         })
@@ -138,25 +136,14 @@ def _load_saved_clients(year: int) -> list[dict]:
 
 def _save_cedula(cedula: str, folder_name: str) -> None:
     """Persiste únicamente la cédula bajo el nombre de carpeta actual en client_profiles.json."""
-    from gestor_contable.config import network_drive
-
-    nd = network_drive()
-    profiles_path = nd / "CONFIG" / "client_profiles.json"
-    try:
-        profiles = load_profiles()
-        entry = profiles.get(folder_name)
-        if not isinstance(entry, dict):
-            entry = {}
-        entry["cedula"] = cedula
-        profiles[folder_name] = entry
-        profiles_path.parent.mkdir(parents=True, exist_ok=True)
-        profiles_path.write_text(
-            json.dumps(profiles, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        logger.info("Cédula %s guardada para '%s'", cedula, folder_name)
-    except Exception as exc:
-        logger.warning("No se pudo guardar client_profiles.json: %s", exc)
+    profiles = load_profiles()
+    entry = profiles.get(folder_name)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["cedula"] = cedula
+    profiles[folder_name] = entry
+    save_profiles(profiles)
+    logger.info("Cédula %s guardada para '%s'", cedula, folder_name)
 
 
 def _heal_client(
@@ -175,7 +162,6 @@ def _heal_client(
     Retorna un ClientSession apuntando a la carpeta final.
     """
     from gestor_contable.config import network_drive
-    from gestor_contable.core.client_profiles import load_profiles
 
     nd       = network_drive()
     pf_root  = nd / f"PF-{year}"
@@ -226,32 +212,24 @@ def _heal_client(
                 logger.warning("No se pudo actualizar SQLite: %s", exc)
 
     # ── 4. Guardar cédula en client_profiles.json ─────────────────────────────
-    profiles_path = nd / "CONFIG" / "client_profiles.json"
-    try:
-        profiles = load_profiles()
+    profiles = load_profiles()
 
-        # Mover clave vieja al nombre correcto de Hacienda
-        if hacienda_name != old_folder_name and old_folder_name in profiles:
-            existing = profiles.pop(old_folder_name)
-            if not isinstance(existing, dict):
-                existing = {}
-            existing["cedula"] = cedula
-            profiles[hacienda_name] = existing
-        else:
-            entry = profiles.get(hacienda_name)
-            if not isinstance(entry, dict):
-                entry = {}
-            entry["cedula"] = cedula
-            profiles[hacienda_name] = entry
+    # Mover clave vieja al nombre correcto de Hacienda
+    if hacienda_name != old_folder_name and old_folder_name in profiles:
+        existing = profiles.pop(old_folder_name)
+        if not isinstance(existing, dict):
+            existing = {}
+        existing["cedula"] = cedula
+        profiles[hacienda_name] = existing
+    else:
+        entry = profiles.get(hacienda_name)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry["cedula"] = cedula
+        profiles[hacienda_name] = entry
 
-        profiles_path.parent.mkdir(parents=True, exist_ok=True)
-        profiles_path.write_text(
-            json.dumps(profiles, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        logger.info("Cédula %s guardada para '%s'", cedula, hacienda_name)
-    except Exception as exc:
-        logger.warning("No se pudo guardar client_profiles.json: %s", exc)
+    save_profiles(profiles)
+    logger.info("Cédula %s guardada para '%s'", cedula, hacienda_name)
 
     return ClientSession(cedula=cedula, nombre=hacienda_name, folder=final_dir, year=year)
 
@@ -291,7 +269,11 @@ class ClientCard(ctk.CTkFrame):
         pills_frame = ctk.CTkFrame(self, fg_color="transparent")
         pills_frame.grid(row=1, column=1, sticky="nw", pady=(0, 12))
 
-        if client["pendientes"] > 0:
+        if client.get("counts_error"):
+            pill_color = "#2a0d0d"
+            pill_text_color = DANGER
+            pill_text = "Error BD"
+        elif int(client.get("pendientes") or 0) > 0:
             pill_color = "#2d2010"
             pill_text_color = WARNING
             pill_text = f"{client['pendientes']} pendientes"
@@ -579,30 +561,19 @@ class _CedulaDialog(ctk.CTkToplevel):
 
 def _create_client_folder(session: "ClientSession") -> None:
     """Crea carpeta del cliente nuevo y guarda su cédula en client_profiles.json."""
-    from gestor_contable.config import network_drive
-
     folder = session.folder
     folder.mkdir(parents=True, exist_ok=True)
     (folder / ".metadata").mkdir(exist_ok=True)
     (folder / "XML").mkdir(exist_ok=True)
     (folder / "PDF").mkdir(exist_ok=True)
 
-    nd = network_drive()
-    profiles_path = nd / "CONFIG" / "client_profiles.json"
-    try:
-        profiles = load_profiles()
-    except Exception:
-        profiles = {}
+    profiles = load_profiles()
     entry = profiles.get(session.nombre)
     if not isinstance(entry, dict):
         entry = {}
     entry["cedula"] = session.cedula
     profiles[session.nombre] = entry
-    profiles_path.parent.mkdir(parents=True, exist_ok=True)
-    profiles_path.write_text(
-        json.dumps(profiles, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    save_profiles(profiles)
     logger.info("Cliente nuevo creado: %s (%s)", session.nombre, session.cedula)
 
 
@@ -623,6 +594,8 @@ class SessionView(ctk.CTkFrame):
         self._pending_session: ClientSession | None = None
         self._all_clients: list[dict] = []
         self._pending_new_client: bool = False
+        self._client_load_error: str | None = None
+        self._client_load_gen: int = 0
 
         self._build()
         self._load_clients_async()
@@ -828,25 +801,76 @@ class SessionView(ctk.CTkFrame):
 
     # ── CARGA ASÍNCRONA DE CLIENTES ───────────────────────────────────────────
     def _load_clients_async(self):
+        self._client_load_gen += 1
+        gen = self._client_load_gen
+
         def worker():
             try:
                 year = int(get_setting("fiscal_year"))
                 clients = _load_saved_clients(year)
-            except Exception:
-                clients = []
-            self.after(0, lambda: self._on_clients_loaded(clients))
+            except ClientProfilesError as exc:
+                logger.exception("No se pudieron cargar perfiles de clientes")
+                self.after(0, lambda e=exc, g=gen: self._on_clients_load_error(str(e), g))
+                return
+            except Exception as exc:
+                logger.exception("No se pudieron cargar clientes")
+                self.after(0, lambda e=exc, g=gen: self._on_clients_load_error(f"No se pudieron cargar los clientes: {e}", g))
+                return
+            self.after(0, lambda data=clients, g=gen: self._on_clients_loaded(data, g))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_clients_loaded(self, clients: list[dict]):
+    def _on_clients_loaded(self, clients: list[dict], gen: int = 0):
+        if gen != self._client_load_gen:
+            return
+        self._client_load_error = None
         self._all_clients = clients
         self._render_clients(clients)
 
-    def _render_clients(self, clients: list[dict]):
+    def _on_clients_load_error(self, message: str, gen: int = 0):
+        if gen != self._client_load_gen:
+            return
+        self._client_load_error = message
+        self._all_clients = []
+        self._render_clients([], error_message=message)
+
+    def _render_clients(self, clients: list[dict], error_message: str | None = None):
         for w in self._client_scroll.winfo_children():
             w.destroy()
 
-        self._count_badge.configure(text=str(len(self._all_clients)))
+        if error_message:
+            self._count_badge.configure(text="?", fg_color=DANGER, text_color="#1b0f10")
+        else:
+            self._count_badge.configure(text=str(len(self._all_clients)), fg_color=TEAL, text_color="#0d1a18")
+
+        if error_message:
+            error_box = ctk.CTkFrame(
+                self._client_scroll,
+                fg_color="#2a0d0d",
+                border_color=DANGER,
+                border_width=1,
+                corner_radius=16,
+            )
+            error_box.grid(row=0, column=0, sticky="ew", pady=20, padx=4)
+            ctk.CTkLabel(error_box, text="Error al cargar clientes", font=F_SUBHEADING(), text_color=DANGER).pack(pady=(18, 6), padx=18)
+            ctk.CTkLabel(
+                error_box,
+                text=error_message,
+                font=F_LABEL(),
+                text_color=TEXT,
+                justify="left",
+                wraplength=420,
+            ).pack(padx=18, pady=(0, 14))
+            ctk.CTkButton(
+                error_box,
+                text="Reintentar",
+                width=120,
+                fg_color=DANGER,
+                hover_color="#dc5858",
+                text_color="#1b0f10",
+                command=self._load_clients_async,
+            ).pack(pady=(0, 16))
+            return
 
         if not clients:
             empty = ctk.CTkFrame(
@@ -880,7 +904,9 @@ class SessionView(ctk.CTkFrame):
     # ── FILTRO DE BÚSQUEDA ────────────────────────────────────────────────────
     def _on_search_change(self, _event=None):
         query = self._search_entry.get().strip().lower()
-        if not query:
+        if self._client_load_error:
+            self._render_clients([], error_message=self._client_load_error)
+        elif not query:
             self._render_clients(self._all_clients)
         else:
             filtered = [
@@ -971,6 +997,10 @@ class SessionView(ctk.CTkFrame):
                 try:
                     session = resolve_client_session(cedula, year=year)
                 except Exception:
+                    logger.exception(
+                        "No se pudo resolver la sesion para %s desde la tarjeta; usando datos locales guardados",
+                        cedula,
+                    )
                     session = ClientSession(
                         cedula=cedula, nombre=nombre,
                         folder=folder, year=year,

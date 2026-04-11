@@ -43,6 +43,26 @@ try:
 except ModuleNotFoundError:
     requests = None
 
+
+class HaciendaAPIError(RuntimeError):
+    """Error de infraestructura al consultar Hacienda."""
+
+    def __init__(
+        self,
+        ident: str,
+        message: str,
+        *,
+        status_code: int | None = None,
+        attempts: int | None = None,
+        url: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.ident = ident
+        self.status_code = status_code
+        self.attempts = attempts
+        self.url = url
+
+
 class CRXMLManager:
     """Gestiona carga, identificación y aplanamiento de XML de Hacienda CR."""
     HACIENDA_API_URL = "https://api.hacienda.go.cr/fe/ae?identificacion={ident}"
@@ -51,6 +71,7 @@ class CRXMLManager:
         self.last_duplicate_count = 0
         self.cache_db_path = _resolve_cache_path()
         self._hacienda_cache_lock = threading.Lock()
+        self._hacienda_lookup_errors: list[dict[str, Any]] = []
         self._ensure_hacienda_cache_db()
 
     DOCUMENT_TYPES = {
@@ -441,40 +462,96 @@ class CRXMLManager:
 
     def _fetch_hacienda_name(self, ident: str) -> str:
         if requests is None:
-            return ""
+            raise HaciendaAPIError(ident, "requests no esta disponible para consultar Hacienda")
 
         url = self.HACIENDA_API_URL.format(ident=ident)
-        for attempt in range(3):
+        max_attempts = 3
+        retryable_statuses = {429, 500, 502, 503, 504}
+        for attempt in range(1, max_attempts + 1):
             try:
                 response = requests.get(url, timeout=8)
-            except requests.RequestException:
-                LOGGER.warning("Error de red consultando Hacienda para %s (intento %s)", ident, attempt + 1)
-                time.sleep(0.6 * (attempt + 1))
-                continue
+            except requests.RequestException as exc:
+                LOGGER.warning(
+                    "Error de red consultando Hacienda para %s (intento %s/%s): %s",
+                    ident,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                if attempt < max_attempts:
+                    time.sleep(0.6 * attempt)
+                    continue
+                raise HaciendaAPIError(
+                    ident,
+                    f"Error de red consultando Hacienda para {ident} tras {max_attempts} intentos",
+                    attempts=max_attempts,
+                    url=url,
+                ) from exc
 
-            if response.status_code == 200:
+            status = response.status_code
+            if status == 200:
                 try:
                     payload = response.json()
-                except ValueError:
-                    LOGGER.warning("Respuesta JSON inválida para identificación %s", ident)
-                    return ""
+                except ValueError as exc:
+                    LOGGER.error(
+                        "Respuesta JSON invalida para identificacion %s (HTTP 200)",
+                        ident,
+                        exc_info=True,
+                    )
+                    raise HaciendaAPIError(
+                        ident,
+                        f"Respuesta JSON invalida de Hacienda para {ident}",
+                        status_code=status,
+                        attempts=attempt,
+                        url=url,
+                    ) from exc
                 name = str(payload.get("nombre") or payload.get("razonSocial") or payload.get("razon_social") or "").strip()
                 if name:
                     name_upper = name.upper()
                     self._cache_put_name(ident, name_upper, payload)
                     return name_upper
                 self._cache_put_name(ident, "", payload)
+                LOGGER.info("Hacienda respondio 200 sin nombre para %s", ident)
                 return ""
 
-            if response.status_code in (404, 204):
+            if status in (404, 204):
                 self._cache_put_name(ident, "", None)
                 return ""
 
-            if response.status_code in (429, 500, 502, 503, 504):
-                time.sleep(0.8 * (attempt + 1))
-                continue
-            return ""
-        return ""
+            if status in retryable_statuses:
+                LOGGER.warning(
+                    "Hacienda respondio HTTP %s para %s (intento %s/%s)",
+                    status,
+                    ident,
+                    attempt,
+                    max_attempts,
+                )
+                if attempt < max_attempts:
+                    time.sleep(0.8 * attempt)
+                    continue
+                raise HaciendaAPIError(
+                    ident,
+                    f"Hacienda respondio HTTP {status} para {ident} tras {max_attempts} intentos",
+                    status_code=status,
+                    attempts=max_attempts,
+                    url=url,
+                )
+
+            LOGGER.error("Respuesta no recuperable de Hacienda para %s: HTTP %s", ident, status)
+            raise HaciendaAPIError(
+                ident,
+                f"Respuesta no recuperable de Hacienda para {ident}: HTTP {status}",
+                status_code=status,
+                attempts=attempt,
+                url=url,
+            )
+
+        raise HaciendaAPIError(
+            ident,
+            f"No se pudo resolver Hacienda para {ident}",
+            attempts=max_attempts,
+            url=url,
+        )
 
     def resolve_party_name(self, ident: Any, fallback_name: Any) -> str:
         """Resuelve nombre desde cache/API usando identificación y fallback."""
@@ -487,7 +564,18 @@ class CRXMLManager:
         if cached:
             return cached.upper()
 
-        fetched = self._fetch_hacienda_name(clean_ident)
+        try:
+            fetched = self._fetch_hacienda_name(clean_ident)
+        except HaciendaAPIError:
+            LOGGER.warning(
+                "No se pudo resolver nombre de Hacienda para %s; se conservara fallback si existe",
+                clean_ident,
+                exc_info=True,
+            )
+            if fallback:
+                self._cache_put_name(clean_ident, fallback, None)
+                return fallback
+            raise
         if fetched:
             return fetched.upper()
 
@@ -498,9 +586,11 @@ class CRXMLManager:
     def resolve_party_names_in_dataframe(self, df: pd.DataFrame, max_workers: int = 8) -> pd.DataFrame:
         """Completa nombres de emisor/receptor en paralelo sin bloquear parsing XML."""
         if df.empty:
+            self._hacienda_lookup_errors = []
             return df
 
         working_df = df.copy()
+        self._hacienda_lookup_errors = []
         id_columns = [
             ("emisor_cedula", "emisor_nombre"),
             ("receptor_cedula", "receptor_nombre"),
@@ -517,6 +607,8 @@ class CRXMLManager:
             return working_df
 
         resolved_map: dict[str, str] = {}
+        failed_idents: set[str] = set()
+        lookup_errors: list[dict[str, Any]] = []
         sorted_ids = sorted(ids_to_lookup)
         cached_map = self._cache_get_names_bulk(sorted_ids)
         ids_to_fetch: list[str] = []
@@ -535,11 +627,48 @@ class CRXMLManager:
                     ident = future_map[future]
                     try:
                         fetched_name = future.result()
-                    except Exception:  # noqa: BLE001
-                        LOGGER.exception("Fallo resolviendo identificación %s", ident)
+                    except HaciendaAPIError as exc:
+                        failed_idents.add(ident)
+                        lookup_errors.append(
+                            {
+                                "identificacion": ident,
+                                "error": str(exc),
+                                "status_code": exc.status_code,
+                                "attempts": exc.attempts,
+                            }
+                        )
+                        LOGGER.warning(
+                            "Fallo de infraestructura resolviendo identificacion %s: %s",
+                            ident,
+                            exc,
+                            exc_info=True,
+                        )
+                        continue
+                    except Exception as exc:  # noqa: BLE001
+                        failed_idents.add(ident)
+                        lookup_errors.append(
+                            {
+                                "identificacion": ident,
+                                "error": str(exc),
+                                "status_code": None,
+                                "attempts": None,
+                            }
+                        )
+                        LOGGER.exception("Fallo inesperado resolviendo identificacion %s", ident)
                         continue
                     if fetched_name:
                         resolved_map[ident] = fetched_name.upper()
+        elif ids_to_fetch and requests is None:
+            LOGGER.warning("No se pueden resolver nombres de Hacienda: requests no esta disponible")
+            lookup_errors.append(
+                {
+                    "identificacion": "*",
+                    "error": "requests no esta disponible",
+                    "status_code": None,
+                    "attempts": None,
+                }
+            )
+            failed_idents.update(ids_to_fetch)
 
         for id_col, name_col in id_columns:
             if id_col not in working_df.columns:
@@ -551,6 +680,21 @@ class CRXMLManager:
             fallback_names = working_df[name_col].fillna("").astype(str).str.strip().str.upper()
             looked_up = normalized_ids.map(resolved_map).fillna("")
             working_df[name_col] = looked_up.where(looked_up.ne(""), fallback_names)
+            if failed_idents:
+                status_col = "hacienda_lookup_status"
+                if status_col not in working_df.columns:
+                    working_df[status_col] = "ok"
+                failed_mask = normalized_ids.isin(failed_idents)
+                if failed_mask.any():
+                    working_df.loc[failed_mask, status_col] = "error"
+
+        if lookup_errors:
+            self._hacienda_lookup_errors = lookup_errors
+            working_df.attrs["hacienda_lookup_errors"] = lookup_errors
+            LOGGER.warning(
+                "Se detectaron %s fallos al resolver nombres de Hacienda",
+                len(lookup_errors),
+            )
 
         return working_df
 
@@ -741,9 +885,17 @@ class CRXMLManager:
                     xml_file = future_to_file[future]
                     try:
                         row = future.result()
-                    except Exception:
+                    except Exception as exc:
                         LOGGER.exception("Error inesperado parseando %s", xml_file.name)
-                        continue
+                        row = {
+                            "archivo": xml_file.name,
+                            "ruta": str(xml_file),
+                            "carpeta": str(xml_file.parent),
+                            "tipo_documento": "Error",
+                            "documento_root": "",
+                            "error": str(exc),
+                            "_process_status": "error",
+                        }
                     rows.append(row)
                     if xml_cache is not None and row.get("_process_status") == "ok":
                         new_to_cache.append((xml_file, row))
@@ -760,6 +912,7 @@ class CRXMLManager:
         comprobantes = self.filter_comprobante_rows(associated)
         deduped, duplicate_files = self.remove_duplicate_hashes_with_audit(comprobantes)
         enriched = self.resolve_party_names_in_dataframe(deduped)
+        hacienda_lookup_errors = list(getattr(self, "_hacienda_lookup_errors", []))
         optimized = self.optimize_dataframe_memory(enriched)
         t_pandas_done = time.perf_counter() - t0
 
@@ -779,6 +932,9 @@ class CRXMLManager:
             respuesta_failed_files=orphan_hidden_messages,
             hidden_message_files=hidden_message_files,
         )
+        if hacienda_lookup_errors:
+            report["hacienda_lookup_errors"] = hacienda_lookup_errors
+            report["files_by_status"]["hacienda_lookup_error"] = len(hacienda_lookup_errors)
         self._persist_audit_report(report)
         return optimized, report
 
@@ -871,7 +1027,7 @@ class CRXMLManager:
                 "error": str(row.get("error", "Error desconocido")),
             }
             for row in rows
-            if str(row.get("_process_status", "")).lower() in {"failed", "invalid_xml"}
+            if str(row.get("_process_status", "")).lower() in {"failed", "invalid_xml", "error"}
         ]
         respuesta_failed = list(respuesta_failed_files or [])
         respuesta_failed.extend(
@@ -910,6 +1066,7 @@ class CRXMLManager:
             deduped_hidden_messages.append(item)
 
         invalid_xml_files = sum(1 for row in rows if str(row.get("_process_status", "")).lower() == "invalid_xml")
+        error_files = sum(1 for row in rows if str(row.get("_process_status", "")).lower() == "error")
         successfully_processed = sum(1 for row in rows if str(row.get("_process_status", "")).lower() == "ok")
 
         files_by_type: dict[str, int] = {}
@@ -933,6 +1090,7 @@ class CRXMLManager:
                 "respuesta_failed": len(deduped_respuesta_failed),
                 "duplicates": len(duplicates),
                 "invalid_xml": invalid_xml_files,
+                "error": error_files,
             },
         }
         return report

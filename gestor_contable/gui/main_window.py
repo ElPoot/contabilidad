@@ -4573,6 +4573,7 @@ class App3Window(ctk.CTk):
 
         # Cargar lotes de ambos DBs y mezclarlos con su origen
         all_batches: list[dict] = []
+        load_errors: list[tuple[str, str]] = []
         db_ors = db_receptor = None
         try:
             db_ors = OrsPurgeDB(mdir)
@@ -4580,22 +4581,29 @@ class App3Window(ctk.CTk):
                 b["_tipo"] = "ORS"
                 b["_db"] = db_ors
                 all_batches.append(b)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("No se pudo leer el historial ORS en %s", mdir)
+            load_errors.append(("ORS", str(exc)))
         try:
             db_receptor = OrsPurgeDB(mdir, db_filename="receptor_purge.sqlite")
             for b in db_receptor.get_batches():
                 b["_tipo"] = "Receptor"
                 b["_db"] = db_receptor
                 all_batches.append(b)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("No se pudo leer el historial de receptor en %s", mdir)
+            load_errors.append(("Receptor", str(exc)))
 
         # Ordenar por fecha descendente
         all_batches.sort(key=lambda b: b.get("fecha", ""), reverse=True)
 
-        if not all_batches and db_ors is None and db_receptor is None:
-            ModalOverlay.show_error(self, "Error", "No se pudo leer el historial.")
+        if load_errors and not all_batches:
+            detalle = "\n".join(f"- {origen}: {mensaje}" for origen, mensaje in load_errors)
+            ModalOverlay.show_error(
+                self,
+                "Error",
+                "No se pudo leer el historial.\n\n" + detalle,
+            )
             return
 
         overlay, card, close_fn = ModalOverlay.build(self)
@@ -4619,6 +4627,34 @@ class App3Window(ctk.CTk):
             font=F_MODAL_BODY(),
             command=close_fn,
         ).pack(side="right", padx=16, pady=10)
+
+        if load_errors:
+            detalle = " | ".join(f"{origen}: {mensaje}" for origen, mensaje in load_errors)
+            logger.warning("Historial cargado parcialmente en %s: %s", mdir, detalle)
+            warn = ctk.CTkFrame(
+                card,
+                fg_color="#2d2010",
+                border_color=WARNING,
+                border_width=1,
+                corner_radius=12,
+            )
+            warn.pack(fill="x", padx=16, pady=(12, 0))
+            ctk.CTkLabel(
+                warn,
+                text="Historial cargado parcialmente",
+                font=F_MODAL_BODY(),
+                text_color=WARNING,
+                anchor="w",
+            ).pack(fill="x", padx=12, pady=(10, 0))
+            ctk.CTkLabel(
+                warn,
+                text=detalle,
+                font=F_SMALL(),
+                text_color=TEXT,
+                justify="left",
+                anchor="w",
+                wraplength=760,
+            ).pack(fill="x", padx=12, pady=(4, 10))
 
         if not all_batches:
             ctk.CTkLabel(

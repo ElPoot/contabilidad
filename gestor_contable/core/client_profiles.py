@@ -6,6 +6,7 @@ import logging
 import sqlite3
 import threading
 import time
+from shutil import copy2
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,10 @@ from gestor_contable.core.settings import get_setting
 logger = logging.getLogger(__name__)
 
 _WRITE_LOCK = threading.Lock()
+
+
+class ClientProfilesError(RuntimeError):
+    """Error al leer o escribir client_profiles.json."""
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +33,46 @@ def _profiles_path() -> Path:
 def _hacienda_cache_path() -> Path:
     return Path(str(get_setting("network_drive", "Z:/DATA"))) / "hacienda_cache.db"
 
+def _profiles_tmp_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.tmp")
+
+
+def _profiles_backup_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.bak")
+
+
+def _dump_profiles(profiles: dict[str, Any]) -> str:
+    return json.dumps(profiles, ensure_ascii=False, indent=2)
+
+
+def save_profiles(profiles: dict[str, Any]) -> None:
+    """Guarda client_profiles.json con escritura atómica y respaldo .bak."""
+    if not isinstance(profiles, dict):
+        raise ClientProfilesError(
+            f"client_profiles.json debe guardarse desde un dict, no desde {type(profiles).__name__}"
+        )
+
+    path = _profiles_path()
+    tmp = _profiles_tmp_path(path)
+    backup = _profiles_backup_path(path)
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(_dump_profiles(profiles), encoding="utf-8")
+
+        if path.exists():
+            copy2(path, backup)
+
+        tmp.replace(path)
+    except Exception as exc:
+        logger.exception("No se pudo guardar client_profiles.json en %s", path)
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            logger.debug("No se pudo limpiar temporal de perfiles %s", tmp, exc_info=True)
+        raise ClientProfilesError(f"No se pudo guardar client_profiles.json en {path}") from exc
+
 
 # ---------------------------------------------------------------------------
 # Lectura básica de perfiles (API existente — sin cambios)
@@ -38,10 +83,18 @@ def load_profiles() -> dict[str, Any]:
     try:
         if path.exists():
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                return raw
-    except Exception:
-        logger.warning("No se pudo leer client_profiles.json", exc_info=True)
+            if not isinstance(raw, dict):
+                raise ClientProfilesError(
+                    f"client_profiles.json en {path} debe contener un objeto JSON, no {type(raw).__name__}"
+                )
+            return raw
+    except ClientProfilesError:
+        logger.exception("client_profiles.json existente pero inválido en %s", path)
+        raise
+    except Exception as exc:
+        if path.exists():
+            logger.exception("No se pudo leer client_profiles.json en %s", path)
+            raise ClientProfilesError(f"No se pudo leer client_profiles.json en {path}") from exc
     return {}
 
 
@@ -274,17 +327,4 @@ def _save_activities_to_profile(client_name: str, actividades: list[dict[str, st
         entry["actividades_hacienda"] = actividades
         entry["actividades_updated_at"] = datetime.now().strftime("%d/%m/%Y %H:%M")
         profiles[client_name] = entry
-
-        path = _profiles_path()
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(profiles, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            logger.warning(
-                "No se pudo guardar actividades en client_profiles.json para '%s'",
-                client_name,
-                exc_info=True,
-            )
+        save_profiles(profiles)

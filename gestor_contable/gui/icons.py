@@ -11,10 +11,13 @@ Uso:
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 from pathlib import Path
 
 import customtkinter as ctk
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 _ICONS_DIR = Path(__file__).parent / "icons"
 
@@ -51,12 +54,15 @@ def get_icon(name: str, size: int = 24) -> ctk.CTkImage | None:
     """
     filename = _FILES.get(name)
     if not filename:
+        logger.debug("Se solicito un icono semantico no registrado: %s", name)
         return None
     path = _ICONS_DIR / filename
     if not path.exists():
+        logger.debug("Icono no encontrado: %s -> %s", name, path)
         return None
     try:
         img = Image.open(path).convert("RGBA")
         return ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
     except Exception:
+        logger.warning("No se pudo cargar el icono %s desde %s", name, path, exc_info=True)
         return None
