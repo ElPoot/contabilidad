@@ -423,6 +423,42 @@ class ClassificationDB:
             )
             conn.commit()
 
+    def heal_client_paths(self, old_name: str, new_name: str) -> int:
+        """Reemplaza old_name por new_name en ruta_destino y ruta_origen.
+
+        Usado cuando _heal_client renombra la carpeta del cliente.
+        Retorna la cantidad de filas afectadas.
+        """
+        with self._lock, contextlib.closing(sqlite3.connect(self.path)) as conn:
+            c1 = conn.execute(
+                "UPDATE clasificaciones SET ruta_destino = REPLACE(ruta_destino, ?, ?)",
+                (old_name, new_name),
+            )
+            c2 = conn.execute(
+                "UPDATE clasificaciones SET ruta_origen = REPLACE(ruta_origen, ?, ?)",
+                (old_name, new_name),
+            )
+            conn.commit()
+            return c1.rowcount + c2.rowcount
+
+    @staticmethod
+    def read_client_counts(db_path: Path) -> tuple[int, int]:
+        """Lee pendientes y clasificadas de un cliente (read-only, sin Lock).
+
+        Diseñado para uso desde session_view donde no existe instancia de
+        ClassificationDB (se abre en modo read-only).
+        """
+        with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM clasificaciones WHERE estado='clasificado'"
+            ).fetchone()
+            clasificadas = row[0] if row else 0
+            row2 = conn.execute(
+                "SELECT COUNT(*) FROM clasificaciones WHERE estado != 'clasificado'"
+            ).fetchone()
+            pendientes = row2[0] if row2 else 0
+        return pendientes, clasificadas
+
 
 def recover_orphaned_pdf(
     orphaned_info: dict,

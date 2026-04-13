@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import contextlib
 import logging
 import re
-import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -65,16 +63,9 @@ def _read_client_counts(folder: Path) -> tuple[int | None, int | None, str | Non
     if not db_path.exists():
         return 0, 0, None
     try:
-        with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM clasificaciones WHERE estado='clasificado'"
-            ).fetchone()
-            clasificadas = row[0] if row else 0
-            row2 = conn.execute(
-                "SELECT COUNT(*) FROM clasificaciones WHERE estado != 'clasificado'"
-            ).fetchone()
-            pendientes = row2[0] if row2 else 0
-            return pendientes, clasificadas, None
+        from gestor_contable.core.classifier import ClassificationDB
+        pendientes, clasificadas = ClassificationDB.read_client_counts(db_path)
+        return pendientes, clasificadas, None
     except Exception as exc:
         logger.exception("No se pudo leer BD de %s", folder.name)
         return None, None, f"No se pudo leer la BD de clasificación de {folder.name}: {exc}"
@@ -198,16 +189,10 @@ def _heal_client(
         sqlite_path = final_dir / ".metadata" / "clasificacion.sqlite"
         if sqlite_path.exists():
             try:
-                with contextlib.closing(sqlite3.connect(str(sqlite_path))) as conn:
-                    conn.execute(
-                        "UPDATE clasificaciones SET ruta_destino = REPLACE(ruta_destino, ?, ?)",
-                        (old_folder_name, hacienda_name),
-                    )
-                    conn.execute(
-                        "UPDATE clasificaciones SET ruta_origen = REPLACE(ruta_origen, ?, ?)",
-                        (old_folder_name, hacienda_name),
-                    )
-                logger.info("SQLite actualizado: rutas con nombre nuevo")
+                from gestor_contable.core.classifier import ClassificationDB
+                tmp_db = ClassificationDB(final_dir / ".metadata")
+                changed = tmp_db.heal_client_paths(old_folder_name, hacienda_name)
+                logger.info("SQLite actualizado: %d rutas con nombre nuevo", changed)
             except Exception as exc:
                 logger.warning("No se pudo actualizar SQLite: %s", exc)
 

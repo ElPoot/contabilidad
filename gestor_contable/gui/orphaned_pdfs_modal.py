@@ -7,12 +7,11 @@ from tkinter import ttk
 import customtkinter as ctk
 from gestor_contable.gui.fonts import *
 
-from gestor_contable.core.classifier import (
-    ClassificationDB,
-    adopt_orphaned_pdf,
-    recover_orphaned_pdf,
+from gestor_contable.core.classifier import ClassificationDB
+from gestor_contable.app.controllers.orphaned_pdfs_controller import (
+    scan_orphaned_pdfs,
+    recover_selected,
 )
-from gestor_contable.core.classification_utils import find_orphaned_pdfs
 from gestor_contable.gui.icons import get_icon
 from gestor_contable.gui.modal_overlay import ModalOverlay
 
@@ -188,16 +187,9 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
 
         def worker():
             try:
-                # Ruta a Contabilidades
-                pf_root = self.session_folder.parent.parent
-                contabilidades_root = pf_root / "Contabilidades"
-
-                self.orphaned = find_orphaned_pdfs(
-                    contabilidades_root, self.db_records,
-                    client_name=self.session_folder.name,
+                self.orphaned = scan_orphaned_pdfs(
+                    self.session_folder, self.db_records,
                 )
-
-                # Actualizar UI
                 self.after(0, self._display_results)
             except Exception as e:
                 self.after(0, lambda error=e: self._show_error("Error en escaneo", str(error)))
@@ -265,30 +257,17 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
         count = len(selected)
 
         def _do_recovery():
+            indices = [int(item_id) for item_id in selected]
+
             def worker():
-                recovered = 0
-                failed = 0
-                recovered_ids = []
-
-                for item_id in selected:
-                    idx = int(item_id)
-                    if idx < len(self.orphaned):
-                        orphaned_info = self.orphaned[idx]
-                        motivo = orphaned_info.get("motivo", "")
-                        if motivo in {"not_in_db", "huerfano_sin_destino", "adoptar_en_sitio"}:
-                            ok = adopt_orphaned_pdf(orphaned_info, self.db)
-                        else:
-                            ok = recover_orphaned_pdf(orphaned_info, self.db)
-                        if ok:
-                            recovered += 1
-                            recovered_ids.append(item_id)
-                        else:
-                            failed += 1
-
-                # Actualizar UI
+                result = recover_selected(self.orphaned, indices, self.db)
+                # Convertir indices de vuelta a item_ids del tree
+                recovered_ids = [str(i) for i in result.recovered_ids]
                 self.after(
                     0,
-                    lambda: self._show_recovery_result(recovered, failed, count, recovered_ids),
+                    lambda: self._show_recovery_result(
+                        result.recovered, result.failed, count, recovered_ids
+                    ),
                 )
 
             threading.Thread(target=worker, daemon=True).start()

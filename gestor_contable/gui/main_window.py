@@ -24,6 +24,11 @@ from gestor_contable.app.controllers.pdf_swap_controller import execute_pdf_swap
 from gestor_contable.app.selection_controller import build_multi_vm, build_single_vm
 from gestor_contable.app.selection_vm import SelectionVM
 from gestor_contable.app.state.main_window_state import MainWindowState
+from gestor_contable.app.use_cases.classify_use_case import (
+    ClassifyParams,
+    classify_batch,
+    classify_single,
+)
 from gestor_contable.app.use_cases.export_report_use_case import (
     default_export_filename,
     export_period_report,
@@ -41,7 +46,6 @@ from gestor_contable.core.classifier import (
     ClassificationDB,
     _sanitize_folder,
     build_dest_folder,
-    classify_record,
     heal_classified_path,
     has_valid_fecha_emision,
 )
@@ -2942,7 +2946,8 @@ class App3Window(ctk.CTk):
 
             def worker():
                 try:
-                    import shutil
+                    from gestor_contable.core.classifier import safe_move_file
+
                     src_pdf = omitido_record.pdf_path
                     if not src_pdf or not src_pdf.exists():
                         raise FileNotFoundError(f"PDF omitido no encontrado: {src_pdf}")
@@ -2950,26 +2955,9 @@ class App3Window(ctk.CTk):
                     # Destino: carpeta PDF del cliente, con nombre = clave del XML
                     # xml_path está en CLIENT/XML/archivo.xml → PDF en CLIENT/PDF/
                     dest_dir = selected_xml.xml_path.parent.parent / "PDF"
-                    dest_dir.mkdir(parents=True, exist_ok=True)
                     dest_pdf = dest_dir / f"{selected_xml.clave}.pdf"
 
-                    # Copiar de forma segura (SHA256)
-                    import hashlib
-
-                    def sha256(path):
-                        h = hashlib.sha256()
-                        with open(path, "rb") as f:
-                            for chunk in iter(lambda: f.read(65536), b""):
-                                h.update(chunk)
-                        return h.hexdigest()
-
-                    shutil.copy2(src_pdf, dest_pdf)
-                    if sha256(src_pdf) != sha256(dest_pdf):
-                        dest_pdf.unlink(missing_ok=True)
-                        raise IOError("Verificación SHA256 fallida — PDF no movido")
-
-                    # Eliminar original omitido
-                    src_pdf.unlink()
+                    safe_move_file(src_pdf, dest_pdf)
 
                     self.after(0, lambda: self._show_info(
                         "Vinculacion completada",
@@ -3227,10 +3215,11 @@ class App3Window(ctk.CTk):
             session = self.session
             db      = self.db
             _client_override = self._effective_client_name(self._get_mes_str(record.fecha_emision))
+            params = ClassifyParams(cat, subtipo, cuenta, prov)
 
             def worker():
                 try:
-                    classify_record(record, session.folder, db, cat, subtipo, cuenta, prov,
+                    classify_single(record, session.folder, db, params,
                                     client_name_override=_client_override)
                     self.after(0, self._on_classify_ok)
                 except Exception as exc:
@@ -3259,24 +3248,22 @@ class App3Window(ctk.CTk):
             record_list = records_to_classify
             session = self.session
             db = self.db
+            params = ClassifyParams(cat, subtipo, cuenta, prov)
+
+            def _get_override(rec: FacturaRecord) -> str | None:
+                return self._effective_client_name(self._get_mes_str(rec.fecha_emision))
 
             def worker():
-                errores = []
-                for i, record in enumerate(record_list):
-                    if i % 100 == 0:
-                        self.after(0, lambda i=i: self._btn_classify.configure(
-                            text=f"Clasificando {i+1}/{n}..."
-                        ))
-                    try:
-                        _override = self._effective_client_name(
-                            self._get_mes_str(record.fecha_emision)
+                result = classify_batch(
+                    record_list, session.folder, db, params,
+                    get_client_override=_get_override,
+                    on_progress=lambda cur, tot: self.after(
+                        0, lambda c=cur, t=tot: self._btn_classify.configure(
+                            text=f"Clasificando {c}/{t}..."
                         )
-                        classify_record(record, session.folder, db, cat, subtipo, cuenta, prov,
-                                        client_name_override=_override)
-                    except Exception as exc:
-                        errores.append((record, str(exc)))
-
-                self.after(0, lambda: self._on_batch_classify_done(n, errores))
+                    ),
+                )
+                self.after(0, lambda: self._on_batch_classify_done(result.total, result.errores))
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -3397,26 +3384,22 @@ class App3Window(ctk.CTk):
         records_list = registros_a_clasificar
         session = self.session
         db = self.db
-        n = len(records_list)
+        params = ClassifyParams(categoria)
+
+        def _get_override(rec: FacturaRecord) -> str | None:
+            return self._effective_client_name(self._get_mes_str(rec.fecha_emision))
 
         def worker():
-            errores = []
-            for i, record in enumerate(records_list):
-                if i % 100 == 0:
-                    self.after(0, lambda i=i: self._btn_auto_classify.configure(
-                        text=f"Clasificando {i+1}/{n}..."
-                    ))
-                try:
-                    # Para INGRESOS y SIN_RECEPTOR, no se necesitan subtipo, cuenta, proveedor
-                    _override = self._effective_client_name(
-                        self._get_mes_str(record.fecha_emision)
+            result = classify_batch(
+                records_list, session.folder, db, params,
+                get_client_override=_get_override,
+                on_progress=lambda cur, tot: self.after(
+                    0, lambda c=cur, t=tot: self._btn_auto_classify.configure(
+                        text=f"Clasificando {c}/{t}..."
                     )
-                    classify_record(record, session.folder, db, categoria, "", "", "",
-                                    client_name_override=_override)
-                except Exception as exc:
-                    errores.append((record, str(exc)))
-
-            self.after(0, lambda: self._on_batch_classify_done(n, errores))
+                ),
+            )
+            self.after(0, lambda: self._on_batch_classify_done(result.total, result.errores))
 
         threading.Thread(target=worker, daemon=True).start()
 
