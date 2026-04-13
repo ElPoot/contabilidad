@@ -2773,6 +2773,15 @@ class App3Window(ctk.CTk):
                 f"Categoría inferida: {categoria or 'N/A'}\n\n"
                 f"¿Registrarlo como clasificado en su ubicación actual?"
             )
+        elif motivo in {"huerfano_sin_destino", "adoptar_en_sitio"}:
+            categoria = orphaned_info.get("categoria_inferida", "")
+            confirm_msg = (
+                f"Este PDF tiene clave en la base de datos, pero no tiene un destino PDF registrado.\n\n"
+                f"Archivo: {Path(ruta_actual).name}\n"
+                f"Clave: {clave}\n"
+                f"Categoría inferida: {categoria or 'N/A'}\n\n"
+                f"¿Adoptarlo en su ubicación actual y actualizar la base de datos?"
+            )
         else:
             dest_name = Path(ruta_esperada).name if ruta_esperada else "desconocido"
             confirm_msg = (
@@ -2789,12 +2798,12 @@ class App3Window(ctk.CTk):
         # Delegar toda la lógica al Core
         def worker():
             try:
-                if motivo == "not_in_db":
+                if motivo in {"not_in_db", "huerfano_sin_destino", "adoptar_en_sitio"}:
                     from gestor_contable.core.classifier import adopt_orphaned_pdf
                     if adopt_orphaned_pdf(orphaned_info, self.db):
                         self.after(0, lambda: self._show_info(
                             "Adoptado",
-                            f"PDF registrado en BD como clasificado.\n"
+                            f"PDF registrado en BD en su ubicación actual.\n"
                             f"Categoría: {orphaned_info.get('categoria_inferida', 'N/A')}"
                         ))
                         self.after(0, self._load_session, self.session)

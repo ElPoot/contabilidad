@@ -35,6 +35,17 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def is_recoverable_pdf_destination(path: Path | str | None) -> bool:
+    """Devuelve True solo para destinos que parecen una ruta física de PDF."""
+    if path is None:
+        return False
+    try:
+        candidate = Path(path)
+    except TypeError:
+        return False
+    return candidate.suffix.lower() == ".pdf"
+
+
 def safe_move_file(source: Path, dest: Path, *, retries: int = 12) -> None:
     """Mueve un archivo usando el protocolo atomico SHA256.
 
@@ -447,6 +458,15 @@ def recover_orphaned_pdf(
 
         ruta_esperada = Path(ruta_esperada)
 
+        if not is_recoverable_pdf_destination(ruta_esperada):
+            logging.warning(
+                "Destino de recuperación no es un PDF confiable para %s: %s. "
+                "Se adopta el archivo en su ubicación actual.",
+                clave,
+                ruta_esperada,
+            )
+            return adopt_orphaned_pdf(orphaned_info, db)
+
         # Crear carpeta destino si no existe
         ruta_esperada.parent.mkdir(parents=True, exist_ok=True)
 
@@ -495,23 +515,32 @@ def adopt_orphaned_pdf(
     try:
         archivo = Path(orphaned_info.get("archivo"))
         clave = orphaned_info.get("clave", "DESCONOCIDA")
-        categoria = orphaned_info.get("categoria_inferida", "")
+        categoria_inferida = str(orphaned_info.get("categoria_inferida", "") or "").strip()
 
         if not archivo.exists():
             raise FileNotFoundError(f"Archivo no existe: {archivo}")
 
+        prev = db.get_record(clave) or {}
         sha = sha256_file(archivo)
+        categoria_final = str(prev.get("categoria") or "").strip() or categoria_inferida
         db.upsert(
             clave_numerica=clave,
             estado="clasificado",
-            categoria=categoria,
+            categoria=categoria_final,
+            subtipo=str(prev.get("subtipo") or ""),
+            nombre_cuenta=str(prev.get("nombre_cuenta") or ""),
+            proveedor=str(prev.get("proveedor") or ""),
+            ruta_origen=str(prev.get("ruta_origen") or ""),
             ruta_destino=str(archivo),
             sha256=sha,
+            fecha_clasificacion=datetime.now().isoformat(timespec="seconds"),
+            clasificado_por="local",
+            ors_manual_override=str(prev.get("ors_manual_override") or ""),
         )
         logging.info(
             f"Adoptado PDF manual: {archivo.name}\n"
             f"  Clave: {clave}\n"
-            f"  Categoria: {categoria or 'sin categoria'}\n"
+            f"  Categoria: {categoria_final or 'sin categoria'}\n"
             f"  Ruta: {archivo}"
         )
         return True

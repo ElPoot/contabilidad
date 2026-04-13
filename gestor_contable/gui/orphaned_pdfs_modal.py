@@ -215,7 +215,8 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
             "not_in_db": "Sin registro en BD",
             "wrong_location": "Ubicación incorrecta",
             "duplicado": "Duplicado (en ambas ubicaciones)",
-            "huerfano_sin_destino": "Huérfano (reclasificación falló)",
+            "huerfano_sin_destino": "Sin destino PDF en BD",
+            "adoptar_en_sitio": "Adoptar en ubicación actual",
         }
 
         for i, orphaned_info in enumerate(self.orphaned):
@@ -274,7 +275,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
                     if idx < len(self.orphaned):
                         orphaned_info = self.orphaned[idx]
                         motivo = orphaned_info.get("motivo", "")
-                        if motivo == "not_in_db":
+                        if motivo in {"not_in_db", "huerfano_sin_destino", "adoptar_en_sitio"}:
                             ok = adopt_orphaned_pdf(orphaned_info, self.db)
                         else:
                             ok = recover_orphaned_pdf(orphaned_info, self.db)
@@ -298,7 +299,7 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
             (
                 f"¿Procesar {count} PDF(s)?\n\n"
                 "Los PDFs con destino conocido se moverán a su ubicación correcta.\n"
-                "Los PDFs sin registro en BD se adoptarán en su ubicación actual."
+                "Los PDFs sin registro o sin destino PDF confiable se adoptarán en su ubicación actual."
             ),
             on_yes=_do_recovery,
             confirm_text="Procesar",

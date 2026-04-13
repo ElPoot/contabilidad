@@ -293,7 +293,8 @@ def create_orphaned_record(orphaned_info: dict) -> FacturaRecord:
         "not_in_db": "Sin registro en BD",
         "wrong_location": "Ubicación incorrecta",
         "duplicado": "Duplicado",
-        "huerfano_sin_destino": "Reclasificación falló",
+        "huerfano_sin_destino": "Sin destino PDF en BD",
+        "adoptar_en_sitio": "Adoptar en ubicación actual",
     }
 
     # Crear record con clave requerida
@@ -326,7 +327,7 @@ def find_orphaned_pdfs(
             "archivo": Path,
             "ruta_actual": str,
             "ruta_esperada": str | None,
-            "motivo": str,  # "not_in_db" | "wrong_location" | "duplicado" | "huerfano_sin_destino"
+            "motivo": str,  # "not_in_db" | "wrong_location" | "duplicado" | "adoptar_en_sitio"
         }
     """
     orphaned = []
@@ -521,15 +522,23 @@ def find_orphaned_pdfs(
                     "ruta_esperada": ruta_esperada,
                     "motivo": "wrong_location",
                 })
-            # Caso 3: huérfano sin destino — reclasificación falló a mitad
+            # Caso 3: PDF ya existe en Contabilidades pero la BD no tiene ruta_destino.
+            # No intentamos moverlo usando ruta_origen porque en pendiente_pdf ese campo
+            # apunta al XML, no a un destino PDF físico.
             elif not ruta_esperada and ruta_origen:
-                logger.debug(f"find_orphaned_pdfs: {nombre} → huerfano_sin_destino")
+                logger.warning(
+                    "find_orphaned_pdfs: %s → adoptar_en_sitio "
+                    "(sin ruta_destino; ruta_origen=%s)",
+                    nombre,
+                    ruta_origen,
+                )
                 orphaned.append({
                     "clave": clave,
                     "archivo": pdf_path,
                     "ruta_actual": path_str,
-                    "ruta_esperada": ruta_origen,
-                    "motivo": "huerfano_sin_destino",
+                    "ruta_esperada": None,
+                    "motivo": "adoptar_en_sitio",
+                    "categoria_inferida": categoria_inferida,
                 })
             else:
                 # PDF coincide con su ruta esperada en BD → OK
