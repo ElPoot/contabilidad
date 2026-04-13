@@ -61,6 +61,7 @@ class DuplicatesQuarantineDB:
                 "INSERT INTO batches (batch_id, fecha, total_archivos) VALUES (?, ?, ?)",
                 (batch_id, datetime.now().isoformat(), total),
             )
+            conn.commit()
 
     def record_file(
         self,
@@ -78,6 +79,7 @@ class DuplicatesQuarantineDB:
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (batch_id, tipo, ruta_original, ruta_cuarentena, resultado, detalle),
             )
+            conn.commit()
 
     def list_batches(self) -> list[dict]:
         with self._lock, contextlib.closing(sqlite3.connect(self._path)) as conn:
@@ -100,6 +102,7 @@ class DuplicatesQuarantineDB:
         with self._lock, contextlib.closing(sqlite3.connect(self._path)) as conn:
             conn.execute("DELETE FROM archivos WHERE batch_id = ?", (batch_id,))
             conn.execute("DELETE FROM batches WHERE batch_id = ?", (batch_id,))
+            conn.commit()
 
 
 def execute_duplicates_quarantine(
