@@ -456,33 +456,68 @@ def recover_orphaned_pdf(
             return True
 
         # Mover archivo con protocolo atomico SHA256
-        try:
-            safe_move_file(archivo_actual, ruta_esperada)
-            logging.info(
-                f"Recuperado PDF: {archivo_actual.name}\n"
-                f"  De: {archivo_actual}\n"
-                f"  A:  {ruta_esperada}"
-            )
+        safe_move_file(archivo_actual, ruta_esperada)
+        logging.info(
+            f"Recuperado PDF: {archivo_actual.name}\n"
+            f"  De: {archivo_actual}\n"
+            f"  A:  {ruta_esperada}"
+        )
 
-            # Actualizar BD
-            db.upsert(
-                clave_numerica=clave,
-                ruta_destino=str(ruta_esperada),
-            )
-            return True
-        except (RuntimeError, OSError) as exc:
-            logger.debug(
-                "recover_orphaned_pdf: intento %s/12 fallido para %s: %s",
-                attempt + 1,
-                orphaned_info.get("clave"),
-                exc,
-                exc_info=(attempt == 0),
-            )
-
-        raise RuntimeError(f"No se pudo mover PDF después de 12 intentos")
+        # Actualizar BD
+        db.upsert(
+            clave_numerica=clave,
+            ruta_destino=str(ruta_esperada),
+        )
+        return True
 
     except Exception as e:
         logging.error(f"Error recuperando PDF {orphaned_info.get('clave')}: {e}")
+        return False
+
+
+
+def adopt_orphaned_pdf(
+    orphaned_info: dict,
+    db: ClassificationDB,
+) -> bool:
+    """Registra un PDF huerfano en BD sin moverlo (adopcion manual).
+
+    Para PDFs colocados manualmente por el contador en Contabilidades/.
+    Infiere la categoria desde la ruta y crea entrada en clasificacion.sqlite.
+
+    Args:
+        orphaned_info: Diccionario con keys: clave, archivo, categoria_inferida
+        db: ClassificationDB para insertar registro
+
+    Returns:
+        True si se adopto exitosamente, False si fallo
+    """
+    try:
+        archivo = Path(orphaned_info.get("archivo"))
+        clave = orphaned_info.get("clave", "DESCONOCIDA")
+        categoria = orphaned_info.get("categoria_inferida", "")
+
+        if not archivo.exists():
+            raise FileNotFoundError(f"Archivo no existe: {archivo}")
+
+        sha = sha256_file(archivo)
+        db.upsert(
+            clave_numerica=clave,
+            estado="clasificado",
+            categoria=categoria,
+            ruta_destino=str(archivo),
+            sha256=sha,
+        )
+        logging.info(
+            f"Adoptado PDF manual: {archivo.name}\n"
+            f"  Clave: {clave}\n"
+            f"  Categoria: {categoria or 'sin categoria'}\n"
+            f"  Ruta: {archivo}"
+        )
+        return True
+
+    except Exception as e:
+        logging.error(f"Error adoptando PDF {orphaned_info.get('clave')}: {e}")
         return False
 
 

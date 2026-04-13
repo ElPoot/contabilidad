@@ -129,10 +129,17 @@ def build_single_vm(
         if r.estado == "pendiente_pdf":
             vm.btn_create_pdf_visible = True
     elif r.estado == "huerfano":
+        orphaned_info = getattr(r, "_orphaned_info", {})
+        motivo = orphaned_info.get("motivo", "")
         vm.btn_recover_visible = True
+        if motivo == "not_in_db":
+            vm.btn_delete_visible = True  # Opcion de eliminar
         vm.btn_classify_enabled = False
         vm.btn_classify_text = "\u2298 No clasificable"
-        vm.block_reason = "Recupera el PDF antes de clasificarlo."
+        if motivo == "not_in_db":
+            vm.block_reason = "Adopta o elimina este PDF antes de continuar."
+        else:
+            vm.block_reason = "Recupera el PDF antes de clasificarlo."
     elif r.razon_omisión:
         vm.btn_link_visible = True
         vm.btn_delete_visible = True

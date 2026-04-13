@@ -426,7 +426,7 @@ class NewCuentaDialog(ctk.CTkToplevel):
         try:
             self.destroy()
         except Exception:
-            pass
+            logger.debug("No se pudo cerrar el modal de guardar cuenta", exc_info=True)
 
 
 class App3Window(ctk.CTk):
@@ -2761,32 +2761,52 @@ class App3Window(ctk.CTk):
         ruta_actual = orphaned_info.get("ruta_actual")
         ruta_esperada = orphaned_info.get("ruta_esperada")
         clave = orphaned_info.get("clave")
-
-        if not ruta_esperada:
-            self._show_warning("Error", "No se pudo determinar la ruta de destino")
-            return
-
-        # Confirmar
         motivo = orphaned_info.get("motivo", "desconocido")
-        if not self._ask(
-            "Recuperar PDF",
-            f"¿Recuperar este PDF?\n\n"
-            f"Clave: {clave}\n"
-            f"Motivo: {motivo}\n"
-            f"De: {Path(ruta_actual).name}\n"
-            f"A: {Path(ruta_esperada).name}"
-        ):
+
+        # Adaptar confirmación según motivo — sin imponer lógica de negocio
+        if motivo == "not_in_db":
+            categoria = orphaned_info.get("categoria_inferida", "")
+            confirm_msg = (
+                f"Este PDF no tiene registro en la base de datos.\n\n"
+                f"Archivo: {Path(ruta_actual).name}\n"
+                f"Clave: {clave}\n"
+                f"Categoría inferida: {categoria or 'N/A'}\n\n"
+                f"¿Registrarlo como clasificado en su ubicación actual?"
+            )
+        else:
+            dest_name = Path(ruta_esperada).name if ruta_esperada else "desconocido"
+            confirm_msg = (
+                f"¿Recuperar este PDF?\n\n"
+                f"Clave: {clave}\n"
+                f"Motivo: {motivo}\n"
+                f"De: {Path(ruta_actual).name}\n"
+                f"A: {dest_name}"
+            )
+
+        if not self._ask("Recuperar PDF", confirm_msg):
             return
 
-        # Ejecutar recuperación
+        # Delegar toda la lógica al Core
         def worker():
             try:
-                from gestor_contable.core.classifier import recover_orphaned_pdf
-                if recover_orphaned_pdf(orphaned_info, self.db):
-                    self.after(0, lambda: self._show_info("Recuperado", "PDF movido exitosamente"))
-                    self.after(0, self._load_session, self.session)
+                if motivo == "not_in_db":
+                    from gestor_contable.core.classifier import adopt_orphaned_pdf
+                    if adopt_orphaned_pdf(orphaned_info, self.db):
+                        self.after(0, lambda: self._show_info(
+                            "Adoptado",
+                            f"PDF registrado en BD como clasificado.\n"
+                            f"Categoría: {orphaned_info.get('categoria_inferida', 'N/A')}"
+                        ))
+                        self.after(0, self._load_session, self.session)
+                    else:
+                        self.after(0, lambda: self._show_error("Error", "No se pudo adoptar el PDF"))
                 else:
-                    self.after(0, lambda: self._show_error("Error", "No se pudo recuperar el PDF"))
+                    from gestor_contable.core.classifier import recover_orphaned_pdf
+                    if recover_orphaned_pdf(orphaned_info, self.db):
+                        self.after(0, lambda: self._show_info("Recuperado", "PDF movido exitosamente"))
+                        self.after(0, self._load_session, self.session)
+                    else:
+                        self.after(0, lambda: self._show_error("Error", "No se pudo recuperar el PDF"))
             except Exception as e:
                 self.after(0, lambda error=e: self._show_error("Error", str(error)))
 

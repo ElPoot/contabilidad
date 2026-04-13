@@ -7,7 +7,11 @@ from tkinter import ttk
 import customtkinter as ctk
 from gestor_contable.gui.fonts import *
 
-from gestor_contable.core.classifier import ClassificationDB, recover_orphaned_pdf
+from gestor_contable.core.classifier import (
+    ClassificationDB,
+    adopt_orphaned_pdf,
+    recover_orphaned_pdf,
+)
 from gestor_contable.core.classification_utils import find_orphaned_pdfs
 from gestor_contable.gui.icons import get_icon
 from gestor_contable.gui.modal_overlay import ModalOverlay
@@ -269,7 +273,12 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
                     idx = int(item_id)
                     if idx < len(self.orphaned):
                         orphaned_info = self.orphaned[idx]
-                        if recover_orphaned_pdf(orphaned_info, self.db):
+                        motivo = orphaned_info.get("motivo", "")
+                        if motivo == "not_in_db":
+                            ok = adopt_orphaned_pdf(orphaned_info, self.db)
+                        else:
+                            ok = recover_orphaned_pdf(orphaned_info, self.db)
+                        if ok:
                             recovered += 1
                             recovered_ids.append(item_id)
                         else:
@@ -286,9 +295,13 @@ class OrphanedPDFsModal(ctk.CTkToplevel):
         ModalOverlay.show_confirm(
             self,
             "Confirmar recuperación",
-            f"¿Recuperar {count} PDF(s)?\n\nLos archivos se moverán a su ubicación correcta.",
+            (
+                f"¿Procesar {count} PDF(s)?\n\n"
+                "Los PDFs con destino conocido se moverán a su ubicación correcta.\n"
+                "Los PDFs sin registro en BD se adoptarán en su ubicación actual."
+            ),
             on_yes=_do_recovery,
-            confirm_text="Recuperar",
+            confirm_text="Procesar",
         )
 
     def _show_recovery_result(self, recovered: int, failed: int, total: int, recovered_ids: list):

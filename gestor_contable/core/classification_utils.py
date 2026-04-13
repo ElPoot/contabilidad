@@ -392,29 +392,86 @@ def find_orphaned_pdfs(
 
     logger.info(f"find_orphaned_pdfs: {len(pdf_paths)} PDFs encontrados en disco para analizar")
 
+    # Lazy imports para evitar ciclo circular
+    # (classification_utils → factura_index → ors_purge → classification_utils)
+    from gestor_contable.core.factura_index import (
+        _extract_clave_from_filename,
+        FacturaIndexer,
+    )
+    try:
+        import fitz  # noqa: F811
+    except ModuleNotFoundError:
+        fitz = None  # type: ignore[assignment]
+
     # ── Clasificar cada PDF ──────────────────────────────────────────────────
     skipped_ok = 0
     for pdf_path in pdf_paths:
         try:
             nombre = pdf_path.name
-            clave_from_name = nombre.replace(".pdf", "").strip()
+            pdf_data = None  # Lazy: se lee solo si se necesita
 
             # Buscar en BD por ruta_destino exacta
             clave = db_by_destino.get(str(pdf_path))
 
-            # Fallback: clave de 50 dígitos en el nombre del archivo
-            if not clave and len(clave_from_name) == 50 and clave_from_name.isdigit():
-                clave = clave_from_name
+            # Pipeline completo de extraccion de clave (CLAUDE.md L157-162)
+            # 1. Regex de 50 digitos embebidos en el nombre
+            if not clave:
+                clave = _extract_clave_from_filename(nombre)
+
+            # 2. Raw bytes scan: busca 506+47 digitos en bytes crudos del PDF
+            if not clave:
+                try:
+                    pdf_data = pdf_path.read_bytes()
+                    raw_clave = FacturaIndexer._try_raw_bytes_clave(pdf_data)
+                    if raw_clave:
+                        clave = raw_clave
+                        logger.debug(
+                            f"find_orphaned_pdfs: {nombre} clave extraida via raw_bytes"
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        f"find_orphaned_pdfs: raw_bytes fallo para {nombre}: {exc}"
+                    )
+                    pdf_data = None
+
+            # 3. Fitz text extraction (PyMuPDF escalado)
+            if not clave and fitz is not None:
+                try:
+                    if pdf_data is None:
+                        pdf_data = pdf_path.read_bytes()
+                    clave_text, _, _, _ = (
+                        FacturaIndexer._extract_clave_from_pdf_text(pdf_data)
+                    )
+                    if clave_text:
+                        clave = clave_text
+                        logger.debug(
+                            f"find_orphaned_pdfs: {nombre} clave extraida via fitz"
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        f"find_orphaned_pdfs: fitz fallo para {nombre}: {exc}"
+                    )
+
+            # Inferir categoria contable desde la ruta del folder
+            categoria_inferida = ""
+            for part in pdf_path.parts:
+                if part.upper() in {"COMPRAS", "GASTOS", "ACTIVO", "OGND"}:
+                    categoria_inferida = part.upper()
+                    break
 
             if not clave:
-                # PDF sin clave identificable y sin ruta en BD → huérfano desconocido
-                logger.debug(f"find_orphaned_pdfs: {nombre} → not_in_db (sin clave identificable)")
+                # Pipeline completo agotado
+                logger.debug(
+                    f"find_orphaned_pdfs: {nombre} not_in_db "
+                    f"(pipeline completo agotado, sin clave)"
+                )
                 orphaned.append({
                     "clave": "DESCONOCIDA",
                     "archivo": pdf_path,
                     "ruta_actual": str(pdf_path),
                     "ruta_esperada": None,
                     "motivo": "not_in_db",
+                    "categoria_inferida": categoria_inferida,
                 })
                 continue
 
@@ -429,6 +486,7 @@ def find_orphaned_pdfs(
                     "ruta_actual": str(pdf_path),
                     "ruta_esperada": None,
                     "motivo": "not_in_db",
+                    "categoria_inferida": categoria_inferida,
                 })
                 continue
 
@@ -1127,6 +1185,11 @@ def consolidate_duplicate_client_folders(
                                 logger.exception(msg)
                                 errors.append(msg)
             except Exception as exc:
+                logger.exception(
+                    "Error moviendo PDF saneado %s hacia %s durante consolidacion por renombre",
+                    src,
+                    dest,
+                )
                 errors.append(f"Error moviendo {src.name}: {exc}")
 
         # Limpiar directorios vacíos bajo wrong_dir

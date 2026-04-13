@@ -626,7 +626,7 @@ class PDFViewer(ctk.CTkFrame):
             try:
                 self._doc.close()
             except Exception:
-                pass
+                logger.debug("No se pudo cerrar el documento PDF actual", exc_info=True)
             self._doc = None
         self._tk_image   = None
         self._text_blocks = []

@@ -8,6 +8,7 @@ No importa customtkinter ni ningun modulo GUI.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import sqlite3
 import threading
@@ -22,6 +23,8 @@ from gestor_contable.core.classification_utils import (
 )
 from gestor_contable.core.classifier import safe_move_file
 from gestor_contable.core.models import FacturaRecord
+
+logger = logging.getLogger(__name__)
 
 
 class OrsPurgeDB:
@@ -464,7 +467,11 @@ def refresh_batch_manifest(purge_db: OrsPurgeDB, batch_id: str) -> None:
             encoding="utf-8",
         )
     except Exception:
-        pass
+        logger.exception(
+            "No se pudo regenerar manifest.json del lote ORS %s en %s",
+            batch_id,
+            purge_db.quarantine_root / batch_id,
+        )
 
 
 def attach_hidden_response_to_batch(

@@ -9,6 +9,7 @@ No importa customtkinter ni ningun modulo GUI.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import uuid
 from datetime import datetime
@@ -16,6 +17,8 @@ from pathlib import Path
 
 from gestor_contable.core.classifier import safe_move_file
 from gestor_contable.core.ors_purge import OrsPurgeDB
+
+logger = logging.getLogger(__name__)
 
 
 def execute_receptor_purge(
@@ -136,4 +139,8 @@ def _write_manifest(
             encoding="utf-8",
         )
     except Exception:
-        pass
+        logger.exception(
+            "No se pudo escribir manifest.json de respuesta_receptor para lote %s en %s",
+            batch_id,
+            batch_dir,
+        )

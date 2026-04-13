@@ -391,8 +391,13 @@ def _write_gasto_grouped(
         for v in sheet_df["total_comprobante"].dropna():
             try:
                 monto_total += Decimal(str(v))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Error sumando total_comprobante (valor=%r) en resumen de hoja '%s': %s",
+                    v,
+                    sheet_name,
+                    exc,
+                )
 
     monedas = (
         sorted({str(m).strip() for m in sheet_df["moneda"].dropna() if str(m).strip()})
@@ -473,8 +478,14 @@ def _write_gasto_grouped(
                     try:
                         if tv is not None:
                             group_sums[col_name] += Decimal(str(tv))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "Error sumando subtotal (columna=%s, valor=%r) en hoja '%s': %s",
+                            col_name,
+                            tv,
+                            sheet_name,
+                            exc,
+                        )
 
                 current_row += 1
 
@@ -974,7 +985,8 @@ def export_period_report(
                 for value in sheet_df["total_comprobante"].dropna().tolist():
                     try:
                         valid_amounts.append(Decimal(str(value)))
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning("Error parseando monto total (valor=%r) en hoja '%s': %s", value, sheet_name, exc)
                         continue
                 if valid_amounts:
                     monto_total = sum(valid_amounts, Decimal("0"))

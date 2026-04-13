@@ -462,6 +462,7 @@ class _CedulaDialog(ctk.CTkToplevel):
                     )
                 self.after(0, lambda n=nombre: self._on_verify_ok(cedula, n, gen))
             except Exception as exc:
+                logger.exception("No se pudo verificar la cédula %s contra Hacienda/cache", cedula)
                 self.after(0, lambda e=exc: self._on_verify_error(str(e), gen))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -517,6 +518,12 @@ class _CedulaDialog(ctk.CTkToplevel):
                 )
                 self.after(0, lambda s=session: self._finish(s))
             except Exception as exc:
+                logger.exception(
+                    "No se pudo confirmar cliente %s (%s) para el periodo %s",
+                    folder_name,
+                    cedula,
+                    year,
+                )
                 self.after(0, lambda e=exc: self._on_verify_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1195,6 +1202,7 @@ class ATVSettingsModal(ctk.CTkToplevel):
             self._status.configure(text="Credenciales guardadas", text_color=SUCCESS)
             self._btn_forget.configure(state="normal")
         except Exception as exc:
+            logger.exception("No se pudieron guardar credenciales ATV para usuario %s", usuario)
             self._status.configure(text=f"Error: {exc}", text_color=DANGER)
 
     def _forget(self) -> None:
@@ -1204,5 +1212,6 @@ class ATVSettingsModal(ctk.CTkToplevel):
             self._entry_clave.delete(0, "end")
             self._refresh_status()
         except Exception as exc:
+            logger.exception("No se pudieron borrar las credenciales ATV guardadas")
             self._status.configure(text=f"Error: {exc}", text_color=DANGER)
 

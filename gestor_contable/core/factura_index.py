@@ -1087,6 +1087,7 @@ class FacturaIndexer:
 
                 reason = str(result.get("razon", "extract_failed"))
                 message = str(result.get("error") or "")
+                preserve_failure_reason = bool(result.get("preserve_failure_reason"))
 
                 filename_tokens = _extract_numeric_tokens(pdf_file.stem, min_len=10)
 
@@ -1095,7 +1096,7 @@ class FacturaIndexer:
                 # that map to any known XML record, it's almost certainly not
                 # an invoice.  Counting it as "omitidos factura" inflates the
                 # error rate with bancarios/comunicados/manuales.
-                if reason in ("extract_failed", "timeout"):
+                if not preserve_failure_reason and reason in ("extract_failed", "timeout"):
                     can_map_by_name = bool(
                         self._resolve_clave_from_filename_tokens(pdf_file.name, consecutivo_index)
                     )
@@ -1391,8 +1392,21 @@ class FacturaIndexer:
                         "size_mb": size_mb,
                         "checksum": hashlib.sha256(pdf_data).hexdigest()[:8],
                     }
-            except Exception:
-                pass  # Si falla la lectura de raw bytes, descartar normalmente
+            except Exception as exc:
+                logger.warning(
+                    "No se pudo validar descarte bancario/institucional para %s; se preserva extract_failed",
+                    pdf_file.name,
+                    exc_info=True,
+                )
+                return {
+                    "clave": None,
+                    "razon": "extract_failed",
+                    "error": f"Fallo validando ruta bancaria/institucional: {exc}",
+                    "intento": 1,
+                    "tiempo_ms": int((time.perf_counter() - started) * 1000),
+                    "size_mb": size_mb,
+                    "preserve_failure_reason": True,
+                }
             # Confirmed: no clave found in raw bytes. Discard as bancario/non-invoice.
             return {
                 "clave": None,

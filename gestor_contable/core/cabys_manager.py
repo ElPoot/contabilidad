@@ -28,16 +28,21 @@ except ModuleNotFoundError:
 
 def _resolve_cabys_db_path() -> Path:
     """Resuelve ruta de la BD CABYS: network drive o fallback local."""
+    fallback_reason = "ruta de red CABYS no disponible"
     try:
         from gestor_contable.core.settings import get_setting
         network_drive = Path(get_setting("network_drive", "Z:/DATA"))
         candidate = network_drive / "CONFIG" / "cabys_database.db"
         if candidate.parent.exists():
             return candidate
-    except Exception:
-        pass
+        fallback_reason = f"carpeta no existe: {candidate.parent}"
+    except Exception as exc:
+        fallback_reason = str(exc)
+        LOGGER.warning("Fallo resolviendo base de datos CABYS en red; se usara fallback: %s", exc)
+
     fallback = Path(__file__).resolve().parent.parent / "data" / "cabys_database.db"
     fallback.parent.mkdir(parents=True, exist_ok=True)
+    LOGGER.info("Usando BD CABYS de fallback local: %s (motivo: %s)", fallback, fallback_reason)
     return fallback
 
 
