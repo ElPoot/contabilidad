@@ -1,75 +1,83 @@
 ---
 name: audit-xml-parsing
-description: Audita robustez del parser XML ante encoding corruption, malformed XML, y ParseError recovery. Usa esta skill cuando menciones XML parsing, encoding issues, ParseError, XML corruption, caracteres inválidos, Latin-1 fallback, UTF-8, FAPEMO XMLs, MensajeHacienda, o fallos de carga XML.
-model: haiku
+description: Audita robustez del parser XML ante encoding corruption, malformed XML, y ParseError recovery. Usa esta skill cuando menciones XML parsing, encoding issues, ParseError, XML corruption, caracteres invalidos, Latin-1 fallback, UTF-8, FAPEMO XMLs, MensajeHacienda, o fallos de carga XML.
 ---
 
-# Auditoría: Parsing XML y Recuperación de Encoding
+# Auditoria: Parsing XML y Recuperacion de Encoding
 
-Sos un auditor especializado en detectar cuándo el parser XML falla ante datos corruptos del emisor y cuándo debería tener fallbacks más robustos.
+Sos un auditor especializado en detectar cuando el parser XML falla ante datos corruptos del emisor y cuando deberia tener fallbacks mas robustos.
 
-## Archivos del alcance
+## Regla fundamental
 
-Leer directamente:
-- `gestor_contable/core/xml_manager.py` — `flatten_xml_stream()`, `_safe_parse_xml_file()` (líneas ~100-300)
-- `gestor_contable/core/xml_cache.py` — caching de XMLs (si existe)
-- `gestor_contable/core/factura_index.py` — recopilación de `parse_errors` (líneas ~280-350)
+Reporta UNICAMENTE lo que encuentres leyendo el codigo actual. No asumas bugs. Si el parser ya tiene fallbacks correctos, reporta "SIN PROBLEMAS". No inventes hallazgos para llenar el reporte.
 
-## Paso 1: Buscar indicadores de falta de robustez
+## Alcance y limites
+
+Este skill audita SOLO el parsing de archivos XML y su estrategia de encoding:
+- `gestor_contable/core/xml_manager.py` -- `flatten_xml_stream()`, `_safe_parse_xml_file()`
+- `gestor_contable/core/factura_index.py` -- recopilacion de `parse_errors`
+
+**Fuera de alcance** (lo cubren otros skills):
+- Extraccion de claves fiscales desde XML --> audit-fiscal-keys
+- Cache de resultados de parsing --> audit-cache
+- Errores silenciosos genericos --> audit-silent-errors
+
+## Paso 1: Buscar puntos de parsing XML
 
 Ejecutar estos Grep patterns:
 
 ```
-1. "except\s+(ET\.ParseError|ParseError)" — qué hace cuando falla
-2. "ET\.parse|ET\.fromstring" — dónde ocurren parses
-3. "encoding.*utf-8|latin-1|iso-8859" — estrategia de fallback
-4. "\.decode\(.*'latin|\.encode\(" — conversiones de bytes
-5. "BOM|bom|UTF-8-sig" — detección de BOM
+1. "ET\.parse|ET\.fromstring|etree.*parse" -- donde ocurren los parses
+2. "except\s+(ET\.ParseError|ParseError|XMLSyntaxError)" -- que hace cuando falla
+3. "encoding.*utf-8|latin-1|iso-8859|cp1252" -- estrategia de fallback de encoding
+4. "\.decode\(|\.encode\(" -- conversiones de bytes
+5. "BOM|bom|UTF-8-sig|codecs" -- deteccion/manejo de BOM
 ```
 
-## Paso 2: Validar estrategia de fallback
+## Paso 2: Leer y evaluar la estrategia de fallback
 
-El parser DEBE intentar múltiples encodings EN ORDEN:
+Leer `_safe_parse_xml_file()` y `flatten_xml_stream()` completos. Verificar:
 
-```
-UTF-8 (default) → Latin-1 → ISO-8859-1 → si todo falla, log + error claro
+1. Que encoding intenta primero y en que orden hace fallback
+2. Si maneja el caso de XML que DECLARA UTF-8 pero contiene bytes Latin-1 (caso real: emisor FAPEMO)
+3. Si ParseError se captura con contexto suficiente (archivo, linea, columna)
+4. Si los errores de parsing se registran en algun lugar accesible (log, lista de errores)
 
-Si archivo DECLARA UTF-8 pero es Latin-1 bytes (ej. FAPEMO):
-  → Re-codificar: decode(latin-1).encode(utf-8).decode(utf-8)
-```
+## Paso 3: Verificar integracion con factura_index
 
-## Paso 3: Generar reporte
+Leer en `factura_index.py` como se manejan los parse_errors:
+- Que pasa con un XML que falla el parsing -- se omite? se reintenta? se registra?
+- El usuario puede ver cuales XMLs fallaron?
+
+## Paso 4: Generar reporte
 
 ```
 AUDITORIA: PARSING XML Y ENCODING
 ==================================
 
-Archivos revisados: [lista]
+Archivos revisados: [lista de archivos que realmente leiste]
+
+ESTRATEGIA DE ENCODING ACTUAL
+-------------------------------
+Funcion principal: [nombre y linea donde esta]
+Orden de intentos: [UTF-8 -> Latin-1 -> ...? o solo UTF-8? describir lo que el codigo hace]
+Caso FAPEMO (UTF-8 declarado, Latin-1 real): [MANEJADO linea:N / NO MANEJADO]
+BOM handling: [SI / NO]
+
+MANEJO DE ParseError
+---------------------
+Captura con contexto (archivo, linea): [SI linea:N / NO]
+Logging del error: [SI (logger/print/lista) / NO (silenciado)]
+Feedback al usuario: [SI / NO]
 
 HALLAZGOS
 ---------
-[CRITICO] xml_manager.py:linea X — Parser intenta UTF-8, si falla no hay fallback
-  Evidencia: FAPEMO XMLs declaran UTF-8 pero contienen bytes Latin-1
-  Impacto: ParseError no recuperable
+[Solo si encontraste problemas reales. Formato:]
+[SEVERIDAD] archivo.py:linea N -- descripcion del problema real encontrado
+  Evidencia: [cita textual del codigo]
+  Impacto: [consecuencia concreta]
 
-[ALTO] xml_manager.py:linea Y — ParseError sin contexto de línea:columna
-  Impacto: Debugging imposible
-
-TAREAS DE CORRECCION
---------------------
-1. xml_manager.py:_safe_parse_xml_file()
-   → Agregar fallback a Latin-1 después de UTF-8
-   → Loguear qué encoding funcionó
-
-2. xml_manager.py:flatten_xml_stream()
-   → Capturar ParseError con línea exacta
-   → No silenciar sin logging
+[Si no hay problemas: "Ningun hallazgo. La estrategia de parsing es robusta."]
 
 VEREDICTO: [SIN PROBLEMAS / REQUIERE ATENCION / CRITICO]
 ```
-
-## Relaciones
-
-- **audit-silent-errors:** ParseError sin logging = debugging imposible
-- **audit-test-coverage:** Fallbacks de encoding necesitan tests
-- **audit-fiscal-keys:** XML parseado es base para clave

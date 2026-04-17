@@ -1,52 +1,56 @@
 ---
 name: audit-silent-errors
-description: Audita observabilidad del sistema — errores silenciados bajo except Exception sin logging, logging insuficiente, y estados degradados sin feedback al usuario. Usa esta skill cuando menciones errores silenciosos, logging insuficiente, observabilidad, silent failures, except sin logger, debugging difícil, estados ocultos, o falta de telemetría.
-model: haiku
+description: Audita observabilidad del sistema -- errores silenciados bajo except Exception sin logging, logging insuficiente, y estados degradados sin feedback al usuario. Usa esta skill cuando menciones errores silenciosos, logging insuficiente, observabilidad, silent failures, except sin logger, debugging dificil, estados ocultos, o falta de telemetria.
 ---
 
-# Auditoría: Errores Silenciosos y Observabilidad
+# Auditoria: Errores Silenciosos y Observabilidad
 
-Sos un auditor especializado en detectar cuándo el código traga excepciones sin logging, haciendo bugs imposibles de debuggear en producción.
+Sos un auditor especializado en detectar cuando el codigo traga excepciones sin logging, haciendo bugs imposibles de debuggear en produccion.
 
-## Archivos del alcance
+## Regla fundamental
 
-Archivos de máximo riesgo:
-- `gestor_contable/gui/main_window.py` — excepciones en carga de datos (líneas ~50-200, ~3500-4200)
-- `gestor_contable/core/classification_utils.py` — loops con except
-- `gestor_contable/core/xml_manager.py` — API calls, ParseError
-- `gestor_contable/gui/session_view.py` — UI modals, validaciones (líneas ~50-150)
+Reporta UNICAMENTE lo que encuentres leyendo el codigo actual. No todos los `except` son malos -- evalua el contexto. Un `except ValueError: pass` en un loop de parsing puede ser intencional. Juzga por impacto real, no por patron sintactico.
+
+## Alcance y limites
+
+Este skill audita la observabilidad del manejo de errores en todo el proyecto:
+- `gestor_contable/gui/main_window.py` -- excepciones en carga de datos
+- `gestor_contable/core/classification_utils.py` -- loops con except
+- `gestor_contable/core/xml_manager.py` -- API calls, ParseError
+- `gestor_contable/gui/session_view.py` -- UI modals, validaciones
+- Cualquier otro archivo donde encuentres el patron
+
+**Fuera de alcance** (lo cubren otros skills):
+- Si el parser XML tiene fallbacks de encoding --> audit-xml-parsing
+- Si el protocolo SHA256 se cumple --> audit-safe-move
+- Si SQLite tiene Lock --> audit-sqlite
 
 ## Paso 1: Buscar patrones de silencio
 
-Ejecutar estos Grep patterns GLOBALES:
+Ejecutar estos Grep patterns en `gestor_contable/`:
 
 ```
-1. "except\s+(Exception|.*Error):" — broad exception catching
-2. "except.*:\s+(pass|continue|break)" — silencio total o salto
-3. "except.*:\s+return|except.*:\s+return\s+None" — retorna sin logging
-4. "logger\.(error|warning|exception)" — qué SÍ loguea
-5. "print\(|traceback\." — debug output ad hoc en lugar de logger
+1. "except\s+(Exception|.*Error):\s*(pass|continue|break)" -- silencio total
+2. "except.*:\s*return\s*None|except.*:\s*return\s*$" -- retorna sin logging
+3. "except:" sin tipo -- except desnudo (atrapa todo incluido KeyboardInterrupt)
+4. "logger\.(error|warning|exception)" -- que SI loguea (para tener contexto de lo que funciona bien)
+5. "print\(.*traceback|traceback\.print" -- debug ad hoc en lugar de logger
 ```
 
-## Paso 2: Clasificar severidad de cada silencio
+## Paso 2: Clasificar cada silencio por impacto
 
-Para CADA `except` encontrado:
+Para CADA `except` silencioso encontrado, leer el contexto circundante y evaluar:
 
+- Que operacion fallo? (I/O, parsing, API call, UI update)
+- Que consecuencia tiene el silencio? (dato perdido, estado inconsistente, usuario sin feedback)
+- Es intencional? (algunos silencios son validos, ej: intentar un fallback y continuar)
+
+Severidades:
 ```
-CRITICO:
-  - except Exception: pass
-  - except: pass (desnudo)
-  - API call sin logging si falla, retorna None/default
-  - XML parsing sin error context
-
-ALTO:
-  - except sin logger.error(), retorna None
-  - Loop continúa tras error sin contar/loguear qué falló
-  - Usuario no ve error claro en UI
-
-MEDIO:
-  - Warnings genéricos que no explican contexto
-  - print() en lugar de logger formal
+CRITICO: except que traga errores de I/O fiscal (movimiento de archivos, SQLite writes)
+ALTO:    except que oculta errores de API o parsing sin ninguna traza
+MEDIO:   except amplio donde un logging ayudaria pero el flujo no es critico
+BAJO:    print() en lugar de logger (funcional pero no profesional)
 ```
 
 ## Paso 3: Generar reporte
@@ -55,40 +59,23 @@ MEDIO:
 AUDITORIA: ERRORES SILENCIOSOS Y OBSERVABILIDAD
 ================================================
 
-Archivos revisados: [lista]
+Archivos revisados: [lista de archivos que realmente leiste]
+
+RESUMEN DE EXCEPCIONES
+-----------------------
+Total except encontrados: [N]
+Con logging adecuado: [N]
+Silenciosos (pass/continue/return None): [N]
+Intencionales (evaluados como validos): [N]
 
 HALLAZGOS
 ---------
-[CRITICO] main_window.py:linea X — except Exception: pass en _load_invoices()
-  Problema: Si XML load falla, usuario no sabe
-  Impacto: Debugging imposible en producción
+[Solo los silencios con impacto real. Formato:]
+[SEVERIDAD] archivo.py:linea N -- except [tipo] silenciado en [contexto]
+  Codigo: [cita textual de las lineas relevantes]
+  Impacto: [que se pierde al silenciar este error]
 
-[CRITICO] xml_manager.py:linea Y — API call except sin logging
-  Evidencia: requests.RequestException tragado, retorna None
-  Impacto: Timeout o error no rastreado
-
-[ALTO] classification_utils.py:linea Z — except ParseError continúa sin registrar
-  Problema: Qué registro falló? Por qué?
-  Impacto: Errores silenciosos en procesamiento batch
-
-TAREAS DE CORRECCION
---------------------
-1. main_window.py:_load_invoices()
-   → Agregar try-except con logger.exception()
-   → Mostrar error claro al usuario en UI
-
-2. xml_manager.py:fetch_from_hacienda()
-   → Loguear requests.RequestException completa (traceback)
-   → Incluir retry count, timeouts, códigos HTTP
-
-3. classification_utils.py:filter_records()
-   → Loguear qué registro falló (XML path, clave)
-   → No silenciar ParseError
+[Si no hay silencios problematicos: "Ningun hallazgo. La observabilidad es adecuada."]
 
 VEREDICTO: [SIN PROBLEMAS / REQUIERE ATENCION / CRITICO]
 ```
-
-## Relaciones (transversal)
-
-- Bloquea debugging de: audit-xml-parsing, audit-safe-move, audit-fiscal-keys
-- **audit-test-coverage:** Sin tests, silencios nunca se detectan en CI

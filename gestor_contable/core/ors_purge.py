@@ -503,30 +503,44 @@ def attach_hidden_response_to_batch(
     dest = _resolve_quarantine_destination(source_path, quarantine_clave_dir)
     try:
         safe_move_file(source_path, dest)
-        purge_db.record_archivo(
-            batch_id=batch_id,
-            clave=clave,
-            tipo_archivo=tipo_archivo,
-            ruta_original=str(source_path),
-            ruta_cuarentena=str(dest),
-            resultado="en_cuarentena",
-        )
-        purge_db.adjust_batch_total_archivos(batch_id, 1)
+        try:
+            purge_db.record_archivo(
+                batch_id=batch_id,
+                clave=clave,
+                tipo_archivo=tipo_archivo,
+                ruta_original=str(source_path),
+                ruta_cuarentena=str(dest),
+                resultado="en_cuarentena",
+            )
+            purge_db.adjust_batch_total_archivos(batch_id, 1)
+        except Exception as db_exc:
+            try:
+                safe_move_file(dest, source_path)
+            except Exception as rollback_exc:
+                logger.error(
+                    "Doble fallo crítico: BD falló y rollback físico falló para el archivo %s. DB Err: %s, Rollback Err: %s",
+                    source_path, db_exc, rollback_exc
+                )
+            raise db_exc
+            
         refresh_batch_manifest(purge_db, batch_id)
         return {
             "tipo_archivo": tipo_archivo,
             "ruta_cuarentena": str(dest),
         }
     except Exception as exc:
-        purge_db.record_archivo(
-            batch_id=batch_id,
-            clave=clave,
-            tipo_archivo=tipo_archivo,
-            ruta_original=str(source_path),
-            ruta_cuarentena=None,
-            resultado="fallido",
-            detalle=str(exc),
-        )
+        try:
+            purge_db.record_archivo(
+                batch_id=batch_id,
+                clave=clave,
+                tipo_archivo=tipo_archivo,
+                ruta_original=str(source_path),
+                ruta_cuarentena=None,
+                resultado="fallido",
+                detalle=str(exc),
+            )
+        except Exception:
+            pass
         refresh_batch_manifest(purge_db, batch_id)
         raise
 
@@ -555,26 +569,41 @@ def _quarantine_clave(
 
             try:
                 safe_move_file(src, dest)
+                
+                try:
+                    purge_db.record_archivo(
+                        batch_id=batch_id,
+                        clave=clave,
+                        tipo_archivo=tipo,
+                        ruta_original=str(src),
+                        ruta_cuarentena=str(dest),
+                        resultado="en_cuarentena",
+                    )
+                except Exception as db_exc:
+                    try:
+                        safe_move_file(dest, src)
+                    except Exception as rollback_exc:
+                        logger.error(
+                            "Doble fallo crítico: BD falló y rollback físico falló para el archivo %s. DB Err: %s, Rollback Err: %s",
+                            src, db_exc, rollback_exc
+                        )
+                    raise db_exc
+
                 movidos.append(src)
-                purge_db.record_archivo(
-                    batch_id=batch_id,
-                    clave=clave,
-                    tipo_archivo=tipo,
-                    ruta_original=str(src),
-                    ruta_cuarentena=str(dest),
-                    resultado="en_cuarentena",
-                )
             except Exception as exc:
                 fallidos.append((src, str(exc)))
-                purge_db.record_archivo(
-                    batch_id=batch_id,
-                    clave=clave,
-                    tipo_archivo=tipo,
-                    ruta_original=str(src),
-                    ruta_cuarentena=None,
-                    resultado="fallido",
-                    detalle=str(exc),
-                )
+                try:
+                    purge_db.record_archivo(
+                        batch_id=batch_id,
+                        clave=clave,
+                        tipo_archivo=tipo,
+                        ruta_original=str(src),
+                        ruta_cuarentena=None,
+                        resultado="fallido",
+                        detalle=str(exc),
+                    )
+                except Exception:
+                    pass
 
     return {"clave": clave, "movidos": movidos, "fallidos": fallidos}
 

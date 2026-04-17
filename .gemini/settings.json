@@ -1,0 +1,24 @@
+{
+  "security": {
+    "auth": {
+      "selectedType": "oauth-personal"
+    }
+  },
+  "model": {
+    "name": "max-effort-3"
+  },
+  "modelConfigs": {
+    "customAliases": {
+      "max-effort-3": {
+        "modelConfig": {
+          "model": "gemini-3.1-pro-preview",
+          "generateContentConfig": {
+            "thinkingConfig": {
+              "thinkingLevel": "high"
+            }
+          }
+        }
+      }
+    }
+  }
+}

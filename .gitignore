@@ -223,6 +223,12 @@ gestor_contable/data/hacienda_cache.db
 # Archivos temporales de validación/testing generados en runtime
 gestor_contable/data/_tmp_*/
 gestor_contable/data/forensics/
+gestor_contable/data/tmp_*/
+_tmp_*/
+tmp_*/
+.tmp_*/
+*.bak
+*.db
 
 # Artefactos de Codex
 .codex_stage_export_commit.patch

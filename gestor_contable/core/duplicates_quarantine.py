@@ -9,6 +9,7 @@ No importa customtkinter ni ningun modulo GUI.
 from __future__ import annotations
 
 import contextlib
+import logging
 import shutil
 import sqlite3
 import threading
@@ -17,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 
 from gestor_contable.core.classifier import safe_move_file
+
+logger = logging.getLogger(__name__)
 
 
 class DuplicatesQuarantineDB:
@@ -141,11 +144,26 @@ def execute_duplicates_quarantine(
                 results.append({"tipo": tipo, "ruta": src_path, "ok": False, "detalle": "no existe"})
                 continue
             safe_move_file(src_path, dst_path)
-            quarantine_db.record_file(batch_id, tipo, str(src_path), str(dst_path), "ok")
+            
+            try:
+                quarantine_db.record_file(batch_id, tipo, str(src_path), str(dst_path), "ok")
+            except Exception as db_exc:
+                try:
+                    safe_move_file(dst_path, src_path)
+                except Exception as rollback_exc:
+                    logger.error(
+                        "Doble fallo crítico: BD falló y rollback físico falló para el archivo %s. DB Err: %s, Rollback Err: %s",
+                        src_path, db_exc, rollback_exc
+                    )
+                raise db_exc
+
             movidos += 1
             results.append({"tipo": tipo, "ruta": src_path, "ok": True})
         except Exception as e:
-            quarantine_db.record_file(batch_id, tipo, str(src_path), None, "error", str(e))
+            try:
+                quarantine_db.record_file(batch_id, tipo, str(src_path), None, "error", str(e))
+            except Exception:
+                pass
             fallidos += 1
             results.append({"tipo": tipo, "ruta": src_path, "ok": False, "detalle": str(e)})
 

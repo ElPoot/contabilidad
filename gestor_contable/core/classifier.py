@@ -755,7 +755,7 @@ def classify_record(
             "El PDF fue copiado correctamente, pero no se pudo eliminar el original\n"
             "(está en uso por otra aplicación, ej: visor PDF abierto).\n"
             "La copia ha sido eliminada para evitar duplicados.\n\n"
-            "Cierra el visor de PDFs e intenta de nuevo. [Intentos: {attempt + 1}/12]"
+            f"Cierra el visor de PDFs e intenta de nuevo. [Intentos: {attempt + 1}/12]"
         ) from last_err
 
     # (6) Registrar en BD

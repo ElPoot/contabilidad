@@ -1,83 +1,90 @@
 ---
 name: audit-fiscal-keys
-description: Audita integridad de claves Hacienda (50 dígitos exactos) y clasificación de tipo documental. Usa esta skill cuando menciones clave fiscal, 50 dígitos, tipo de documento, FacturaElectronica, NotaCreditoElectronica, NC vs FE, múltiples claves en PDF, clasificación por filename, o falsos positivos de tipo documental.
-model: haiku
+description: Audita integridad de claves Hacienda (50 digitos exactos) y clasificacion de tipo documental por root.tag del XML. Usa esta skill cuando menciones clave fiscal, 50 digitos, tipo de documento, FacturaElectronica, NotaCreditoElectronica, NC vs FE, multiples claves en PDF, clasificacion por filename, o falsos positivos de tipo documental.
 ---
 
-# Auditoría: Integridad Fiscal de Claves y Tipología Documental
+# Auditoria: Integridad Fiscal de Claves y Tipologia Documental
 
 Sos un auditor especializado en garantizar que NUNCA se clasifique un documento por filename y que tipo_documento SIEMPRE venga del root.tag del XML.
 
-## Archivos del alcance
+## Regla fundamental
 
-Leer directamente:
-- `gestor_contable/core/xml_manager.py` — `flatten_xml_stream()`, extracción de clave
-- `gestor_contable/core/factura_index.py` — `_extract_clave_from_pdf()`, `_link_pdf_to_xml()` (líneas ~100-250)
-- `gestor_contable/core/models.py` — clase `FacturaRecord`, campos `clave` y `tipo_documento` (líneas ~30-80)
+Reporta UNICAMENTE lo que encuentres leyendo el codigo actual. No asumas bugs. Si la extraccion de claves y la tipologia funcionan correctamente, reporta "SIN PROBLEMAS". No inventes hallazgos para llenar el reporte.
 
-## Paso 1: Buscar violaciones de clasificación por nombre (PROHIBIDO)
+## Alcance y limites
 
-Ejecutar estos Grep patterns:
+Este skill audita SOLO la extraccion de claves fiscales y la determinacion de tipo documental:
+- `gestor_contable/core/xml_manager.py` -- `flatten_xml_stream()`, extraccion de clave desde XML
+- `gestor_contable/core/factura_index.py` -- `_extract_clave_from_pdf()`, regla de multiples claves
+- `gestor_contable/core/models.py` -- clase `FacturaRecord`, campos `clave` y `tipo_documento`
 
-```
-1. "filename.*clave|\.name.*\d{50}|_NC\.|_respuesta\." — clasificación por sufijo
-2. "root\.tag|FacturaElectronica|NotaCreditoElectronica" — si lee XML tag
-3. "clave.*len\(|len.*clave.*==.*50" — validación de exactamente 50 dígitos
-4. "tipo.*01|tipo.*03|tipo_documento" — codes de tipo (01=factura, 03=NC)
-5. "\.findall.*clave|regex.*\d{50}" — búsqueda de múltiples claves
-```
+**Fuera de alcance** (lo cubren otros skills):
+- Estrategia completa de vinculacion PDF-XML (5 pasos en cascada) --> audit-xml-pdf-link
+- Robustez del parser XML ante encoding --> audit-xml-parsing
+- Movimiento de archivos clasificados --> audit-safe-move
 
-## Paso 2: Validar extracción de clave (ORDEN CORRECTO)
+## Paso 1: Verificar determinacion de tipo documental
 
-La estrategia DEBE ser:
+Leer `flatten_xml_stream()` en `xml_manager.py` y verificar:
 
 ```
-1. Leer root.tag del XML → determinar tipo_documento
-2. Extraer clave del XML flattened
-3. Si XML NO tiene clave → intentar PDF (filename, texto, bytes) como fallback
-4. Si PDF tiene MÚLTIPLES claves → USAR ÚLTIMA (NC con 2 claves: original + NC)
-5. Validar clave.len() == 50 dígitos EXACTOS
+Buscar:
+1. "root\.tag|FacturaElectronica|NotaCreditoElectronica|MensajeHacienda" -- si lee el tag raiz
+2. "tipo_documento|tipo_doc" -- como se asigna el tipo
+3. "_NC\.|_respuesta\.|_firmado\." -- si el filename influye en la clasificacion (PROHIBIDO)
 ```
 
-**REGLA CRÍTICA:** En PDFs de Nota Crédito con dos claves (original FE + NC actual), siempre usar la ÚLTIMA encontrada.
+Regla critica: el tipo documental (01=factura, 03=NC, etc.) DEBE determinarse por el root.tag del XML, NUNCA por el nombre del archivo.
 
-## Paso 3: Generar reporte
+## Paso 2: Verificar extraccion de clave de 50 digitos
+
+Leer `_extract_clave_from_pdf()` en `factura_index.py` y verificar:
+
+```
+Buscar:
+1. "\d{50}|50.*digit|clave.*len" -- patron de extraccion de 50 digitos
+2. "claves.*\[|findall|re\." -- si busca multiples claves
+3. "claves\[-1\]|last|ultima" -- si usa la ULTIMA clave cuando hay multiples
+```
+
+Regla critica para PDFs de NC: si un PDF contiene dos claves (la factura original + la NC actual), SIEMPRE debe usarse la ULTIMA encontrada.
+
+## Paso 3: Verificar validacion de longitud
+
+```
+Buscar en xml_manager.py y factura_index.py:
+1. "len.*clave.*==.*50|clave.*len.*50" -- validacion de exactamente 50 digitos
+2. "isdigit|\.match.*\d" -- validacion de que son solo digitos
+```
+
+## Paso 4: Generar reporte
 
 ```
 AUDITORIA: INTEGRIDAD FISCAL DE CLAVES
 =======================================
 
-Archivos revisados: [lista]
+Archivos revisados: [lista de archivos que realmente leiste]
+
+TIPO DOCUMENTAL
+----------------
+Fuente de tipo_documento: [root.tag del XML linea:N / filename / otro]
+Tags reconocidos: [lista de tags que el codigo reconoce]
+Filename influye en tipo: [NO (correcto) / SI (violacion) -- evidencia]
+
+EXTRACCION DE CLAVE
+--------------------
+Patron de busqueda: [regex o metodo usado -- linea:N]
+Validacion de 50 digitos: [SI linea:N / NO]
+Multiples claves en PDF: [USA ULTIMA linea:N / USA PRIMERA (error) / NO MANEJA]
 
 HALLAZGOS
 ---------
-[CRITICO] factura_index.py:linea X — _extract_clave_from_pdf() busca filename ANTES que XML
-  Impacto: NC duplicadas no detectadas, clasificaciones erróneas
+[Solo si encontraste problemas reales. Formato:]
+[SEVERIDAD] archivo.py:linea N -- descripcion del problema real encontrado
+  Evidencia: [cita textual del codigo]
+  Impacto: [consecuencia concreta]
 
-[CRITICO] models.py:linea Y — tipo_documento se lee de filename, no de root.tag
-  Evidencia: Sufijos como _NC, _respuesta determinan tipo
-  Impacto: FE confundida con NC
-
-[ALTO] factura_index.py:linea Z — Si múltiples claves, usa PRIMERA en lugar de ÚLTIMA
-  Impacto: PDFs de NC devuelven clave de referencia, no de documento actual
-
-TAREAS DE CORRECCION
---------------------
-1. factura_index.py:_extract_clave_from_pdf()
-   → Cambiar orden: XML root tag PRIMERO, filename es fallback
-
-2. models.py:FacturaRecord
-   → Agregar tipo_documento_from_xml field
-   → Setear por root.tag, NUNCA por filename
-
-3. factura_index.py:_link_pdf_to_xml()
-   → Si múltiples claves en PDF, usar ÚLTIMA
+[Si no hay problemas: "Ningun hallazgo. Claves y tipologia funcionan correctamente."]
 
 VEREDICTO: [SIN PROBLEMAS / REQUIERE ATENCION / CRITICO]
 ```
-
-## Relaciones
-
-- **audit-xml-parsing:** XML parseado es fuente de clave + tipo
-- **audit-safe-move:** Claves movidas deben ser correctas
-- **audit-test-coverage:** Tests de múltiples claves, NC con 2 claves

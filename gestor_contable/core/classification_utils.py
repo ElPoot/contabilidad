@@ -7,7 +7,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from gestor_contable.core.models import FacturaRecord
-from gestor_contable.core.classifier import heal_classified_path
+from gestor_contable.core.classifier import heal_classified_path, safe_move_file
 
 logger = logging.getLogger(__name__)
 
@@ -1124,16 +1124,6 @@ def consolidate_duplicate_client_folders(
     Returns:
         (moved_count, errors): cantidad de PDFs movidos y lista de mensajes de error.
     """
-    import hashlib
-    import shutil
-
-    def _sha256(path: Path) -> str:
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
-
     moved = 0
     errors: list[str] = []
 
@@ -1156,13 +1146,7 @@ def consolidate_duplicate_client_folders(
             rel = src.relative_to(wrong_dir)
             dest = right_dir / rel
             try:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dest)
-                if _sha256(src) != _sha256(dest):
-                    dest.unlink(missing_ok=True)
-                    errors.append(f"SHA256 mismatch: {src.name} — no movido")
-                    continue
-                src.unlink()
+                safe_move_file(src, dest)
                 moved += 1
                 # Actualizar ruta en BD si db tiene el método
                 if db is not None:

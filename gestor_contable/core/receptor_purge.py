@@ -87,26 +87,40 @@ def execute_receptor_purge(
 
         try:
             safe_move_file(src, dest)
+            try:
+                purge_db.record_archivo(
+                    batch_id=batch_id,
+                    clave=clave,
+                    tipo_archivo="respuesta_receptor",
+                    ruta_original=ruta_str,
+                    ruta_cuarentena=str(dest),
+                    resultado="en_cuarentena",
+                )
+            except Exception as db_exc:
+                try:
+                    safe_move_file(dest, src)
+                except Exception as rollback_exc:
+                    logger.error(
+                        "Doble fallo crítico: BD falló y rollback físico falló para el archivo %s. DB Err: %s, Rollback Err: %s",
+                        src, db_exc, rollback_exc
+                    )
+                raise db_exc
+                
             movidos.append(ruta_str)
-            purge_db.record_archivo(
-                batch_id=batch_id,
-                clave=clave,
-                tipo_archivo="respuesta_receptor",
-                ruta_original=ruta_str,
-                ruta_cuarentena=str(dest),
-                resultado="en_cuarentena",
-            )
         except Exception as exc:
             fallidos.append((ruta_str, str(exc)))
-            purge_db.record_archivo(
-                batch_id=batch_id,
-                clave=clave,
-                tipo_archivo="respuesta_receptor",
-                ruta_original=ruta_str,
-                ruta_cuarentena=None,
-                resultado="fallido",
-                detalle=str(exc),
-            )
+            try:
+                purge_db.record_archivo(
+                    batch_id=batch_id,
+                    clave=clave,
+                    tipo_archivo="respuesta_receptor",
+                    ruta_original=ruta_str,
+                    ruta_cuarentena=None,
+                    resultado="fallido",
+                    detalle=str(exc),
+                )
+            except Exception:
+                pass
 
     _write_manifest(batch_dir, batch_id, movidos, fallidos)
 
@@ -116,6 +130,39 @@ def execute_receptor_purge(
         "total_fallidos": len(fallidos),
         "fallidos": fallidos,
     }
+
+
+def restore_receptor_batch(
+    batch_id: str,
+    purge_db: OrsPurgeDB,
+) -> dict:
+    """Restaura todos los archivos de un lote de respuestas receptor a sus rutas originales."""
+    archivos = purge_db.get_archivos_for_batch(batch_id)
+    restaurados: list[str] = []
+    fallidos: list[tuple[str, str]] = []
+
+    for a in archivos:
+        if a["resultado"] != "en_cuarentena":
+            continue
+        src_str = a.get("ruta_cuarentena")
+        dest_str = a.get("ruta_original")
+        if not src_str or not dest_str:
+            fallidos.append((src_str or "", "Ruta de cuarentena o ruta original vacia"))
+            continue
+        src = Path(src_str)
+        dest = Path(dest_str)
+        if not src.exists():
+            fallidos.append((src_str, "Archivo no encontrado en cuarentena"))
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            safe_move_file(src, dest)
+            restaurados.append(dest_str)
+            purge_db.update_archivo_result(int(a["id"]), "restaurado")
+        except Exception as exc:
+            fallidos.append((src_str, str(exc)))
+
+    return {"restaurados": restaurados, "fallidos": fallidos}
 
 
 def _write_manifest(

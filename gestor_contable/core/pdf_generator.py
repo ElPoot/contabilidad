@@ -32,13 +32,18 @@ def extract_items_from_xml(xml_path: Path | str) -> list[dict] | None:
         Cada dict tiene: {"desc": "...", "qty": "...", "unit": "...", "monto": "..."}
     """
     try:
+        import io
         import xml.etree.ElementTree as ET
 
         xml_path = Path(xml_path)
         if not xml_path.exists():
             return None
 
-        tree = ET.parse(xml_path)
+        try:
+            tree = ET.parse(xml_path)
+        except ET.ParseError:
+            fixed = xml_path.read_bytes().decode("iso-8859-1").encode("utf-8")
+            tree = ET.parse(io.BytesIO(fixed))
         root = tree.getroot()
 
         # Buscar todas las LineaDetalle en el XML (pueden estar en diferentes rutas)
